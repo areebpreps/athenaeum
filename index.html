@@ -237,6 +237,12 @@
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
   }
 
+  /* group-by-type folders */
+  .group-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  .group-bar:empty { display: none; }
+  button.row { width: 100%; text-align: left; }
+  .folder-ico { width: 26px; height: 26px; flex: none; color: var(--marker); }
+
   /* workspace shortcuts */
   .ws { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; margin-bottom: 12px; overflow: hidden; }
   .ws summary { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 16px; cursor: pointer; list-style: none; }
@@ -681,6 +687,10 @@ const ITEM_TYPES = {
   mnemonic:   { label: 'Mnemonic',   table: 'mnemonics',                       titleLabel: 'Title',            titleReq: true,  bodyLabel: 'Mnemonic' }
 };
 
+const VIEW_KEY = 'aw.itemsView';   // remembers "folders" vs "flat" on this device
+const itemsView = { mode: store.get(VIEW_KEY) === 'folders' ? 'folders' : 'flat', folder: null };
+const TYPE_PLURAL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics' };
+
 const ENTITY = {
   subject: { table: 'subjects', nameCol: 'name',  label: 'subject', placeholder: 'e.g. Physics' },
   chapter: { table: 'chapters', nameCol: 'title', label: 'chapter', placeholder: 'e.g. Kinematics' },
@@ -750,6 +760,7 @@ async function route() {
   const same = lastHash === location.hash;          // a refresh of the same page keeps its scroll position
   const keepScroll = same ? view.scrollTop : 0;
   lastHash = location.hash;
+  if (!same) itemsView.folder = null;
 
   const back = ids.length ? parentHash(ids) : null;
   setHeader(TABS[tab].title, back);
@@ -823,12 +834,63 @@ function itemCard(scope, it) {
     detail ? h('span', { class: 'body', text: detail }) : null);
 }
 
+function folderIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg class="folder-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+  return t.content.firstChild;
+}
+
 function itemsSection(scope, items, heading) {
+  const bar = h('div', { class: 'group-bar' });
+  const box = h('div');
+  const types = Object.keys(ITEM_TYPES);
+  const countOf = k => items.filter(it => it.type === k).length;
+
+  const paint = (refocus) => {
+    bar.replaceChildren();
+    box.replaceChildren();
+    if (!items.length) { box.append(h('p', { class: 'none', text: 'Nothing saved here yet.' })); return; }
+
+    const grouped = itemsView.mode === 'folders';
+    bar.append(h('button', {
+      class: 'btn quiet small', type: 'button', text: grouped ? 'Ungroup' : 'Group by type',
+      onclick: () => {
+        itemsView.mode = grouped ? 'flat' : 'folders';
+        itemsView.folder = null;
+        store.set(VIEW_KEY, itemsView.mode);
+        paint(true);
+      }
+    }));
+
+    if (!grouped) {
+      // ungrouped: every item, one type after another (notes, definitions, formulas, mnemonics)
+      box.append(h('div', { class: 'list' },
+        types.flatMap(k => items.filter(it => it.type === k)).map(it => itemCard(scope, it))));
+    } else if (itemsView.folder && countOf(itemsView.folder)) {
+      // one folder open: only that type
+      bar.append(h('button', {
+        class: 'btn quiet small', type: 'button', text: '‹ All folders',
+        onclick: () => { itemsView.folder = null; paint(true); }
+      }));
+      box.append(
+        h('p', { class: 'hint-line', text: TYPE_PLURAL[itemsView.folder] + ' · ' + plural(countOf(itemsView.folder), 'item', 'items') }),
+        h('div', { class: 'list' }, items.filter(it => it.type === itemsView.folder).map(it => itemCard(scope, it))));
+    } else {
+      // all folders, one per type that has items
+      itemsView.folder = null;
+      box.append(h('div', { class: 'list' }, types.filter(countOf).map(k =>
+        h('button', { class: 'row', type: 'button', onclick: () => { itemsView.folder = k; paint(true); } },
+          folderIcon(),
+          h('span', { class: 'grow' }, h('strong', { text: TYPE_PLURAL[k] }), h('small', { text: plural(countOf(k), 'item', 'items') })),
+          h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })))));
+    }
+    if (refocus) { const first = bar.querySelector('button'); if (first) first.focus({ preventScroll: true }); }
+  };
+  paint(false);
+
   return section(heading, '+ Add', () => openItemDialog(scope, null),
     h('p', { class: 'hint-line', text: 'Only items saved directly at this level show here.' }),
-    items.length
-      ? h('div', { class: 'list' }, items.map(it => itemCard(scope, it)))
-      : h('p', { class: 'none', text: 'Nothing saved here yet.' }));
+    bar, box);
 }
 
 async function loadItems(scope) {
