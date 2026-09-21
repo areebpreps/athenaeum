@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0D1220">
+<meta name="color-scheme" content="dark">
+<title>Athenaeum</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    /* midnight ink + highlighter marker */
+    --ink:      #0D1220;   /* page background */
+    --paper:    #151C2E;   /* cards, bars */
+    --paper-hi: #1E2740;   /* inputs, raised */
+    --line:     #2B3554;
+    --chalk:    #ECE9E1;   /* main text */
+    --dim:      #9AA2BA;   /* secondary text */
+    --marker:   #F3C955;   /* highlighter accent */
+    --marker-ink: #1A1400;
+    --ok:       #7FD1A0;
+    --err:      #FF9A9A;
+
+    --serif: "Newsreader", "Noto Serif Bengali", Georgia, "Times New Roman", serif;
+    --sans:  "Figtree", "Noto Sans Bengali", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ink);
+    color: var(--chalk);
+    font: 400 16px/1.5 var(--sans);
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+  ::selection { background: var(--marker); color: var(--marker-ink); }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--marker); outline-offset: 2px; }
+
+  h1, h2 { font-family: var(--serif); font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+
+  /* ---------- Config missing ---------- */
+  #screen-config {
+    min-height: 100dvh; display: flex; flex-direction: column; justify-content: center;
+    padding: 24px 20px; gap: 12px; max-width: 480px; margin: 0 auto;
+  }
+  #screen-config h1 { font-size: 28px; }
+  #screen-config p { color: var(--dim); margin: 0; }
+  code { background: var(--paper-hi); padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+
+  /* ---------- Login ---------- */
+  #screen-auth {
+    min-height: 100dvh; display: flex; flex-direction: column; justify-content: center;
+    padding: max(28px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
+    max-width: 480px; margin: 0 auto;
+  }
+  .brand { margin-bottom: 28px; }
+  .brand h1 { font-size: 36px; line-height: 1.1; }
+  .brand p { margin: 10px 0 0; color: var(--dim); }
+
+  .seg {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 20px;
+  }
+  .seg button {
+    min-height: 44px; border: 0; border-radius: 10px; background: transparent; color: var(--dim); font-weight: 600;
+  }
+  .seg button[aria-pressed="true"] { background: var(--paper-hi); color: var(--chalk); box-shadow: inset 0 -3px 0 var(--marker); }
+
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .field .hint { color: var(--dim); font-size: 14px; margin-top: 6px; }
+  .control {
+    width: 100%; min-height: 52px; padding: 0 14px; border-radius: 12px;
+    background: var(--paper-hi); border: 1px solid var(--line); color: var(--chalk);
+  }
+  .control::placeholder { color: #6E7794; }
+  .control:focus { border-color: var(--marker); outline: none; box-shadow: 0 0 0 3px rgba(243,201,85,.25); }
+  /* custom major picker (replaces the native select, which cannot be themed on Android) */
+  .picker-btn { display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; cursor: pointer; }
+  .picker-btn .chev { width: 20px; height: 20px; flex: none; color: var(--dim); }
+  .picker-btn .placeholder { color: #6E7794; }
+  .picker-scrim { align-items: center; justify-content: center; padding: 20px 16px; }
+  .picker {
+    width: 100%; max-width: 440px; max-height: min(78dvh, 640px);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 24px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.55);
+  }
+  .picker-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 10px 10px 22px; border-bottom: 1px solid var(--line);
+  }
+  .picker-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; }
+  .picker-close {
+    min-width: 64px; min-height: 44px; border: 0; border-radius: 14px; background: transparent;
+    color: var(--dim); font-weight: 600;
+  }
+  .picker-list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .opt {
+    width: 100%; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 14px; border: 0; border-radius: 14px; background: transparent; color: var(--chalk); text-align: left; font-size: 17px;
+  }
+  .opt:active { background: var(--paper-hi); }
+  .opt[aria-checked="true"] { background: var(--paper-hi); font-weight: 600; }
+  .opt .dot { width: 22px; height: 22px; flex: none; border-radius: 50%; border: 2px solid #56607F; display: grid; place-items: center; }
+  .opt[aria-checked="true"] .dot { border-color: var(--marker); }
+  .opt[aria-checked="true"] .dot::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--marker); }
+
+  .pw-wrap { position: relative; }
+  .pw-wrap .control { padding-right: 76px; }
+  .pw-toggle {
+    position: absolute; right: 4px; top: 4px; bottom: 4px; min-width: 64px; border: 0; border-radius: 9px;
+    background: transparent; color: var(--dim); font-weight: 600; font-size: 14px;
+  }
+
+  .btn {
+    width: 100%; min-height: 54px; border: 0; border-radius: 14px; font-weight: 700; font-size: 17px;
+    background: var(--marker); color: var(--marker-ink);
+  }
+  .btn:disabled { opacity: .6; cursor: default; }
+  .btn.quiet { background: var(--paper-hi); color: var(--chalk); border: 1px solid var(--line); font-weight: 600; }
+
+  .msg { margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; font-size: 15px; border: 1px solid; }
+  .msg.err  { color: var(--err); border-color: rgba(255,154,154,.45); background: rgba(255,154,154,.08); }
+  .msg.ok   { color: var(--ok);  border-color: rgba(127,209,160,.45); background: rgba(127,209,160,.08); }
+
+  /* ---------- App shell ---------- */
+  #screen-app { display: flex; flex-direction: column; height: 100dvh; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: calc(env(safe-area-inset-top, 0px) + 8px) 16px 8px 20px; min-height: 60px;
+    background: var(--paper); border-bottom: 1px solid var(--line);
+  }
+  .topbar h2 { font-size: 24px; }
+  .who {
+    min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
+    background: var(--paper-hi); border: 1px solid var(--line); color: var(--chalk); font-weight: 700; font-size: 16px;
+  }
+  main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 20px 20px 28px; }
+
+  .empty { padding: 28px 0 8px; }
+  .empty h3 { font-family: var(--serif); font-size: 22px; font-weight: 600; margin: 0 0 8px; }
+  .empty p { margin: 0; color: var(--dim); max-width: 34ch; }
+
+  .status {
+    margin-top: 24px; padding: 14px 16px; border-radius: 14px; background: var(--paper);
+    border: 1px solid var(--line); font-size: 15px; color: var(--dim);
+  }
+  .status strong { color: var(--chalk); display: block; margin-bottom: 2px; }
+  .status.good { border-color: rgba(127,209,160,.5); }
+  .status.good strong { color: var(--ok); }
+  .status.bad  { border-color: rgba(255,154,154,.5); }
+  .status.bad strong  { color: var(--err); }
+
+  nav.tabs {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    background: var(--paper); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  nav.tabs button {
+    position: relative; min-height: 64px; padding: 10px 2px 8px; border: 0; background: transparent;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    color: var(--dim); font-size: 12.5px; font-weight: 600;
+  }
+  nav.tabs svg { width: 24px; height: 24px; }
+  nav.tabs button[aria-current="page"] { color: var(--marker); }
+  nav.tabs button[aria-current="page"]::before {
+    content: ""; position: absolute; top: 0; left: 50%; width: 34px; height: 4px; margin-left: -17px;
+    background: var(--marker); border-radius: 0 0 4px 4px;
+  }
+
+  /* profile sheet */
+  .scrim { position: fixed; inset: 0; background: rgba(4,7,14,.66); display: flex; align-items: flex-end; z-index: 10; }
+  .sheet {
+    width: 100%; max-width: 480px; margin: 0 auto; background: var(--paper); border: 1px solid var(--line);
+    border-bottom: 0; border-radius: 20px 20px 0 0; padding: 22px 20px calc(env(safe-area-inset-bottom, 0px) + 20px);
+    display: grid; gap: 12px;
+  }
+  .sheet h3 { font-family: var(--serif); font-size: 22px; margin: 0; }
+  .sheet p { margin: 0; color: var(--dim); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .sheet { animation: rise .18s ease-out; }
+    @keyframes rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  }
+</style>
+</head>
+
+<body>
+
+<!-- ========== Not configured yet ========== -->
+<section id="screen-config" hidden>
+  <h1>Almost ready</h1>
+  <p>This copy of the app isn't connected to your database yet. Open <code>index.html</code> and paste your Supabase URL and anon key into the <code>CONFIG</code> block near the top of the script.</p>
+</section>
+
+<!-- ========== Login / create account ========== -->
+<section id="screen-auth" hidden>
+  <div class="brand">
+    <h1>Athenaeum</h1>
+    <p>Your notes, formulas and study tools in one place.</p>
+  </div>
+
+  <div class="seg" role="group" aria-label="Choose action">
+    <button type="button" id="mode-login"  aria-pressed="true">Log in</button>
+    <button type="button" id="mode-signup" aria-pressed="false">Create account</button>
+  </div>
+
+  <div id="auth-msg" class="msg err" role="alert" hidden></div>
+
+  <form id="auth-form" novalidate>
+    <div class="field">
+      <label for="username">Username</label>
+      <input class="control" id="username" name="username" type="text" inputmode="text"
+             autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+             placeholder="e.g. areeb_2026" maxlength="30">
+      <div class="hint" id="username-hint" hidden>3 to 30 characters: letters, numbers and underscores.</div>
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <div class="pw-wrap">
+        <input class="control" id="password" name="password" type="password"
+               autocomplete="current-password" placeholder="Your password">
+        <button type="button" class="pw-toggle" id="pw-toggle" aria-label="Show password">Show</button>
+      </div>
+      <div class="hint" id="password-hint" hidden>At least 8 characters.</div>
+    </div>
+
+    <div class="field">
+      <label id="major-label" for="major-btn">Academic major</label>
+      <input type="hidden" id="major" name="major" value="">
+      <button type="button" class="control picker-btn" id="major-btn" aria-haspopup="dialog" aria-labelledby="major-label major-btn-text">
+        <span id="major-btn-text" class="placeholder">Select your major</span>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="hint" id="major-hint">Choose the same major every time you log in.</div>
+    </div>
+
+    <button class="btn" id="auth-submit" type="submit">Log in</button>
+  </form>
+</section>
+
+<!-- ========== App shell ========== -->
+<section id="screen-app" hidden>
+  <header class="topbar">
+    <h2 id="page-title">General workspace</h2>
+    <button class="who" id="who-btn" aria-label="Account" aria-haspopup="dialog"></button>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <nav class="tabs" aria-label="Main">
+    <button data-tab="workspace">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg>
+      <span>Workspace</span>
+    </button>
+    <button data-tab="subjects">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/></svg>
+      <span>Subjects</span>
+    </button>
+    <button data-tab="downloads">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>
+      <span>Downloads</span>
+    </button>
+    <button data-tab="ai">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><path d="m6.3 6.3 2.4 2.4M15.3 15.3l2.4 2.4M17.7 6.3l-2.4 2.4M8.7 15.3l-2.4 2.4"/></svg>
+      <span>AI tools</span>
+    </button>
+  </nav>
+</section>
+
+<div class="scrim picker-scrim" id="major-picker" hidden>
+  <div class="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <div class="picker-head">
+      <h3 id="picker-title">Academic major</h3>
+      <button type="button" class="picker-close" id="picker-close">Close</button>
+    </div>
+    <ul class="picker-list" id="major-list" role="radiogroup" aria-labelledby="picker-title"></ul>
+  </div>
+</div>
+
+<div class="scrim" id="sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h3 id="sheet-title">Account</h3>
+    <p id="sheet-user"></p>
+    <button class="btn quiet" id="logout-btn" type="button">Log out</button>
+    <button class="btn quiet" id="sheet-close" type="button">Close</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+/* =====================================================================
+   CONFIG: the only part you edit.
+   The Supabase URL and anon key are designed to be public (Row Level
+   Security protects the data). NEVER paste a "service_role" key here.
+   ===================================================================== */
+const CONFIG = {
+  SUPABASE_URL:      'https://vzbkgfcvmpmgxhxilzdg.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_SQeATP_IzDUg46BmV2uZ0Q_eVAIL9Sr',
+  // Usernames become internal emails like  areeb_2026@academic-workspace.app
+  AUTH_EMAIL_DOMAIN: 'academic-workspace.app'
+};
+
+const MAJORS = [
+  'Accounting','Aerospace Engineering','Anthropology','Architecture','Art History','Astronomy',
+  'Biochemistry','Biology','Biomedical Engineering','Business Administration','Chemical Engineering',
+  'Chemistry','Civil Engineering','Communications','Computer Engineering','Computer Science',
+  'Criminology','Data Science','Economics','Education','Electrical Engineering','English Literature',
+  'Environmental Science','Finance','Geology','Graphic Design','History','Human Resource Management',
+  'Industrial Engineering','Information Technology','International Relations','Journalism','Law',
+  'Linguistics','Marketing','Materials Science','Mathematics','Mechanical Engineering','Medicine',
+  'Music','Nursing','Nutrition','Pharmacy','Philosophy','Physics','Political Science','Psychology',
+  'Public Health','Sociology','Statistics'
+];
+
+const VERIFIED_KEY = 'aw.verifiedUser';   // set only after the server accepts the major
+const TABS = {
+  workspace: {
+    title: 'General workspace',
+    head: 'Your workspace is empty',
+    body: 'Shortcuts from all your subjects will collect here, grouped by subject.',
+    showStatus: true
+  },
+  subjects: {
+    title: 'Subjects',
+    head: 'No subjects yet',
+    body: 'Subject cards, chapters, topics, notes and references will live here.'
+  },
+  downloads: {
+    title: 'Download manager',
+    head: 'Nothing saved for offline',
+    body: 'Pick notes, formulas, mnemonics, PDFs and images here to read them without internet.'
+  },
+  ai: {
+    title: 'AI tools',
+    head: 'AI tools are not set up yet',
+    body: 'Ask AI, the question solver, fact checker and quiz maker will appear here once you add your Gemini key.'
+  }
+};
+
+const $ = (sel, root = document) => root.querySelector(sel);
+let sb = null;
+let mode = 'login';
+let currentUser = null;
+
+/* ---------- small helpers ---------- */
+const store = {
+  get(k)    { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  del(k)    { try { localStorage.removeItem(k); } catch (e) {} }
+};
+
+function isConfigured() {
+  return /^https:\/\//.test(CONFIG.SUPABASE_URL) && CONFIG.SUPABASE_ANON_KEY.length > 20 &&
+         !CONFIG.SUPABASE_ANON_KEY.startsWith('PASTE_');
+}
+
+function showScreen(name) {
+  ['config', 'auth', 'app'].forEach(n => { $('#screen-' + n).hidden = (n !== name); });
+}
+
+function showMsg(text, kind = 'err') {
+  const el = $('#auth-msg');
+  if (!text) { el.hidden = true; el.textContent = ''; return; }
+  el.className = 'msg ' + kind;
+  el.textContent = text;
+  el.hidden = false;
+}
+
+function emailFor(username) { return username + '@' + CONFIG.AUTH_EMAIL_DOMAIN; }
+function usernameFrom(user) { return (user.email || '').split('@')[0]; }
+
+function minutesUntil(iso) {
+  const ms = new Date(iso).getTime() - Date.now();
+  return Math.max(1, Math.ceil(ms / 60000));
+}
+
+/* ---------- login screen ---------- */
+function buildMajorList() {
+  const list = $('#major-list');
+  MAJORS.forEach(m => {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'presentation');
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'opt';
+    b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', 'false');
+    b.dataset.major = m;
+    const t = document.createElement('span'); t.textContent = m;
+    const d = document.createElement('span'); d.className = 'dot'; d.setAttribute('aria-hidden', 'true');
+    b.append(t, d);
+    li.appendChild(b);
+    list.appendChild(li);
+  });
+  list.addEventListener('click', e => {
+    const b = e.target.closest('.opt');
+    if (b) chooseMajor(b.dataset.major);
+  });
+}
+
+function openPicker() {
+  const picker = $('#major-picker');
+  picker.hidden = false;
+  const current = $('#major').value;
+  let target = null;
+  picker.querySelectorAll('.opt').forEach(b => {
+    const on = b.dataset.major === current;
+    b.setAttribute('aria-checked', String(on));
+    if (on) target = b;
+  });
+  target = target || picker.querySelector('.opt');
+  target.scrollIntoView({ block: 'center' });
+  target.focus({ preventScroll: true });
+}
+
+function closePicker(restoreFocus = true) {
+  const picker = $('#major-picker');
+  if (picker.hidden) return;
+  picker.hidden = true;
+  if (restoreFocus) $('#major-btn').focus();
+}
+
+function chooseMajor(m) {
+  $('#major').value = m;
+  const label = $('#major-btn-text');
+  label.textContent = m;
+  label.classList.remove('placeholder');
+  closePicker();
+}
+
+function setMode(next) {
+  mode = next;
+  const signup = next === 'signup';
+  $('#mode-login').setAttribute('aria-pressed', String(!signup));
+  $('#mode-signup').setAttribute('aria-pressed', String(signup));
+  $('#auth-submit').textContent = signup ? 'Create account' : 'Log in';
+  $('#password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('#username-hint').hidden = !signup;
+  $('#password-hint').hidden = !signup;
+  $('#major-hint').textContent = signup
+    ? 'Remember this one. You must pick the same major at every login.'
+    : 'Choose the same major every time you log in.';
+  showMsg('');
+}
+
+function setBusy(busy) {
+  const b = $('#auth-submit');
+  b.disabled = busy;
+  b.textContent = busy ? (mode === 'signup' ? 'Creating account…' : 'Logging in…')
+                       : (mode === 'signup' ? 'Create account' : 'Log in');
+}
+
+function friendlyAuthError(error) {
+  const code = error.code || '';
+  const msg  = (error.message || '').toLowerCase();
+  if (code === 'user_already_exists' || msg.includes('already registered')) return 'That username is taken. Pick another one.';
+  if (code === 'email_address_invalid') return 'Supabase rejected the internal email for this username. Change AUTH_EMAIL_DOMAIN in the CONFIG block.';
+  if (code === 'weak_password') return 'That password is too weak. Use at least 8 characters with a mix of letters and numbers.';
+  if (code === 'signup_disabled') return 'Sign-ups are turned off in your Supabase project (Authentication settings).';
+  if (code.includes('rate_limit') || msg.includes('rate limit')) return 'Too many attempts. Wait a few minutes and try again.';
+  if (msg.includes('failed to fetch') || msg.includes('network')) return 'Cannot reach the server. Check your internet connection.';
+  return 'Something went wrong: ' + error.message;
+}
+
+async function submitAuth(evt) {
+  evt.preventDefault();
+  showMsg('');
+
+  const username = $('#username').value.trim().toLowerCase();
+  const password = $('#password').value;
+  const major    = $('#major').value;
+
+  if (!/^[a-z0-9_]{3,30}$/.test(username)) {
+    return showMsg('Username must be 3 to 30 characters: letters, numbers and underscores only.');
+  }
+  if (!password) return showMsg('Enter your password.');
+  if (mode === 'signup' && password.length < 8) return showMsg('Use a password with at least 8 characters.');
+  if (!major) return showMsg('Select your academic major.');
+
+  setBusy(true);
+  try {
+    if (mode === 'signup') await doSignup(username, password, major);
+    else                   await doLogin(username, password, major);
+  } catch (err) {
+    showMsg(friendlyAuthError(err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function doSignup(username, password, major) {
+  const { data, error } = await sb.auth.signUp({ email: emailFor(username), password });
+  if (error) return showMsg(friendlyAuthError(error));
+
+  if (!data.session) {
+    return showMsg('Account created, but Supabase is asking for email confirmation. In Supabase open Authentication, then Sign In / Providers, then Email, and turn off "Confirm email". After that, log in.');
+  }
+
+  const { error: rpcErr } = await sb.rpc('register_major', { p_major: major });
+  if (rpcErr) {
+    await sb.auth.signOut();
+    return showMsg('Account created, but saving your major failed: ' + rpcErr.message + '. Log in again to retry.');
+  }
+  store.set(VERIFIED_KEY, data.user.id);
+  enterApp(data.user);
+}
+
+async function doLogin(username, password, major) {
+  const { data, error } = await sb.auth.signInWithPassword({ email: emailFor(username), password });
+  if (error) {
+    const msg = (error.message || '').toLowerCase();
+    if (msg.includes('failed to fetch') || msg.includes('network')) return showMsg(friendlyAuthError(error));
+    // one generic message on purpose: do not reveal which detail was wrong
+    return showMsg('Those details did not match. Check your username, password and major.');
+  }
+
+  const uid = data.user.id;
+  let { data: res, error: rpcErr } = await sb.rpc('verify_major', { p_major: major });
+  if (rpcErr) {
+    await sb.auth.signOut();
+    return showMsg('Could not check your major: ' + rpcErr.message);
+  }
+
+  // Account exists but no major was ever saved (sign-up was interrupted): finish setup now.
+  if (res && res.reason === 'no_major_set') {
+    const r = await sb.rpc('register_major', { p_major: major });
+    if (r.error) { await sb.auth.signOut(); return showMsg('Could not finish setup: ' + r.error.message); }
+    res = { ok: true };
+  }
+
+  if (res && res.ok) {
+    store.set(VERIFIED_KEY, uid);
+    return enterApp(data.user);
+  }
+
+  await sb.auth.signOut();
+  store.del(VERIFIED_KEY);
+  if (res && res.reason === 'locked') {
+    return showMsg('Too many wrong attempts. Try again in about ' + minutesUntil(res.locked_until) + ' minute(s).');
+  }
+  showMsg('Those details did not match. Check your username, password and major.');
+}
+
+async function logout() {
+  closeSheet();
+  store.del(VERIFIED_KEY);
+  currentUser = null;
+  try { await sb.auth.signOut(); } catch (e) {}
+  $('#password').value = '';
+  setMode('login');
+  showScreen('auth');
+}
+
+/* ---------- app shell ---------- */
+function enterApp(user) {
+  currentUser = user;
+  const name = usernameFrom(user);
+  $('#who-btn').textContent = (name[0] || '?').toUpperCase();
+  $('#sheet-user').textContent = 'Signed in as ' + name;
+  showScreen('app');
+  route();
+}
+
+function route() {
+  const key = location.hash.slice(1);
+  const tab = TABS[key] ? key : 'workspace';
+  const cfg = TABS[tab];
+
+  document.querySelectorAll('nav.tabs button').forEach(b => {
+    if (b.dataset.tab === tab) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
+
+  $('#page-title').textContent = cfg.title;
+  const view = $('#view');
+  view.innerHTML = '';
+
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  const h = document.createElement('h3'); h.textContent = cfg.head;
+  const p = document.createElement('p');  p.textContent = cfg.body;
+  empty.append(h, p);
+  view.appendChild(empty);
+
+  if (cfg.showStatus) {
+    const st = document.createElement('div');
+    st.className = 'status'; st.id = 'db-status';
+    st.innerHTML = '<strong>Checking database…</strong>Testing your connection.';
+    view.appendChild(st);
+    checkDatabase();
+  }
+  view.scrollTop = 0;
+}
+
+async function checkDatabase() {
+  const { count, error } = await sb.from('subjects').select('id', { count: 'exact', head: true });
+  const el = $('#db-status');
+  if (!el) return;                       // user switched tabs meanwhile
+  if (error) {
+    el.className = 'status bad';
+    el.innerHTML = '<strong>Database problem</strong>';
+    el.append(error.message + ' Make sure all four SQL parts ran successfully in Supabase.');
+  } else {
+    el.className = 'status good';
+    el.innerHTML = '<strong>Connected to your database</strong>';
+    el.append(count + (count === 1 ? ' subject saved.' : ' subjects saved.'));
+  }
+}
+
+function openSheet()  { $('#sheet').hidden = false; $('#logout-btn').focus(); }
+function closeSheet() { $('#sheet').hidden = true; }
+
+/* ---------- start-up ---------- */
+async function boot() {
+  buildMajorList();
+
+  $('#mode-login').addEventListener('click',  () => setMode('login'));
+  $('#mode-signup').addEventListener('click', () => setMode('signup'));
+  $('#auth-form').addEventListener('submit', submitAuth);
+  $('#major-btn').addEventListener('click', openPicker);
+  $('#picker-close').addEventListener('click', () => closePicker());
+  $('#major-picker').addEventListener('click', e => { if (e.target.id === 'major-picker') closePicker(); });
+  $('#pw-toggle').addEventListener('click', () => {
+    const pw = $('#password'); const show = pw.type === 'password';
+    pw.type = show ? 'text' : 'password';
+    $('#pw-toggle').textContent = show ? 'Hide' : 'Show';
+    $('#pw-toggle').setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  });
+
+  document.querySelectorAll('nav.tabs button').forEach(b =>
+    b.addEventListener('click', () => { location.hash = b.dataset.tab; }));
+  window.addEventListener('hashchange', () => { if (currentUser) route(); });
+
+  $('#who-btn').addEventListener('click', openSheet);
+  $('#sheet-close').addEventListener('click', closeSheet);
+  $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closePicker(); closeSheet(); } });
+  $('#logout-btn').addEventListener('click', logout);
+
+  if (!isConfigured() || !window.supabase) {
+    if (isConfigured() && !window.supabase) {
+      $('#screen-config h1').textContent = 'Cannot load the app';
+      $('#screen-config p').textContent = 'The Supabase library did not load. Check your internet connection and reload.';
+    }
+    return showScreen('config');
+  }
+
+  sb = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+  });
+
+  sb.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT' && currentUser) { currentUser = null; store.del(VERIFIED_KEY); showScreen('auth'); }
+  });
+
+  // Keep the person logged in only if this device already passed the major check.
+  let session = null;
+  try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
+  if (session && store.get(VERIFIED_KEY) === session.user.id) {
+    enterApp(session.user);
+  } else {
+    if (session) { try { await sb.auth.signOut(); } catch (e) {} }
+    showScreen('auth');
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
