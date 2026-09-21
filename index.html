@@ -1021,11 +1021,13 @@ function confirmDeleteSource(src) {
   });
 }
 
+const MAX_PHOTOS_PER_BATCH = 20;
+
 function sourcesSection(scope, sources) {
   const box = h('div');
   const status = h('p', { class: 'msg err', hidden: true });
-  const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
-  const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add photo', onclick: () => fileInput.click() });
+  const fileInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add photos', onclick: () => fileInput.click() });
 
   const paint = () => {
     box.replaceChildren();
@@ -1036,24 +1038,35 @@ function sourcesSection(scope, sources) {
   paint();
 
   fileInput.addEventListener('change', async () => {
-    const file = fileInput.files[0];
+    let files = Array.from(fileInput.files || []);
     fileInput.value = '';
-    if (!file) return;
-    addBtn.disabled = true; addBtn.textContent = 'Uploading…';
+    if (!files.length) return;
+    const truncated = files.length > MAX_PHOTOS_PER_BATCH;
+    if (truncated) files = files.slice(0, MAX_PHOTOS_PER_BATCH);
+
+    addBtn.disabled = true;
     status.hidden = true;
-    try {
-      await uploadSourceFile(scope, file);
-      route();
-    } catch (err) {
-      addBtn.disabled = false; addBtn.textContent = '+ Add photo';
-      status.hidden = false;
-      status.textContent = err && err.message ? err.message : 'Could not upload that photo.';
+    const failed = [];
+    for (let i = 0; i < files.length; i++) {
+      addBtn.textContent = 'Uploading ' + (i + 1) + ' of ' + files.length + '…';
+      try { await uploadSourceFile(scope, files[i]); }
+      catch (err) { failed.push((files[i].name || 'Photo ' + (i + 1)) + ': ' + (err && err.message ? err.message : 'upload failed')); }
     }
+    addBtn.disabled = false; addBtn.textContent = '+ Add photos';
+
+    if (truncated || failed.length) {
+      status.hidden = false;
+      const parts = [];
+      if (truncated) parts.push('Only the first ' + MAX_PHOTOS_PER_BATCH + ' photos were uploaded — select the rest separately.');
+      if (failed.length) parts.push(plural(failed.length, 'photo', 'photos') + ' failed: ' + failed.join('; '));
+      status.textContent = parts.join(' ');
+    }
+    route();
   });
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' }), addBtn, fileInput),
-    h('p', { class: 'hint-line', text: 'Camera scans and photos are compressed automatically, then saved privately to your account.' }),
+    h('p', { class: 'hint-line', text: 'Camera scans and photos are compressed automatically, then saved privately to your account. Select up to ' + MAX_PHOTOS_PER_BATCH + ' at once.' }),
     status, box);
 }
 
