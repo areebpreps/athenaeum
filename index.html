@@ -73,6 +73,8 @@
     min-height: 44px; border: 0; border-radius: 10px; background: transparent; color: var(--dim); font-weight: 600;
   }
   .seg button[aria-pressed="true"] { background: var(--paper-hi); color: var(--chalk); box-shadow: inset 0 -3px 0 var(--marker); }
+  .seg-mini { grid-template-columns: repeat(4, 1fr); margin-bottom: 12px; }
+  .seg-mini button { font-size: 13px; padding: 0 2px; min-height: 40px; }
 
   .field { margin-bottom: 16px; }
   .field label { display: block; font-weight: 600; margin-bottom: 6px; }
@@ -1055,6 +1057,151 @@ function sourcesSection(scope, sources) {
     status, box);
 }
 
+/* ---------- All items: everything, in one place, grouped Subject > Chapter > Topic ---------- */
+const ALL_ITEMS_MODE_KEY = 'aw.allItemsMode';
+const ALL_ITEMS_MODES = { tree: 'Nested', subject: 'Subject', chapter: 'Chapter', topic: 'Topic' };
+let allItemsMode = ALL_ITEMS_MODES[store.get(ALL_ITEMS_MODE_KEY)] ? store.get(ALL_ITEMS_MODE_KEY) : 'tree';
+
+async function loadAllItems() {
+  const [n, f, m] = await Promise.all([
+    sb.from('notes').select('*'), sb.from('formulas').select('*'), sb.from('mnemonics').select('*')
+  ]);
+  const items = [
+    ...must(n).map(r => ({ type: r.kind === 'definition' ? 'definition' : 'note', row: r })),
+    ...must(f).map(r => ({ type: 'formula', row: r })),
+    ...must(m).map(r => ({ type: 'mnemonic', row: r }))
+  ];
+  items.sort((a, b) => new Date(b.row.created_at) - new Date(a.row.created_at));
+  return items;
+}
+
+const itemScopeOf = row => ({ subjectId: row.subject_id, chapterId: row.chapter_id || null, topicId: row.topic_id || null });
+
+function compactList(items) {
+  return items.length
+    ? h('div', { class: 'list' }, items.map(it => itemCard(itemScopeOf(it.row), it)))
+    : h('p', { class: 'none', text: 'Nothing saved directly here.' });
+}
+function bucketHeader(label, count) {
+  return h('summary', null, h('strong', { text: label }), h('small', { text: plural(count, 'item', 'items') }));
+}
+
+// Nested Subject -> Chapter -> Topic accordion, collapsed by default. Every item
+// appears exactly once, filed at the level it was actually saved at.
+function buildItemsTree(items, subjects, chaptersBySubject, topicsByChapter) {
+  if (!subjects.length) return h('p', { class: 'none', text: 'Nothing saved yet.' });
+  return h('div', { class: 'list' }, subjects.map(sub => {
+    const subItems = items.filter(it => it.row.subject_id === sub.id && !it.row.chapter_id);
+    const chs = chaptersBySubject[sub.id] || [];
+    const total = items.filter(it => it.row.subject_id === sub.id).length;
+    return h('details', { class: 'ws' },
+      bucketHeader(sub.name, total),
+      h('div', { class: 'inner' },
+        subItems.length ? [h('p', { class: 'hint-line', text: 'Saved on the subject page' }), compactList(subItems)] : null,
+        chs.map(ch => {
+          const chItems = items.filter(it => it.row.chapter_id === ch.id && !it.row.topic_id);
+          const tps = topicsByChapter[ch.id] || [];
+          const chTotal = items.filter(it => it.row.chapter_id === ch.id).length;
+          return h('details', { class: 'ws' },
+            bucketHeader(ch.title, chTotal),
+            h('div', { class: 'inner' },
+              chItems.length ? [h('p', { class: 'hint-line', text: 'Saved on the chapter page' }), compactList(chItems)] : null,
+              tps.map(tp => {
+                const tpItems = items.filter(it => it.row.topic_id === tp.id);
+                return h('details', { class: 'ws' },
+                  bucketHeader(tp.title, tpItems.length),
+                  h('div', { class: 'inner' }, compactList(tpItems)));
+              }),
+              !chItems.length && !tps.length ? h('p', { class: 'none', text: 'Nothing saved yet.' }) : null));
+        }),
+        !subItems.length && !chs.length ? h('p', { class: 'none', text: 'Nothing saved yet.' }) : null));
+  }));
+}
+
+// Flat buckets at one level (subject or chapter). "chapter" buckets roll up their
+// topics too, same as the roll-up rule on each page. mode is always 'subject' or
+// 'chapter' here — 'topic' mode is handled by buildItemsByTopic below.
+function buildItemsFlat(items, mode, subjectsById, chaptersById) {
+  const buckets = new Map(), order = [];
+  const add = (key, label, it) => {
+    if (!buckets.has(key)) { buckets.set(key, { label, items: [] }); order.push(key); }
+    buckets.get(key).items.push(it);
+  };
+  items.forEach(it => {
+    const row = it.row, sub = subjectsById[row.subject_id];
+    if (mode === 'subject') {
+      add(row.subject_id, sub ? sub.name : 'Unknown subject', it);
+    } else if (row.chapter_id) {
+      const ch = chaptersById[row.chapter_id];
+      add(row.chapter_id, (sub ? sub.name + ' › ' : '') + (ch ? ch.title : 'Unknown chapter'), it);
+    } else {
+      add('s:' + row.subject_id, (sub ? sub.name : 'Unknown subject') + ' — subject-level', it);
+    }
+  });
+  if (!order.length) return h('p', { class: 'none', text: 'Nothing saved yet.' });
+  return h('div', { class: 'list' }, order.map(key => {
+    const b = buckets.get(key);
+    return h('details', { class: 'ws' }, bucketHeader(b.label, b.items.length), h('div', { class: 'inner' }, compactList(b.items)));
+  }));
+}
+
+// "topic" mode needs the topic's own title, looked up after bucketing (topics weren't
+// passed into buildItemsFlat above to keep that function's signature uniform).
+function buildItemsByTopic(items, subjectsById, chaptersById, topicsById) {
+  const buckets = new Map(), order = [];
+  const add = (key, label, it) => {
+    if (!buckets.has(key)) { buckets.set(key, { label, items: [] }); order.push(key); }
+    buckets.get(key).items.push(it);
+  };
+  items.forEach(it => {
+    const row = it.row, sub = subjectsById[row.subject_id];
+    if (row.topic_id) {
+      const tp = topicsById[row.topic_id], ch = chaptersById[row.chapter_id];
+      add(row.topic_id, [sub && sub.name, ch && ch.title, tp && tp.title].filter(Boolean).join(' › ') || 'Unknown topic', it);
+    } else if (row.chapter_id) {
+      const ch = chaptersById[row.chapter_id];
+      add('c:' + row.chapter_id, (sub ? sub.name + ' › ' : '') + (ch ? ch.title : 'Unknown chapter') + ' — chapter-level', it);
+    } else {
+      add('s:' + row.subject_id, (sub ? sub.name : 'Unknown subject') + ' — subject-level', it);
+    }
+  });
+  if (!order.length) return h('p', { class: 'none', text: 'Nothing saved yet.' });
+  return h('div', { class: 'list' }, order.map(key => {
+    const b = buckets.get(key);
+    return h('details', { class: 'ws' }, bucketHeader(b.label, b.items.length), h('div', { class: 'inner' }, compactList(b.items)));
+  }));
+}
+
+async function buildAllItemsSection(subjects, chapters, topics) {
+  const items = await loadAllItems();
+  const subjectsById = {}, chaptersById = {}, topicsById = {};
+  const chaptersBySubject = {}, topicsByChapter = {};
+  subjects.forEach(s => { subjectsById[s.id] = s; });
+  chapters.forEach(c => { chaptersById[c.id] = c; (chaptersBySubject[c.subject_id] = chaptersBySubject[c.subject_id] || []).push(c); });
+  topics.forEach(t => { topicsById[t.id] = t; (topicsByChapter[t.chapter_id] = topicsByChapter[t.chapter_id] || []).push(t); });
+
+  const box = h('div');
+  const seg = h('div', { class: 'seg seg-mini', role: 'group', 'aria-label': 'Group all items by' },
+    Object.keys(ALL_ITEMS_MODES).map(m => h('button', {
+      type: 'button', text: ALL_ITEMS_MODES[m], 'data-mode': m, 'aria-pressed': String(allItemsMode === m),
+      onclick: () => { allItemsMode = m; store.set(ALL_ITEMS_MODE_KEY, m); paint(true); }
+    })));
+
+  function paint(refocus) {
+    box.replaceChildren(
+      allItemsMode === 'tree' ? buildItemsTree(items, subjects, chaptersBySubject, topicsByChapter)
+      : allItemsMode === 'topic' ? buildItemsByTopic(items, subjectsById, chaptersById, topicsById)
+      : buildItemsFlat(items, allItemsMode, subjectsById, chaptersById));
+    seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === allItemsMode)));
+    if (refocus) { const p = seg.querySelector('button[aria-pressed="true"]'); if (p) p.focus({ preventScroll: true }); }
+  }
+  paint(false);
+
+  return section('All items', null, null,
+    h('p', { class: 'hint-line', text: 'Every note, definition, formula and mnemonic from every subject, in one place.' }),
+    seg, box);
+}
+
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
 async function buildWorkspace() {
   const [s, c, t] = await Promise.all([
@@ -1092,7 +1239,9 @@ async function buildWorkspace() {
         }) : h('p', { class: 'none', text: 'No chapters yet.' })));
   });
 
-  return { nodes: [h('p', { class: 'hint-line', text: 'Shortcuts to every subject, chapter and topic.' }), ...cards] };
+  const allItems = await buildAllItemsSection(subjects, chapters, topics);
+
+  return { nodes: [h('p', { class: 'hint-line', text: 'Shortcuts to every subject, chapter and topic.' }), ...cards, allItems] };
 }
 
 /* ---------- Subjects > Chapter > Topic pages ---------- */
