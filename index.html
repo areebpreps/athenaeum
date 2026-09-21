@@ -254,6 +254,10 @@
   .dl-row .grow { flex: 1; min-width: 0; display: grid; }
   .dl-row strong { font-weight: 600; overflow-wrap: anywhere; }
   .dl-row small { color: var(--dim); font-size: 14px; overflow-wrap: anywhere; }
+  .dl-thumb {
+    width: 48px; height: 48px; flex: none; object-fit: cover; border-radius: 10px;
+    background: var(--paper-hi); border: 1px solid var(--line); cursor: pointer;
+  }
   .offline-thumb { max-width: 100%; border-radius: 10px; margin-top: 6px; display: block; }
 
   /* group-by-type folders */
@@ -1344,14 +1348,41 @@ async function buildDownloads() {
 }
 
 /* ---------- online: selection screen ---------- */
+
+// Opens a private storage file in a new tab via a freshly-minted signed URL
+// (used for both the thumbnail's tap-to-open and the offline "Open full size" flow).
+async function openStoragePath(path) {
+  const { data, error } = await sb.storage.from(REF_BUCKET).createSignedUrl(path, 120);
+  if (error) throw error;
+  window.open(data.signedUrl, '_blank', 'noopener');
+}
+
+// A small thumbnail for a photo row. Loads its own short-lived signed URL just to
+// display the preview; tapping it opens a fresh, full-resolution signed URL.
+// stopPropagation/preventDefault keep the tap from also toggling the row's checkbox.
+function dlThumb(path) {
+  const img = h('img', { class: 'dl-thumb', alt: '', 'aria-label': 'Open photo' });
+  sb.storage.from(REF_BUCKET).createSignedUrl(path, 300).then(({ data, error }) => {
+    if (!error && data) img.src = data.signedUrl;
+  }).catch(() => {});
+  img.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    openStoragePath(path).catch(() => {});
+  });
+  return img;
+}
+
 function dlRow(info, offlineKeys, selected, onToggle) {
   const saved = offlineKeys.has(info.key);
   const cbId = 'dl_' + info.key.replace(/[^a-zA-Z0-9]/g, '_');
   const cb = h('input', { type: 'checkbox', id: cbId, class: 'dl-check' });
   cb.checked = selected.has(info.key);
   cb.addEventListener('change', () => onToggle(info.key, cb.checked));
+  const thumb = info.type === 'image' && info.row.storage_path ? dlThumb(info.row.storage_path) : null;
   return h('label', { for: cbId, class: 'dl-row' + (saved ? ' saved' : '') },
     cb,
+    thumb,
     h('span', { class: 'grow' }, h('strong', { text: dlLabel(info) }), h('small', { text: info.origin })),
     saved ? h('span', { class: 'chip', text: 'Saved' }) : null);
 }
@@ -1413,9 +1444,33 @@ function renderOnlineDownloads(rows, offlineKeys, offlineRecords) {
 
   refresh();
 
-  const sections = DL_ORDER.filter(t => grouped[t].length).map(t =>
-    section(DL_LABEL[t], null, null,
-      h('div', { class: 'list' }, grouped[t].map(info => dlRow(info, offlineKeys, selected, toggle)))));
+  function groupSection(t) {
+    const items = grouped[t];
+    const rows = items.map(info => dlRow(info, offlineKeys, selected, toggle));
+    let selectAllBtn = null;
+    if (items.length > 1) {
+      const checks = rows.map(r => r.querySelector('.dl-check'));
+      selectAllBtn = h('button', { class: 'btn quiet small', type: 'button' });
+      const sync = () => {
+        const all = items.every(info => selected.has(info.key));
+        selectAllBtn.textContent = all ? 'Clear all' : 'Select all';
+      };
+      selectAllBtn.addEventListener('click', () => {
+        const all = items.every(info => selected.has(info.key));
+        items.forEach((info, i) => {
+          if (all) { selected.delete(info.key); checks[i].checked = false; }
+          else { selected.add(info.key); checks[i].checked = true; }
+        });
+        sync();
+        refresh();
+      });
+      sync();
+    }
+    return section(DL_LABEL[t], null, null,
+      selectAllBtn ? h('div', { class: 'edit-row' }, selectAllBtn) : null,
+      h('div', { class: 'list' }, rows));
+  }
+  const sections = DL_ORDER.filter(t => grouped[t].length).map(groupSection);
 
   const nodes = [
     h('p', { class: 'hint-line', text: 'Select notes, definitions, formulas, mnemonics and photos to keep them readable without internet.' }),
