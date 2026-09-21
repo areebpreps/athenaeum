@@ -241,6 +241,21 @@
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
   }
 
+  /* download manager: selection rows and sticky-ish action bar */
+  .dl-actions { display: flex; gap: 10px; margin: 4px 0 22px; flex-wrap: wrap; }
+  .dl-actions .btn { flex: 1; min-width: 150px; }
+  .dl-row {
+    display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 12px 16px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 16px; cursor: pointer;
+  }
+  .dl-row:active { background: var(--paper-hi); }
+  .dl-row.saved { border-color: rgba(127,209,160,.5); }
+  .dl-check { width: 22px; height: 22px; flex: none; accent-color: var(--marker); }
+  .dl-row .grow { flex: 1; min-width: 0; display: grid; }
+  .dl-row strong { font-weight: 600; overflow-wrap: anywhere; }
+  .dl-row small { color: var(--dim); font-size: 14px; overflow-wrap: anywhere; }
+  .offline-thumb { max-width: 100%; border-radius: 10px; margin-top: 6px; display: block; }
+
   /* group-by-type folders */
   .group-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
   .group-bar:empty { display: none; }
@@ -775,6 +790,7 @@ async function route() {
   try {
     if (tab === 'workspace')      res = await buildWorkspace();
     else if (tab === 'subjects')  res = await buildSubjects(ids);
+    else if (tab === 'downloads') res = await buildDownloads();
     else                          res = buildStatic(tab);
   } catch (err) {
     res = { nodes: [errorCard(err)] };
@@ -1213,6 +1229,271 @@ async function buildAllItemsSection(subjects, chapters, topics) {
   return section('All items', null, null,
     h('p', { class: 'hint-line', text: 'Every note, definition, formula and mnemonic from every subject, in one place.' }),
     seg, box);
+}
+
+/* =====================================================================
+   Phase 2.3: Offline vault (IndexedDB) and Download Manager
+   One screen lists every note, definition, formula, mnemonic and
+   reference-vault photo. Chosen items are copied into IndexedDB so they
+   stay readable with no network. (Mistake Vault is 4.1; PDFs and
+   Drive/OneDrive embeds are 3.1 — neither exists yet, so neither is
+   offered here.)
+   ===================================================================== */
+const OFFLINE_DB_NAME  = 'athenaeum-offline';
+const OFFLINE_DB_STORE = 'items';
+let offlineDbPromise = null;
+
+function openOfflineDb() {
+  if (offlineDbPromise) return offlineDbPromise;
+  offlineDbPromise = new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error('This browser cannot save files offline.'));
+    const req = indexedDB.open(OFFLINE_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(OFFLINE_DB_STORE)) {
+        req.result.createObjectStore(OFFLINE_DB_STORE, { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+  return offlineDbPromise;
+}
+function reqToPromise(req) {
+  return new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+}
+async function idbRun(mode, fn) {
+  const db = await openOfflineDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_DB_STORE, mode);
+    const store = tx.objectStore(OFFLINE_DB_STORE);
+    let out;
+    Promise.resolve(fn(store)).then(r => { out = r; }).catch(reject);
+    tx.oncomplete = () => resolve(out);
+    tx.onerror  = () => reject(tx.error);
+    tx.onabort  = () => reject(tx.error);
+  });
+}
+const offlinePut    = record => idbRun('readwrite', s => reqToPromise(s.put(record)));
+const offlineDelete = key    => idbRun('readwrite', s => reqToPromise(s.delete(key)));
+const offlineGetAll = ()     => idbRun('readonly',  s => reqToPromise(s.getAll())).catch(() => []);
+const offlineClear  = ()     => idbRun('readwrite', s => reqToPromise(s.clear()));
+
+function formatBytes(n) {
+  if (!n) return '0 KB';
+  if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+function recordBytes(r) { return r.blob ? r.blob.size : JSON.stringify(r.row || {}).length; }
+
+// Full "Subject › Chapter › Topic" origin, independent of which page you're on
+// (unlike originOf, which shortens the label to fit the current page's scope).
+function fullOrigin(row, subjectsById, chaptersById, topicsById) {
+  const sub = subjectsById[row.subject_id];
+  const ch  = row.chapter_id ? chaptersById[row.chapter_id] : null;
+  const tp  = row.topic_id   ? topicsById[row.topic_id]     : null;
+  return [sub && sub.name, ch && ch.title, tp && tp.title].filter(Boolean).join(' › ') || 'Unknown location';
+}
+
+async function loadAllSources() {
+  const rows = must(await sb.from('sources').select('*').order('created_at', { ascending: false }));
+  return rows.map(r => ({ row: r }));
+}
+
+function dlLabel(info) {
+  if (info.row.title) return info.row.title;
+  if (info.type === 'note') return (info.row.body || 'Note').slice(0, 60);
+  return info.type === 'image' ? 'Photo' : (ITEM_TYPES[info.type] ? ITEM_TYPES[info.type].label : 'Item');
+}
+
+const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'image'];
+const DL_LABEL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics', image: 'Photos' };
+
+/* ---------- entry point ---------- */
+async function buildDownloads() {
+  const offlineRecords = await offlineGetAll();
+  const offlineKeys = new Set(offlineRecords.map(r => r.key));
+
+  if (!navigator.onLine) return renderOfflineDownloads(offlineRecords);
+
+  try {
+    const [sRes, cRes, tRes] = await Promise.all([
+      sb.from('subjects').select('id, name'),
+      sb.from('chapters').select('id, subject_id, title'),
+      sb.from('topics').select('id, chapter_id, title')
+    ]);
+    const subjectsById = {}, chaptersById = {}, topicsById = {};
+    must(sRes).forEach(s => { subjectsById[s.id] = s; });
+    must(cRes).forEach(c => { chaptersById[c.id] = c; });
+    must(tRes).forEach(t => { topicsById[t.id] = t; });
+
+    const [items, sources] = await Promise.all([loadAllItems(), loadAllSources()]);
+    const rows = [];
+    items.forEach(it => rows.push({
+      key: it.type + ':' + it.row.id, type: it.type, row: it.row,
+      origin: fullOrigin(it.row, subjectsById, chaptersById, topicsById)
+    }));
+    sources.forEach(s => rows.push({
+      key: 'image:' + s.row.id, type: 'image', row: s.row,
+      origin: fullOrigin(s.row, subjectsById, chaptersById, topicsById)
+    }));
+
+    return renderOnlineDownloads(rows, offlineKeys, offlineRecords);
+  } catch (err) {
+    return renderOfflineDownloads(offlineRecords);
+  }
+}
+
+/* ---------- online: selection screen ---------- */
+function dlRow(info, offlineKeys, selected, onToggle) {
+  const saved = offlineKeys.has(info.key);
+  const cbId = 'dl_' + info.key.replace(/[^a-zA-Z0-9]/g, '_');
+  const cb = h('input', { type: 'checkbox', id: cbId, class: 'dl-check' });
+  cb.checked = selected.has(info.key);
+  cb.addEventListener('change', () => onToggle(info.key, cb.checked));
+  return h('label', { for: cbId, class: 'dl-row' + (saved ? ' saved' : '') },
+    cb,
+    h('span', { class: 'grow' }, h('strong', { text: dlLabel(info) }), h('small', { text: info.origin })),
+    saved ? h('span', { class: 'chip', text: 'Saved' }) : null);
+}
+
+function renderOnlineDownloads(rows, offlineKeys, offlineRecords) {
+  const rowsByKey = new Map(rows.map(r => [r.key, r]));
+  const selected = new Set();
+  const grouped = {};
+  DL_ORDER.forEach(t => { grouped[t] = rows.filter(r => r.type === t); });
+
+  const summary = h('p', { class: 'hint-line' });
+  const status  = h('p', { class: 'msg err', hidden: true });
+  const dlBtn = h('button', { class: 'btn small', type: 'button', text: 'Download selected' });
+  const rmBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove downloads', hidden: true });
+
+  function refresh() {
+    const n = selected.size;
+    const savedSelected = [...selected].filter(k => offlineKeys.has(k)).length;
+    summary.textContent = n ? plural(n, 'item', 'items') + ' selected'
+      : (rows.length ? 'Choose items to save for offline use.' : '');
+    dlBtn.disabled = n === 0;
+    rmBtn.hidden = savedSelected === 0;
+    rmBtn.textContent = 'Remove ' + plural(savedSelected, 'download', 'downloads');
+  }
+  function toggle(key, checked) { checked ? selected.add(key) : selected.delete(key); refresh(); }
+
+  dlBtn.addEventListener('click', async () => {
+    status.hidden = true;
+    const keys = [...selected];
+    dlBtn.disabled = true; rmBtn.disabled = true;
+    const failed = [];
+    for (let i = 0; i < keys.length; i++) {
+      const info = rowsByKey.get(keys[i]);
+      dlBtn.textContent = 'Saving ' + (i + 1) + ' of ' + keys.length + '…';
+      try {
+        if (info.type === 'image') {
+          const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(info.row.storage_path, 120);
+          if (signed.error) throw signed.error;
+          const resp = await fetch(signed.data.signedUrl);
+          if (!resp.ok) throw new Error('download failed');
+          const blob = await resp.blob();
+          await offlinePut({ key: info.key, type: 'image', id: info.row.id,
+            row: { title: info.row.title, created_at: info.row.created_at }, origin: info.origin, blob, savedAt: Date.now() });
+        } else {
+          await offlinePut({ key: info.key, type: info.type, id: info.row.id, row: info.row, origin: info.origin, savedAt: Date.now() });
+        }
+      } catch (err) {
+        failed.push(dlLabel(info) + ': could not be saved');
+      }
+    }
+    if (failed.length) { status.hidden = false; status.textContent = failed.join('; ') + '. Check your connection and try again.'; }
+    route();
+  });
+
+  rmBtn.addEventListener('click', () => {
+    const keys = [...selected].filter(k => offlineKeys.has(k));
+    confirmRemoveDownloads(keys);
+  });
+
+  refresh();
+
+  const sections = DL_ORDER.filter(t => grouped[t].length).map(t =>
+    section(DL_LABEL[t], null, null,
+      h('div', { class: 'list' }, grouped[t].map(info => dlRow(info, offlineKeys, selected, toggle)))));
+
+  const nodes = [
+    h('p', { class: 'hint-line', text: 'Select notes, definitions, formulas, mnemonics and photos to keep them readable without internet.' }),
+    offlineRecords.length ? h('p', { class: 'hint-line',
+      text: plural(offlineRecords.length, 'item', 'items') + ' already saved for offline (~' +
+            formatBytes(offlineRecords.reduce((s, r) => s + recordBytes(r), 0)) + ').' }) : null,
+    summary, status,
+    h('div', { class: 'dl-actions' }, dlBtn, rmBtn)
+  ];
+  if (rows.length) nodes.push(...sections);
+  else nodes.push(emptyBlock('Nothing to download yet', 'Add notes, formulas, mnemonics or photos in Subjects, then come back here.'));
+  if (offlineKeys.size) nodes.push(h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Clear all downloads', onclick: confirmClearAllDownloads }));
+
+  return { nodes };
+}
+
+function confirmRemoveDownloads(keys) {
+  if (!keys.length) return;
+  showDialog({
+    title: 'Remove ' + plural(keys.length, 'download', 'downloads') + '?',
+    text: 'These items will no longer open without internet. You can download them again anytime.',
+    submitLabel: 'Remove', danger: true,
+    async onSubmit() { for (const k of keys) await offlineDelete(k); route(); }
+  });
+}
+
+function confirmClearAllDownloads() {
+  showDialog({
+    title: 'Clear all downloads?',
+    text: 'Every item saved for offline use on this device is removed. Nothing in your account is affected.',
+    submitLabel: 'Clear all', danger: true,
+    async onSubmit() { await offlineClear(); route(); }
+  });
+}
+
+/* ---------- offline: read-only vault ---------- */
+function offlineItemCard(r) {
+  if (r.type === 'image') {
+    const url = URL.createObjectURL(r.blob);
+    return h('div', { class: 'item' },
+      r.origin ? h('span', { class: 'origin', text: r.origin }) : null,
+      r.row.title ? h('strong', { text: r.row.title }) : null,
+      h('img', { class: 'offline-thumb', src: url, alt: '' }),
+      h('button', { class: 'btn quiet small', type: 'button', text: 'Open full size', onclick: () => window.open(url, '_blank', 'noopener') }));
+  }
+  const detail = r.type === 'formula' ? r.row.description : r.row.body;
+  return h('div', { class: 'item' },
+    h('span', { class: 'item-head' },
+      h('span', { class: 'chip', text: ITEM_TYPES[r.type] ? ITEM_TYPES[r.type].label : r.type }),
+      r.origin ? h('span', { class: 'origin', text: r.origin }) : null),
+    r.row.title ? h('strong', { text: r.row.title }) : null,
+    r.type === 'formula' ? h('code', { class: 'expr', text: r.row.expression }) : null,
+    detail ? h('span', { class: 'body', text: detail }) : null);
+}
+
+function renderOfflineDownloads(records) {
+  const nodes = [
+    h('div', { class: 'status bad' },
+      h('strong', { text: "You're offline" }),
+      'Showing what you already saved. Connect to the internet to change your downloads. ',
+      h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))
+  ];
+  if (!records.length) {
+    nodes.push(emptyBlock('Nothing saved for offline yet', 'Connect to the internet, come back here, and choose items to download.'));
+    return { nodes };
+  }
+
+  const grouped = {};
+  records.forEach(r => { (grouped[r.type] = grouped[r.type] || []).push(r); });
+  nodes.push(h('p', { class: 'hint-line',
+    text: plural(records.length, 'item', 'items') + ' saved for offline (~' +
+          formatBytes(records.reduce((s, r) => s + recordBytes(r), 0)) + ').' }));
+
+  DL_ORDER.filter(t => grouped[t] && grouped[t].length).forEach(t => {
+    nodes.push(section(DL_LABEL[t], null, null, h('div', { class: 'list' }, grouped[t].map(offlineItemCard))));
+  });
+  nodes.push(h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Clear all downloads', onclick: confirmClearAllDownloads }));
+  return { nodes };
 }
 
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
