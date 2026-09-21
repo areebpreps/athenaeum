@@ -232,6 +232,8 @@
     display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
   }
   .item .expr { display: block; padding: 8px 10px; background: var(--paper-hi); border-radius: 8px; overflow-x: auto; white-space: pre; font-size: 15px; }
+  .item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+  .origin { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
   .chip {
     justify-self: start; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
@@ -720,12 +722,13 @@ function levelName(scope) { return scope.topicId ? 'topic' : scope.chapterId ? '
 function scopeCols(scope) {
   return { subject_id: scope.subjectId || null, chapter_id: scope.chapterId || null, topic_id: scope.topicId || null };
 }
-// exact-level filter: a subject-level list must NOT include chapter or topic items
+// roll-up filter: a page shows everything saved at its own level AND below it.
+// Every topic item also carries its chapter_id and subject_id (the schema enforces this),
+// so filtering on the most specific id gives exactly that page's whole branch.
 function scopeFilter(q, scope) {
-  q = scope.subjectId ? q.eq('subject_id', scope.subjectId) : q.is('subject_id', null);
-  q = scope.chapterId ? q.eq('chapter_id', scope.chapterId) : q.is('chapter_id', null);
-  q = scope.topicId   ? q.eq('topic_id',   scope.topicId)   : q.is('topic_id', null);
-  return q;
+  if (scope.topicId)   return q.eq('topic_id',   scope.topicId);
+  if (scope.chapterId) return q.eq('chapter_id', scope.chapterId);
+  return q.eq('subject_id', scope.subjectId);
 }
 const ordered = q => q.order('position', { ascending: true }).order('created_at', { ascending: true });
 
@@ -828,7 +831,9 @@ function itemCard(scope, it) {
   const { type, row } = it;
   const detail = type === 'formula' ? row.description : row.body;
   return h('button', { class: 'item', type: 'button', onclick: () => openItemDialog(scope, it) },
-    h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
+    h('span', { class: 'item-head' },
+      h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
+      it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
     row.title ? h('strong', { text: row.title }) : null,
     type === 'formula' ? h('code', { class: 'expr', text: row.expression }) : null,
     detail ? h('span', { class: 'body', text: detail }) : null);
@@ -840,7 +845,7 @@ function folderIcon() {
   return t.content.firstChild;
 }
 
-function itemsSection(scope, items, heading) {
+function itemsSection(scope, items, heading, hint) {
   const bar = h('div', { class: 'group-bar' });
   const box = h('div');
   const types = Object.keys(ITEM_TYPES);
@@ -889,17 +894,28 @@ function itemsSection(scope, items, heading) {
   paint(false);
 
   return section(heading, '+ Add', () => openItemDialog(scope, null),
-    h('p', { class: 'hint-line', text: 'Only items saved directly at this level show here.' }),
+    h('p', { class: 'hint-line', text: hint }),
     bar, box);
 }
 
-async function loadItems(scope) {
+// where a rolled-up item was saved, shown on its card ("Kinematics › Projectile motion")
+function originOf(row, scope, names) {
+  if (scope.topicId) return null;                       // topic page: everything is from this topic
+  const ch = row.chapter_id ? names.chapters[row.chapter_id] : null;
+  const tp = row.topic_id   ? names.topics[row.topic_id]     : null;
+  if (scope.chapterId) return tp || null;               // chapter page: name the topic
+  if (ch && tp) return ch + ' › ' + tp;                 // subject page: chapter › topic
+  return ch || null;
+}
+
+async function loadItems(scope, names) {
   const q = t => scopeFilter(sb.from(t).select('*'), scope);
   const [n, f, m] = await Promise.all([q('notes'), q('formulas'), q('mnemonics')]);
+  const put = (type, r) => ({ type, row: r, origin: originOf(r, scope, names) });
   const items = [
-    ...must(n).map(r => ({ type: r.kind === 'definition' ? 'definition' : 'note', row: r })),
-    ...must(f).map(r => ({ type: 'formula',  row: r })),
-    ...must(m).map(r => ({ type: 'mnemonic', row: r }))
+    ...must(n).map(r => put(r.kind === 'definition' ? 'definition' : 'note', r)),
+    ...must(f).map(r => put('formula',  r)),
+    ...must(m).map(r => put('mnemonic', r))
   ];
   items.sort((a, b) => new Date(b.row.created_at) - new Date(a.row.created_at));
   return items;
@@ -985,13 +1001,14 @@ async function subjectPage(sid) {
   if (!subject) return go('#subjects');
   const chapters = must(cRes);
 
-  const counts = {};
+  const counts = {}, names = { chapters: {}, topics: {} };
+  chapters.forEach(c => { names.chapters[c.id] = c.title; });
   if (chapters.length) {
-    must(await sb.from('topics').select('chapter_id').in('chapter_id', chapters.map(c => c.id)))
-      .forEach(x => { counts[x.chapter_id] = (counts[x.chapter_id] || 0) + 1; });
+    must(await sb.from('topics').select('id, chapter_id, title').in('chapter_id', chapters.map(c => c.id)))
+      .forEach(x => { counts[x.chapter_id] = (counts[x.chapter_id] || 0) + 1; names.topics[x.id] = x.title; });
   }
   const scope = { subjectId: sid, chapterId: null, topicId: null };
-  const items = await loadItems(scope);
+  const items = await loadItems(scope, names);
 
   return { title: subject.name, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }]),
@@ -1002,7 +1019,7 @@ async function subjectPage(sid) {
             href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
             meta: plural(counts[ch.id] || 0, 'topic', 'topics') })))
         : h('p', { class: 'none', text: 'No chapters yet.' })),
-    itemsSection(scope, items, 'Subject-wide items')
+    itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.')
   ] };
 }
 
@@ -1019,7 +1036,9 @@ async function chapterPage(sid, cid) {
   const topics = must(tRes);
 
   const scope = { subjectId: sid, chapterId: cid, topicId: null };
-  const items = await loadItems(scope);
+  const names = { chapters: { [cid]: chapter.title }, topics: {} };
+  topics.forEach(t => { names.topics[t.id] = t.title; });
+  const items = await loadItems(scope, names);
 
   return { title: chapter.title, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }, { text: subject.name, href: '#subjects/' + sid }]),
@@ -1029,7 +1048,7 @@ async function chapterPage(sid, cid) {
         ? h('div', { class: 'list' }, topics.map(tp => linkRow({
             href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })))
         : h('p', { class: 'none', text: 'No topics yet.' })),
-    itemsSection(scope, items, 'Chapter-wide items')
+    itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.')
   ] };
 }
 
@@ -1047,7 +1066,7 @@ async function topicPage(sid, cid, tid) {
   if (!topic || topic.chapter_id !== cid) return go('#subjects/' + sid + '/' + cid);
 
   const scope = { subjectId: sid, chapterId: cid, topicId: tid };
-  const items = await loadItems(scope);
+  const items = await loadItems(scope, { chapters: {}, topics: {} });
 
   return { title: topic.title, nodes: [
     crumbs([
@@ -1056,7 +1075,7 @@ async function topicPage(sid, cid, tid) {
       { text: chapter.title, href: '#subjects/' + sid + '/' + cid }
     ]),
     editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
-    itemsSection(scope, items, 'Topic items')
+    itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.')
   ] };
 }
 
