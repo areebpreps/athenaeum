@@ -925,6 +925,136 @@ function editButton(label, onClick) {
   return h('div', { class: 'edit-row' }, h('button', { class: 'btn quiet small', type: 'button', text: label, onclick: onClick }));
 }
 
+/* ---------- Reference vault: compressed photo uploads, private storage, signed-URL viewer ---------- */
+const REF_BUCKET = 'reference-files';
+
+async function loadSources(scope, names) {
+  const rows = must(await scopeFilter(sb.from('sources').select('*'), scope).order('created_at', { ascending: false }));
+  return rows.map(r => ({ row: r, origin: originOf(r, scope, names) }));
+}
+
+// Draws the photo onto a canvas, shrinking it and stepping down JPEG quality
+// until it is roughly under targetBytes (about 10 MB phone photos -> ~300 KB).
+async function compressImage(file, maxDim = 1600, targetBytes = 320000) {
+  let bitmap;
+  try { bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (e) { bitmap = await createImageBitmap(file); }
+
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+  if (bitmap.close) bitmap.close();
+
+  let quality = 0.82, blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+  let tries = 0;
+  while (blob && blob.size > targetBytes && quality > 0.35 && tries < 6) {
+    quality -= 0.12;
+    blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+    tries++;
+  }
+  if (!blob) throw new Error('Could not process that photo.');
+  return blob;
+}
+
+async function uploadSourceFile(scope, file) {
+  if (!file.type.startsWith('image/')) throw new Error('Only photos can be added here for now.');
+  const blob = await compressImage(file);
+  const path = currentUser.id + '/' + crypto.randomUUID() + '.jpg';
+
+  const up = await sb.storage.from(REF_BUCKET).upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+  if (up.error) throw up.error;
+
+  const payload = { ...scopeCols(scope), title: (file.name || 'Scan').replace(/\.[^.]+$/, ''), kind: 'image', storage_path: path };
+  const ins = await sb.from('sources').insert(payload).select().single();
+  if (ins.error) { await sb.storage.from(REF_BUCKET).remove([path]); throw ins.error; }
+  return ins.data;
+}
+
+function fileIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg class="folder-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4.5-5 3 3.5L17 11l3 5"/></svg>';
+  return t.content.firstChild;
+}
+
+function sourceRow(scope, src) {
+  const row = src.row;
+  return h('button', { class: 'row', type: 'button', onclick: () => openSourceDialog(scope, src) },
+    fileIcon(),
+    h('span', { class: 'grow' },
+      h('strong', { text: row.title || 'Photo' }),
+      h('small', { text: ['Photo', src.origin, new Date(row.created_at).toLocaleDateString()].filter(Boolean).join(' · ') })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+}
+
+async function openSourceFile(row) {
+  const { data, error } = await sb.storage.from(REF_BUCKET).createSignedUrl(row.storage_path, 120);
+  if (error) throw error;
+  window.open(data.signedUrl, '_blank', 'noopener');
+}
+
+function openSourceDialog(scope, src) {
+  showDialog({
+    title: src.row.title || 'Photo',
+    text: 'Saved ' + new Date(src.row.created_at).toLocaleString() + '.',
+    submitLabel: 'Open',
+    async onSubmit() { await openSourceFile(src.row); },
+    extra: { label: 'Delete file', onClick: () => confirmDeleteSource(src) }
+  });
+}
+
+function confirmDeleteSource(src) {
+  showDialog({
+    title: 'Delete this file?',
+    text: (src.row.title ? '“' + src.row.title + '” ' : 'This file ') + 'will be removed. It cannot be undone.',
+    submitLabel: 'Delete', danger: true,
+    async onSubmit() {
+      await sb.storage.from(REF_BUCKET).remove([src.row.storage_path]);
+      const res = await sb.from('sources').delete().eq('id', src.row.id);
+      if (res.error) throw res.error;
+      route();
+    }
+  });
+}
+
+function sourcesSection(scope, sources) {
+  const box = h('div');
+  const status = h('p', { class: 'msg err', hidden: true });
+  const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add photo', onclick: () => fileInput.click() });
+
+  const paint = () => {
+    box.replaceChildren();
+    box.append(sources.length
+      ? h('div', { class: 'list' }, sources.map(s => sourceRow(scope, s)))
+      : h('p', { class: 'none', text: 'No photos saved here yet.' }));
+  };
+  paint();
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    fileInput.value = '';
+    if (!file) return;
+    addBtn.disabled = true; addBtn.textContent = 'Uploading…';
+    status.hidden = true;
+    try {
+      await uploadSourceFile(scope, file);
+      route();
+    } catch (err) {
+      addBtn.disabled = false; addBtn.textContent = '+ Add photo';
+      status.hidden = false;
+      status.textContent = err && err.message ? err.message : 'Could not upload that photo.';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' }), addBtn, fileInput),
+    h('p', { class: 'hint-line', text: 'Camera scans and photos are compressed automatically, then saved privately to your account.' }),
+    status, box);
+}
+
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
 async function buildWorkspace() {
   const [s, c, t] = await Promise.all([
@@ -1008,7 +1138,7 @@ async function subjectPage(sid) {
       .forEach(x => { counts[x.chapter_id] = (counts[x.chapter_id] || 0) + 1; names.topics[x.id] = x.title; });
   }
   const scope = { subjectId: sid, chapterId: null, topicId: null };
-  const items = await loadItems(scope, names);
+  const [items, sources] = await Promise.all([loadItems(scope, names), loadSources(scope, names)]);
 
   return { title: subject.name, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }]),
@@ -1019,7 +1149,8 @@ async function subjectPage(sid) {
             href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
             meta: plural(counts[ch.id] || 0, 'topic', 'topics') })))
         : h('p', { class: 'none', text: 'No chapters yet.' })),
-    itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.')
+    itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.'),
+    sourcesSection(scope, sources)
   ] };
 }
 
@@ -1038,7 +1169,7 @@ async function chapterPage(sid, cid) {
   const scope = { subjectId: sid, chapterId: cid, topicId: null };
   const names = { chapters: { [cid]: chapter.title }, topics: {} };
   topics.forEach(t => { names.topics[t.id] = t.title; });
-  const items = await loadItems(scope, names);
+  const [items, sources] = await Promise.all([loadItems(scope, names), loadSources(scope, names)]);
 
   return { title: chapter.title, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }, { text: subject.name, href: '#subjects/' + sid }]),
@@ -1048,7 +1179,8 @@ async function chapterPage(sid, cid) {
         ? h('div', { class: 'list' }, topics.map(tp => linkRow({
             href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })))
         : h('p', { class: 'none', text: 'No topics yet.' })),
-    itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.')
+    itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.'),
+    sourcesSection(scope, sources)
   ] };
 }
 
@@ -1066,7 +1198,8 @@ async function topicPage(sid, cid, tid) {
   if (!topic || topic.chapter_id !== cid) return go('#subjects/' + sid + '/' + cid);
 
   const scope = { subjectId: sid, chapterId: cid, topicId: tid };
-  const items = await loadItems(scope, { chapters: {}, topics: {} });
+  const names = { chapters: {}, topics: {} };
+  const [items, sources] = await Promise.all([loadItems(scope, names), loadSources(scope, names)]);
 
   return { title: topic.title, nodes: [
     crumbs([
@@ -1075,7 +1208,8 @@ async function topicPage(sid, cid, tid) {
       { text: chapter.title, href: '#subjects/' + sid + '/' + cid }
     ]),
     editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
-    itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.')
+    itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.'),
+    sourcesSection(scope, sources)
   ] };
 }
 
