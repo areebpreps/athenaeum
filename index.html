@@ -292,6 +292,22 @@
   .swatch { width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent; background: var(--c); box-shadow: inset 0 0 0 2px var(--paper); }
   .swatch[aria-checked="true"] { border-color: var(--chalk); }
 
+  /* ---------- Phase 3.1: hubs (planner, projects, wiki, portals, 3D) ---------- */
+  .bullets { margin: 6px 0 0; padding-left: 20px; color: var(--dim); font-size: 15px; }
+  .bullets li { margin-bottom: 2px; }
+  .seg-week { grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 0; }
+  .seg-week button { font-size: 13px; padding: 0; min-height: 40px; }
+  .seg-3 { grid-template-columns: repeat(3, 1fr); margin-bottom: 0; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .two-col .field { margin-bottom: 16px; }
+  .day-block { margin-bottom: 18px; }
+  .day-block:last-child { margin-bottom: 0; }
+  .day-head { font-family: var(--serif); font-size: 16px; font-weight: 600; margin: 0 0 8px; color: var(--dim); }
+  .search-row { display: flex; gap: 10px; margin-bottom: 16px; }
+  .search-row .control { flex: 1; min-width: 0; }
+  .search-row .btn { width: auto; padding: 0 18px; }
+  .embed-frame { width: 100%; height: min(70dvh, 640px); border: 0; border-radius: 16px; background: var(--paper-hi); margin-top: 10px; display: block; }
+
   /* profile sheet */
   .scrim { position: fixed; inset: 0; background: rgba(4,7,14,.66); display: flex; align-items: flex-end; z-index: 10; }
   .sheet {
@@ -432,7 +448,11 @@ const CONFIG = {
   SUPABASE_URL:      'https://vzbkgfcvmpmgxhxilzdg.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_SQeATP_IzDUg46BmV2uZ0Q_eVAIL9Sr',
   // Usernames become internal emails like  areeb_2026@academic-workspace.app
-  AUTH_EMAIL_DOMAIN: 'academic-workspace.app'
+  AUTH_EMAIL_DOMAIN: 'academic-workspace.app',
+  // Phase 3.1 portal embeds. Paste each portal's link here; leave blank to
+  // show "add its link" instead of trying to embed nothing.
+  PORTAL_PROTTAY_URL: '',
+  PORTAL_CHARCHA_URL: ''
 };
 
 const MAJORS = [
@@ -756,9 +776,13 @@ const ordered = q => q.order('position', { ascending: true }).order('created_at'
 function parseHash() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const tab = TABS[parts[0]] ? parts[0] : 'workspace';
-  return { tab, ids: tab === 'subjects' ? parts.slice(1, 4) : [] };
+  const ids = tab === 'subjects' ? parts.slice(1, 4) : tab === 'workspace' ? parts.slice(1, 3) : [];
+  return { tab, ids };
 }
 function parentHash(ids) { return ids.length <= 1 ? '#subjects' : '#subjects/' + ids.slice(0, -1).join('/'); }
+// Hubs (Phase 3.1) are one or two segments deep under #workspace, e.g.
+// #workspace/planner or #workspace/wiki/<article>. Back always goes up one segment.
+function workspaceParentHash(ids) { return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0]; }
 
 /* ---------- router ---------- */
 let renderToken = 0;
@@ -786,13 +810,15 @@ async function route() {
   lastHash = location.hash;
   if (!same) itemsView.folder = null;
 
-  const back = ids.length ? parentHash(ids) : null;
+  const back = tab === 'subjects' && ids.length ? parentHash(ids)
+             : tab === 'workspace' && ids.length ? workspaceParentHash(ids)
+             : null;
   setHeader(TABS[tab].title, back);
   if (!same) view.replaceChildren(h('p', { class: 'loading', text: 'Loading…' }));
 
   let res;
   try {
-    if (tab === 'workspace')      res = await buildWorkspace();
+    if (tab === 'workspace')      res = await buildWorkspace(ids);
     else if (tab === 'subjects')  res = await buildSubjects(ids);
     else if (tab === 'downloads') res = await buildDownloads();
     else                          res = buildStatic(tab);
@@ -945,6 +971,117 @@ async function loadItems(scope, names) {
 
 function editButton(label, onClick) {
   return h('div', { class: 'edit-row' }, h('button', { class: 'btn quiet small', type: 'button', text: label, onclick: onClick }));
+}
+
+// Generic "delete this row" confirmation, shared by info boxes, traps, planner items and projects.
+function confirmDeleteRow(table, row, label, opts = {}) {
+  showDialog({
+    title: 'Delete this ' + label + '?',
+    text: 'It cannot be undone.',
+    submitLabel: 'Delete', danger: true,
+    async onSubmit() {
+      const res = await sb.from(table).delete().eq('id', row.id);
+      if (res.error) throw res.error;
+      (opts.after || route)();
+    }
+  });
+}
+
+/* ---------- Information boxes & Trap tracker (scoped, roll-up like items) ---------- */
+async function loadInfoBoxes(scope, names) {
+  const rows = must(await scopeFilter(sb.from('info_boxes').select('*'), scope).order('created_at', { ascending: false }));
+  return rows.map(r => ({ row: r, origin: originOf(r, scope, names) }));
+}
+async function loadTraps(scope, names) {
+  const rows = must(await scopeFilter(sb.from('traps').select('*'), scope).order('created_at', { ascending: false }));
+  return rows.map(r => ({ row: r, origin: originOf(r, scope, names) }));
+}
+
+function infoBoxCard(scope, it) {
+  const bullets = Array.isArray(it.row.bullets) ? it.row.bullets : [];
+  return h('button', { class: 'item', type: 'button', onclick: () => openInfoBoxDialog(scope, it) },
+    h('span', { class: 'item-head' },
+      h('span', { class: 'chip', text: 'Info box' }),
+      it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
+    h('strong', { text: it.row.title }),
+    bullets.length ? h('ul', { class: 'bullets' }, bullets.slice(0, 5).map(b => h('li', { text: b }))) : null,
+    bullets.length > 5 ? h('span', { class: 'origin', text: '+' + (bullets.length - 5) + ' more' }) : null);
+}
+
+function infoBoxesSection(scope, rows) {
+  return section('Information boxes', '+ Add', () => openInfoBoxDialog(scope, null),
+    h('p', { class: 'hint-line', text: 'Bullet-list facts for this ' + levelName(scope) + '.' }),
+    rows.length ? h('div', { class: 'list' }, rows.map(it => infoBoxCard(scope, it)))
+                : h('p', { class: 'none', text: 'No info boxes yet.' }));
+}
+
+function openInfoBoxDialog(scope, existing) {
+  const row = existing ? existing.row : {};
+  showDialog({
+    title: existing ? 'Edit info box' : 'Add info box',
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle   = makeField('Title', { value: row.title || '', maxlength: 120 });
+      const fBullets = makeField('Bullets (one per line)', { value: (row.bullets || []).join('\n'), multiline: true, rows: 6 });
+      form.append(fTitle.wrap, fBullets.wrap);
+      return () => {
+        const title = fTitle.input.value.trim();
+        const bullets = fBullets.input.value.split('\n').map(s => s.trim()).filter(Boolean);
+        if (!title) throw new Error('Enter a title.');
+        if (!bullets.length) throw new Error('Enter at least one bullet.');
+        return { title, bullets };
+      };
+    },
+    async onSubmit({ title, bullets }) {
+      const payload = { title, bullets };
+      const res = existing
+        ? await sb.from('info_boxes').update(payload).eq('id', row.id)
+        : await sb.from('info_boxes').insert({ ...scopeCols(scope), ...payload });
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete info box', onClick: () => confirmDeleteRow('info_boxes', row, 'info box') } : null
+  });
+}
+
+function trapCard(scope, it) {
+  return h('button', { class: 'item', type: 'button', onclick: () => openTrapDialog(scope, it) },
+    h('span', { class: 'item-head' },
+      h('span', { class: 'chip', text: 'Trap' }),
+      it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
+    h('span', { class: 'body', text: it.row.warning }));
+}
+
+function trapsSection(scope, rows) {
+  return section('Trap tracker', '+ Add', () => openTrapDialog(scope, null),
+    h('p', { class: 'hint-line', text: 'Common exam-error warnings for this ' + levelName(scope) + '.' }),
+    rows.length ? h('div', { class: 'list' }, rows.map(it => trapCard(scope, it)))
+                : h('p', { class: 'none', text: 'No traps logged yet.' }));
+}
+
+function openTrapDialog(scope, existing) {
+  const row = existing ? existing.row : {};
+  showDialog({
+    title: existing ? 'Edit trap' : 'Add trap',
+    submitLabel: 'Save',
+    render(form) {
+      const fWarn = makeField('Warning', { value: row.warning || '', multiline: true, rows: 4 });
+      form.append(fWarn.wrap);
+      return () => {
+        const warning = fWarn.input.value.trim();
+        if (!warning) throw new Error('Enter the warning.');
+        return { warning };
+      };
+    },
+    async onSubmit({ warning }) {
+      const res = existing
+        ? await sb.from('traps').update({ warning }).eq('id', row.id)
+        : await sb.from('traps').insert({ ...scopeCols(scope), warning });
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete trap', onClick: () => confirmDeleteRow('traps', row, 'trap') } : null
+  });
 }
 
 /* ---------- Reference vault: compressed photo uploads, private storage, signed-URL viewer ---------- */
@@ -1552,7 +1689,27 @@ function renderOfflineDownloads(records) {
 }
 
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
-async function buildWorkspace() {
+// Hubs (Phase 3.1) live under the Workspace tab: #workspace/<hub>[/<item>]
+function buildWorkspace(ids = []) {
+  if (ids[0] === 'planner')  return plannerHub();
+  if (ids[0] === 'projects') return projectsHub();
+  if (ids[0] === 'wiki')     return wikiHub(ids[1]);
+  if (ids[0] === 'portals')  return embedHubPage('portals', ids[1]);
+  if (ids[0] === 'threed')   return embedHubPage('threed', ids[1]);
+  return buildWorkspaceRoot();
+}
+
+function hubsSection() {
+  return section('Hubs', null, null,
+    h('div', { class: 'list' },
+      linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
+      linkRow({ href: '#workspace/projects', title: 'Projects & ECA',     meta: 'Track projects and extracurriculars' }),
+      linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
+      linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Prottay, Charcha' }),
+      linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'PhET, GeoGebra' })));
+}
+
+async function buildWorkspaceRoot() {
   const [s, c, t] = await Promise.all([
     ordered(sb.from('subjects').select('*')),
     ordered(sb.from('chapters').select('id, subject_id, title, position, created_at')),
@@ -1562,6 +1719,7 @@ async function buildWorkspace() {
 
   if (!subjects.length) {
     return { nodes: [
+      hubsSection(),
       emptyBlock('Your workspace is empty', 'Shortcuts to your subjects, chapters and topics will collect here.'),
       h('a', { class: 'btn', href: '#subjects', text: 'Create your first subject' })
     ] };
@@ -1590,7 +1748,7 @@ async function buildWorkspace() {
 
   const allItems = await buildAllItemsSection(subjects, chapters, topics);
 
-  return { nodes: [h('p', { class: 'hint-line', text: 'Shortcuts to every subject, chapter and topic.' }), ...cards, allItems] };
+  return { nodes: [hubsSection(), h('p', { class: 'hint-line', text: 'Shortcuts to every subject, chapter and topic.' }), ...cards, allItems] };
 }
 
 /* ---------- Subjects > Chapter > Topic pages ---------- */
@@ -1636,7 +1794,9 @@ async function subjectPage(sid) {
       .forEach(x => { counts[x.chapter_id] = (counts[x.chapter_id] || 0) + 1; names.topics[x.id] = x.title; });
   }
   const scope = { subjectId: sid, chapterId: null, topicId: null };
-  const [items, sources] = await Promise.all([loadItems(scope, names), loadSources(scope, names)]);
+  const [items, sources, infoBoxes, traps] = await Promise.all([
+    loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
+  ]);
 
   return { title: subject.name, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }]),
@@ -1648,6 +1808,8 @@ async function subjectPage(sid) {
             meta: plural(counts[ch.id] || 0, 'topic', 'topics') })))
         : h('p', { class: 'none', text: 'No chapters yet.' })),
     itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.'),
+    infoBoxesSection(scope, infoBoxes),
+    trapsSection(scope, traps),
     sourcesSection(scope, sources)
   ] };
 }
@@ -1667,7 +1829,9 @@ async function chapterPage(sid, cid) {
   const scope = { subjectId: sid, chapterId: cid, topicId: null };
   const names = { chapters: { [cid]: chapter.title }, topics: {} };
   topics.forEach(t => { names.topics[t.id] = t.title; });
-  const [items, sources] = await Promise.all([loadItems(scope, names), loadSources(scope, names)]);
+  const [items, sources, infoBoxes, traps] = await Promise.all([
+    loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
+  ]);
 
   return { title: chapter.title, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }, { text: subject.name, href: '#subjects/' + sid }]),
@@ -1678,6 +1842,8 @@ async function chapterPage(sid, cid) {
             href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })))
         : h('p', { class: 'none', text: 'No topics yet.' })),
     itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.'),
+    infoBoxesSection(scope, infoBoxes),
+    trapsSection(scope, traps),
     sourcesSection(scope, sources)
   ] };
 }
@@ -1697,7 +1863,9 @@ async function topicPage(sid, cid, tid) {
 
   const scope = { subjectId: sid, chapterId: cid, topicId: tid };
   const names = { chapters: {}, topics: {} };
-  const [items, sources] = await Promise.all([loadItems(scope, names), loadSources(scope, names)]);
+  const [items, sources, infoBoxes, traps] = await Promise.all([
+    loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
+  ]);
 
   return { title: topic.title, nodes: [
     crumbs([
@@ -1707,6 +1875,8 @@ async function topicPage(sid, cid, tid) {
     ]),
     editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
     itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.'),
+    infoBoxesSection(scope, infoBoxes),
+    trapsSection(scope, traps),
     sourcesSection(scope, sources)
   ] };
 }
@@ -1915,6 +2085,309 @@ function confirmDeleteItem(existing) {
       route();
     }
   });
+}
+
+/* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+async function plannerHub() {
+  const rows = must(await sb.from('planner_items').select('*').order('created_at', { ascending: true }));
+  const slots = rows.filter(r => r.kind !== 'milestone')
+    .sort((a, b) => (a.weekday - b.weekday) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
+  const milestones = rows.filter(r => r.kind === 'milestone')
+    .sort((a, b) => String(a.milestone_date || '').localeCompare(String(b.milestone_date || '')));
+
+  const byDay = {};
+  slots.forEach(r => (byDay[r.weekday] = byDay[r.weekday] || []).push(r));
+  const dayBlocks = WEEKDAYS.map((name, i) => {
+    const items = byDay[i] || [];
+    return h('div', { class: 'day-block' },
+      h('h4', { class: 'day-head', text: name }),
+      items.length ? h('div', { class: 'list' }, items.map(r => slotRow(r))) : h('p', { class: 'none', text: 'No slots.' }));
+  });
+
+  return { title: 'Planner', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    section('Weekly routine', '+ Add slot', () => openPlannerDialog('slot', null), ...dayBlocks),
+    section('Milestones', '+ Add milestone', () => openPlannerDialog('milestone', null),
+      milestones.length ? h('div', { class: 'list' }, milestones.map(r => milestoneRow(r)))
+                         : h('p', { class: 'none', text: 'No milestones yet.' }))
+  ] };
+}
+
+function slotRow(r) {
+  const dot = h('span', { class: 'dot-c', 'aria-hidden': 'true' });
+  dot.style.setProperty('--c', colorOf(r.color));
+  const time = [r.start_time, r.end_time].filter(Boolean).map(t => t.slice(0, 5)).join(' – ');
+  return h('button', { class: 'row', type: 'button', onclick: () => openPlannerDialog('slot', r) },
+    dot, h('span', { class: 'grow' }, h('strong', { text: r.title }), h('small', { text: time || 'No time set' })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+}
+
+function milestoneRow(r) {
+  const cb = h('input', { type: 'checkbox', class: 'dl-check', 'aria-label': 'Mark ' + r.title + ' done' });
+  cb.checked = !!r.done;
+  cb.addEventListener('click', e => e.stopPropagation());
+  cb.addEventListener('change', async () => {
+    const res = await sb.from('planner_items').update({ done: cb.checked }).eq('id', r.id);
+    if (!res.error) route();
+  });
+  return h('div', { class: 'row', role: 'button', tabindex: '0',
+                     onclick: () => openPlannerDialog('milestone', r),
+                     onkeydown: e => { if (e.key === 'Enter') openPlannerDialog('milestone', r); } },
+    cb,
+    h('span', { class: 'grow' },
+      h('strong', { text: r.title, style: r.done ? 'text-decoration:line-through;opacity:.6' : '' }),
+      h('small', { text: r.milestone_date || 'No date set' })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+}
+
+function openPlannerDialog(kind, existing) {
+  const row = existing || {};
+  const activeKind = existing ? (existing.kind === 'milestone' ? 'milestone' : 'slot') : kind;
+  let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
+  let weekday = existing && existing.weekday != null ? existing.weekday : 0;
+
+  showDialog({
+    title: existing ? ('Edit ' + (activeKind === 'milestone' ? 'milestone' : 'slot'))
+                    : (kind === 'milestone' ? 'Add milestone' : 'Add slot'),
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField(activeKind === 'milestone' ? 'Milestone' : 'Slot title', { value: row.title || '', maxlength: 120 });
+      form.append(fTitle.wrap);
+
+      const wdGroup = h('div', { class: 'seg seg-week', role: 'group', 'aria-label': 'Day of week' },
+        WEEKDAYS.map((d, i) => h('button', { type: 'button', 'data-i': i, text: d, onclick: () => { weekday = i; syncWd(); } })));
+      const syncWd = () => wdGroup.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.i) === weekday)));
+      syncWd();
+      const wdWrap = h('div', { class: 'field' }, h('label', { text: 'Day' }), wdGroup);
+
+      const fStart = makeField('Start time', { value: (row.start_time || '').slice(0, 5) }); fStart.input.type = 'time';
+      const fEnd   = makeField('End time',   { value: (row.end_time   || '').slice(0, 5) }); fEnd.input.type   = 'time';
+      const timeRow = h('div', { class: 'two-col' }, fStart.wrap, fEnd.wrap);
+
+      const swGroup = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Colour' });
+      const syncColor = () => swGroup.querySelectorAll('.swatch').forEach(b => b.setAttribute('aria-checked', String(b.dataset.hex === color)));
+      PALETTE.forEach(p => {
+        const b = h('button', { type: 'button', class: 'swatch', role: 'radio', 'aria-label': p.name, 'data-hex': p.hex,
+                                onclick: () => { color = p.hex; syncColor(); } });
+        b.style.setProperty('--c', p.hex);
+        swGroup.append(b);
+      });
+      syncColor();
+      const colorWrap = h('div', { class: 'field' }, h('label', { text: 'Colour' }), swGroup);
+
+      const fDate = makeField('Date', { value: row.milestone_date || '' }); fDate.input.type = 'date';
+
+      wdWrap.hidden = timeRow.hidden = colorWrap.hidden = activeKind !== 'slot';
+      fDate.wrap.hidden = activeKind !== 'milestone';
+
+      form.append(wdWrap, timeRow, colorWrap, fDate.wrap);
+
+      return () => {
+        const title = fTitle.input.value.trim();
+        if (!title) throw new Error('Enter a title.');
+        if (activeKind === 'milestone' && !fDate.input.value) throw new Error('Pick a date.');
+        return { title, start_time: fStart.input.value || null, end_time: fEnd.input.value || null, milestone_date: fDate.input.value || null };
+      };
+    },
+    async onSubmit(v) {
+      const payload = { kind: activeKind, title: v.title };
+      if (activeKind === 'slot') { payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time; payload.color = color; }
+      else { payload.milestone_date = v.milestone_date; }
+      const res = existing
+        ? await sb.from('planner_items').update(payload).eq('id', row.id)
+        : await sb.from('planner_items').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete', onClick: () => confirmDeleteRow('planner_items', row, activeKind === 'milestone' ? 'milestone' : 'slot') } : null
+  });
+}
+
+/* ---------- Project / ECA tracker (global, not scoped) ---------- */
+const PROJECT_STATUSES = ['active', 'in_progress', 'done'];
+const STATUS_LABEL = { active: 'Active', in_progress: 'In progress', done: 'Done' };
+
+async function projectsHub() {
+  const rows = must(await sb.from('projects').select('*').order('created_at', { ascending: false }));
+  const projects = rows.filter(r => r.kind !== 'eca');
+  const ecas = rows.filter(r => r.kind === 'eca');
+
+  return { title: 'Projects & ECA', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    section('Projects', '+ Add project', () => openProjectDialog('project', null),
+      projects.length ? h('div', { class: 'list' }, projects.map(p => projectRow(p)))
+                       : h('p', { class: 'none', text: 'No projects yet.' })),
+    section('Extracurriculars', '+ Add ECA', () => openProjectDialog('eca', null),
+      ecas.length ? h('div', { class: 'list' }, ecas.map(p => projectRow(p)))
+                  : h('p', { class: 'none', text: 'Nothing tracked yet.' }))
+  ] };
+}
+
+function projectRow(p) {
+  return h('button', { class: 'row', type: 'button', onclick: () => openProjectDialog(p.kind, p) },
+    h('span', { class: 'grow' },
+      h('strong', { text: p.title }),
+      h('small', { text: STATUS_LABEL[p.status] + (p.due_date ? ' · due ' + p.due_date : '') })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+}
+
+function openProjectDialog(kind, existing) {
+  const row = existing || {};
+  let status = row.status && PROJECT_STATUSES.includes(row.status) ? row.status : 'active';
+
+  showDialog({
+    title: existing ? ('Edit ' + (kind === 'eca' ? 'ECA' : 'project')) : ('Add ' + (kind === 'eca' ? 'ECA' : 'project')),
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField('Title', { value: row.title || '', maxlength: 120 });
+      const fDesc  = makeField('Description (optional)', { value: row.description || '', multiline: true, rows: 3 });
+      const fDate  = makeField('Due date (optional)', { value: row.due_date || '' }); fDate.input.type = 'date';
+
+      const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Status' },
+        PROJECT_STATUSES.map(s => h('button', { type: 'button', 'data-s': s, text: STATUS_LABEL[s], onclick: () => { status = s; syncStatus(); } })));
+      const syncStatus = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.s === status)));
+      syncStatus();
+
+      form.append(fTitle.wrap, fDesc.wrap, fDate.wrap, h('div', { class: 'field' }, h('label', { text: 'Status' }), seg));
+      return () => {
+        const title = fTitle.input.value.trim();
+        if (!title) throw new Error('Enter a title.');
+        return { title, description: fDesc.input.value.trim(), due_date: fDate.input.value || null };
+      };
+    },
+    async onSubmit(v) {
+      const payload = { kind, title: v.title, description: v.description || null, due_date: v.due_date, status };
+      const res = existing
+        ? await sb.from('projects').update(payload).eq('id', row.id)
+        : await sb.from('projects').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete', onClick: () => confirmDeleteRow('projects', row, kind === 'eca' ? 'ECA item' : 'project') } : null
+  });
+}
+
+/* ---------- Wikipedia reader (no DB — Wikipedia's public REST/search API) ---------- */
+let wikiState = { query: '', results: [] };
+
+function stripHtml(s) { const t = document.createElement('div'); t.innerHTML = s || ''; return t.textContent || ''; }
+
+async function wikiHub(articleId) {
+  if (articleId) return wikiArticle(decodeURIComponent(articleId));
+
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search Wikipedia', 'aria-label': 'Search Wikipedia' });
+  input.value = wikiState.query;
+  const btn = h('button', { class: 'btn small', type: 'button', text: 'Search' });
+  const status = h('p', { class: 'none' });
+  const list = h('div', { class: 'list' });
+
+  function paintResults() {
+    list.replaceChildren();
+    if (wikiState.results.length) {
+      status.hidden = true;
+      list.append(wikiState.results.map(r => linkRow({
+        href: '#workspace/wiki/' + encodeURIComponent(r.title), title: r.title, meta: stripHtml(r.snippet)
+      })));
+    } else {
+      status.hidden = false;
+      status.textContent = wikiState.query ? 'No results.' : 'Search for a topic to read its Wikipedia article.';
+    }
+  }
+
+  async function doSearch() {
+    const q = input.value.trim();
+    wikiState.query = q;
+    if (!q) { wikiState.results = []; paintResults(); return; }
+    status.hidden = false; status.textContent = 'Searching…';
+    try {
+      const url = 'https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srlimit=15&srsearch=' + encodeURIComponent(q);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('search failed');
+      const data = await resp.json();
+      wikiState.results = (data.query && data.query.search) || [];
+    } catch (e) {
+      wikiState.results = [];
+      status.hidden = false; status.textContent = 'Could not reach Wikipedia. Check your connection.';
+      return;
+    }
+    paintResults();
+  }
+
+  btn.addEventListener('click', doSearch);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+  paintResults();
+
+  return { title: 'Wikipedia reader', nodes: [crumbs([{ text: 'Workspace', href: '#workspace' }]), h('div', { class: 'search-row' }, input, btn), status, list] };
+}
+
+async function wikiArticle(title) {
+  const status = h('p', { class: 'none', text: 'Loading…' });
+  const box = h('div');
+  try {
+    const url = 'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('not found');
+    const data = await resp.json();
+    status.hidden = true;
+    box.append(
+      data.thumbnail ? h('img', { class: 'offline-thumb', src: data.thumbnail.source, alt: '' }) : null,
+      h('p', { text: data.extract || 'No summary available.' }),
+      h('a', { class: 'btn quiet small', target: '_blank', rel: 'noopener', text: 'Open full article ↗',
+              href: (data.content_urls && data.content_urls.desktop && data.content_urls.desktop.page) || ('https://en.wikipedia.org/wiki/' + encodeURIComponent(title)) }));
+  } catch (e) {
+    status.textContent = 'Could not load this article. Check your connection.';
+  }
+  return { title, nodes: [crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Wikipedia', href: '#workspace/wiki' }]), status, box] };
+}
+
+/* ---------- Portals and 3D simulation hub: iframe embeds with an always-visible fallback ---------- */
+const EMBED_HUBS = {
+  portals: { title: 'Portals', items: [
+    { key: 'prottay', name: 'Prottay', url: CONFIG.PORTAL_PROTTAY_URL, note: 'Question bank portal' },
+    { key: 'charcha', name: 'Charcha', url: CONFIG.PORTAL_CHARCHA_URL, note: 'Question bank portal' }
+  ] },
+  threed: { title: '3D simulation hub', items: [
+    { key: 'phet-forces',     name: 'Forces and Motion Basics', url: 'https://phet.colorado.edu/sims/html/forces-and-motion-basics/latest/forces-and-motion-basics_en.html', note: 'PhET' },
+    { key: 'phet-projectile', name: 'Projectile Motion',        url: 'https://phet.colorado.edu/sims/html/projectile-motion/latest/projectile-motion_en.html', note: 'PhET' },
+    { key: 'geogebra-3d',     name: '3D Calculator',            url: 'https://www.geogebra.org/3d?embed', note: 'GeoGebra' },
+    { key: 'geogebra-graph',  name: 'Graphing Calculator',      url: 'https://www.geogebra.org/graphing?embed', note: 'GeoGebra' }
+  ] }
+};
+
+function embedHubPage(hubKey, itemKey) {
+  const hub = EMBED_HUBS[hubKey];
+  if (itemKey) return embedViewer(hubKey, hub, itemKey);
+
+  return { title: hub.title, nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    h('div', { class: 'list' }, hub.items.map(it => linkRow({
+      href: '#workspace/' + hubKey + '/' + it.key, title: it.name, meta: it.url ? it.note : 'Add its link in the CONFIG block'
+    })))
+  ] };
+}
+
+function embedViewer(hubKey, hub, itemKey) {
+  const item = hub.items.find(i => i.key === itemKey);
+  if (!item) return go('#workspace/' + hubKey);
+  const back = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: hub.title, href: '#workspace/' + hubKey }]);
+
+  if (!item.url) {
+    return { title: item.name, nodes: [back,
+      h('div', { class: 'status bad' }, h('strong', { text: 'No link set' }),
+        'Add its URL to the CONFIG block near the top of the script (PORTAL_PROTTAY_URL / PORTAL_CHARCHA_URL), then reload.')
+    ] };
+  }
+
+  const openBtn = h('a', { class: 'btn quiet small', href: item.url, target: '_blank', rel: 'noopener', text: 'Open in a browser tab ↗' });
+  const hint = h('p', { class: 'hint-line', text: 'Loading ' + item.name + '…' });
+  const frame = h('iframe', { class: 'embed-frame', src: item.url, title: item.name, loading: 'lazy',
+                              allow: 'fullscreen', referrerpolicy: 'no-referrer-when-downgrade' });
+  frame.addEventListener('load', () => { hint.hidden = true; });
+  setTimeout(() => { if (!hint.hidden) hint.textContent = 'Still blank? Some sites block embedding — use “Open in a browser tab” above.'; }, 4000);
+
+  return { title: item.name, nodes: [back, openBtn, hint, frame] };
 }
 
 function openSheet()  { $('#sheet').hidden = false; $('#logout-btn').focus(); }
