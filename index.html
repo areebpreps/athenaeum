@@ -444,6 +444,19 @@
     .sheet { animation: rise .18s ease-out; }
     @keyframes rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
   }
+
+  /* Flashcard review (B1) */
+  .fc-sheet { max-width: 480px; }
+  .fc-top { display: flex; align-items: center; justify-content: space-between; }
+  .fc-top .btn { width: auto; }
+  .fc-card {
+    background: var(--paper-hi); border: 1px solid var(--line); border-radius: 16px;
+    padding: 28px 20px; min-height: 160px; display: grid; align-content: center; gap: 10px;
+    text-align: center; cursor: pointer;
+  }
+  .fc-card.revealed { border-color: var(--accent, #F3C955); }
+  .fc-text { font-family: var(--serif); font-size: 20px; margin: 0; overflow-wrap: anywhere; }
+  .fc-grades { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 </style>
 </head>
 
@@ -796,12 +809,13 @@ const ITEM_TYPES = {
   note:       { label: 'Note',       table: 'notes',     kind: 'short_note', titleLabel: 'Title (optional)', titleReq: false, bodyLabel: 'Note' },
   definition: { label: 'Definition', table: 'notes',     kind: 'definition', titleLabel: 'Term',             titleReq: true,  bodyLabel: 'Meaning' },
   formula:    { label: 'Formula',    table: 'formulas',                        titleLabel: 'Name',             titleReq: true },
-  mnemonic:   { label: 'Mnemonic',   table: 'mnemonics',                       titleLabel: 'Title',            titleReq: true,  bodyLabel: 'Mnemonic' }
+  mnemonic:   { label: 'Mnemonic',   table: 'mnemonics',                       titleLabel: 'Title',            titleReq: true,  bodyLabel: 'Mnemonic' },
+  flashcard:  { label: 'Flashcard',  table: 'flashcards',                      titleLabel: 'Front',            titleReq: true,  bodyLabel: 'Back' }
 };
 
 const VIEW_KEY = 'aw.itemsView';   // remembers "folders" vs "flat" on this device
 const itemsView = { mode: store.get(VIEW_KEY) === 'folders' ? 'folders' : 'flat', folder: null };
-const TYPE_PLURAL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics' };
+const TYPE_PLURAL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics', flashcard: 'Flashcards' };
 
 const ENTITY = {
   subject: { table: 'subjects', nameCol: 'name',  label: 'subject', placeholder: 'e.g. Physics' },
@@ -1150,12 +1164,13 @@ function originOf(row, scope, names) {
 
 async function loadItems(scope, names) {
   const q = t => scopeFilter(sb.from(t).select('*'), scope);
-  const [n, f, m] = await Promise.all([q('notes'), q('formulas'), q('mnemonics')]);
+  const [n, f, m, fc] = await Promise.all([q('notes'), q('formulas'), q('mnemonics'), q('flashcards')]);
   const put = (type, r) => ({ type, row: r, origin: originOf(r, scope, names) });
   const items = [
     ...must(n).map(r => put(r.kind === 'definition' ? 'definition' : 'note', r)),
     ...must(f).map(r => put('formula',  r)),
-    ...must(m).map(r => put('mnemonic', r))
+    ...must(m).map(r => put('mnemonic', r)),
+    ...must(fc).map(r => put('flashcard', r))
   ];
   items.sort((a, b) => new Date(b.row.created_at) - new Date(a.row.created_at));
   return items;
@@ -1163,6 +1178,108 @@ async function loadItems(scope, names) {
 
 function editButton(label, onClick) {
   return h('div', { class: 'edit-row' }, h('button', { class: 'btn quiet small', type: 'button', text: label, onclick: onClick }));
+}
+
+/* ---------- Flashcards: spaced-repetition review (B1) ----------
+   Flashcards are a normal item type (stored in `flashcards`, shown in
+   itemsSection like notes/formulas/mnemonics), plus this dedicated review
+   flow. Scheduling is a light SM-2 variant: each card tracks interval_days,
+   ease, reps and lapses, and due_at is when it should resurface. */
+function dueFlashcards(items) {
+  const now = Date.now();
+  return items.filter(it => it.type === 'flashcard' && new Date(it.row.due_at).getTime() <= now);
+}
+
+// grade: 'again' | 'hard' | 'good' | 'easy'. Returns the row's next SRS fields.
+function srsNext(card, grade) {
+  let { interval_days: iv, ease, reps, lapses } = card;
+  iv = Number(iv) || 0; ease = Number(ease) || 2.5; reps = Number(reps) || 0; lapses = Number(lapses) || 0;
+  let dueInDays;
+  if (grade === 'again') {
+    lapses += 1; reps = 0; ease = Math.max(1.3, ease - 0.2);
+    iv = 0; dueInDays = 10 / (60 * 24); // resurface in ~10 minutes
+  } else {
+    if (grade === 'hard') { ease = Math.max(1.3, ease - 0.15); iv = reps === 0 ? 1 : Math.max(1, iv * 1.2); }
+    else if (grade === 'easy') { ease = ease + 0.15; iv = reps === 0 ? 3 : Math.max(1, iv * ease * 1.3); }
+    else { iv = reps === 0 ? 1 : reps === 1 ? 3 : Math.max(1, iv * ease); } // good
+    reps += 1; dueInDays = iv;
+  }
+  const due = new Date(Date.now() + dueInDays * 86400000);
+  return { interval_days: iv, ease, reps, lapses, due_at: due.toISOString(), last_result: grade, last_reviewed_at: new Date().toISOString() };
+}
+
+async function gradeFlashcard(row, grade) {
+  const next = srsNext(row, grade);
+  const res = await sb.from('flashcards').update(next).eq('id', row.id);
+  if (res.error) throw res.error;
+  return next;
+}
+
+const GRADE_BTNS = [
+  { grade: 'again', label: 'Again' }, { grade: 'hard', label: 'Hard' },
+  { grade: 'good',  label: 'Good' },  { grade: 'easy', label: 'Easy' }
+];
+
+// Full-screen-ish review overlay, built and torn down on demand (no routing
+// change needed). Walks through `queue` one card at a time: tap to flip,
+// then grade. Closing partway through just stops — already-graded cards
+// keep their new schedule.
+function openFlashcardReview(queue) {
+  if (!queue.length) return;
+  let i = 0, revealed = false, reviewedCount = 0;
+  const scrim = h('div', { class: 'scrim' });
+  const panel = h('div', { class: 'sheet fc-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Flashcard review' });
+  scrim.append(panel);
+  const close = () => { scrim.remove(); if (reviewedCount) route(); };
+  scrim.addEventListener('click', e => { if (e.target === scrim) close(); });
+
+  function paint() {
+    if (i >= queue.length) {
+      panel.replaceChildren(
+        h('h3', { text: 'All done' }),
+        h('p', { text: 'Reviewed ' + plural(reviewedCount, 'card', 'cards') + '.' }),
+        h('button', { class: 'btn', type: 'button', text: 'Close', onclick: close }));
+      return;
+    }
+    const row = queue[i].row;
+    const card = h('div', { class: 'fc-card' + (revealed ? ' revealed' : ''), tabindex: '0', role: 'button' },
+      h('span', { class: 'chip', text: revealed ? 'Back' : 'Front' }),
+      h('p', { class: 'fc-text', text: revealed ? row.body : row.title }),
+      revealed ? null : h('p', { class: 'hint-line', text: 'Tap to reveal the back' }));
+    const flip = () => { revealed = !revealed; paint(); };
+    card.addEventListener('click', flip);
+    card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+
+    const grades = revealed ? h('div', { class: 'fc-grades' }, GRADE_BTNS.map(g =>
+      h('button', {
+        class: 'btn small', type: 'button', text: g.label,
+        onclick: async e => {
+          e.stopPropagation();
+          try { await gradeFlashcard(row, g.grade); } catch (err) { /* keep going even if the sync failed */ }
+          reviewedCount++; i++; revealed = false; paint();
+        }
+      }))) : null;
+
+    panel.replaceChildren(
+      h('div', { class: 'fc-top' },
+        h('small', { text: (i + 1) + ' of ' + queue.length }),
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Close', onclick: close })),
+      card, grades);
+  }
+  paint();
+  document.body.append(scrim);
+}
+
+function flashcardsSection(scope, items) {
+  const cards = items.filter(it => it.type === 'flashcard');
+  if (!cards.length) return null;
+  const due = dueFlashcards(items);
+  return section('Flashcards', null, null,
+    h('p', { class: 'hint-line', text: plural(cards.length, 'card', 'cards') + ' saved here · ' + plural(due.length, 'due now', 'due now') }),
+    h('button', {
+      class: 'btn small', type: 'button', text: due.length ? 'Study ' + due.length + ' due' : 'Review all cards',
+      onclick: () => openFlashcardReview(due.length ? due : cards)
+    }));
 }
 
 // Generic "delete this row" confirmation, shared by info boxes, traps, planner items and projects.
@@ -1583,13 +1700,14 @@ const ALL_ITEMS_MODES = { tree: 'Nested', subject: 'Subject', chapter: 'Chapter'
 let allItemsMode = ALL_ITEMS_MODES[store.get(ALL_ITEMS_MODE_KEY)] ? store.get(ALL_ITEMS_MODE_KEY) : 'tree';
 
 async function loadAllItems() {
-  const [n, f, m] = await Promise.all([
-    sb.from('notes').select('*'), sb.from('formulas').select('*'), sb.from('mnemonics').select('*')
+  const [n, f, m, fc] = await Promise.all([
+    sb.from('notes').select('*'), sb.from('formulas').select('*'), sb.from('mnemonics').select('*'), sb.from('flashcards').select('*')
   ]);
   const items = [
     ...must(n).map(r => ({ type: r.kind === 'definition' ? 'definition' : 'note', row: r })),
     ...must(f).map(r => ({ type: 'formula', row: r })),
-    ...must(m).map(r => ({ type: 'mnemonic', row: r }))
+    ...must(m).map(r => ({ type: 'mnemonic', row: r })),
+    ...must(fc).map(r => ({ type: 'flashcard', row: r }))
   ];
   items.sort((a, b) => new Date(b.row.created_at) - new Date(a.row.created_at));
   return items;
@@ -1800,8 +1918,8 @@ function dlLabel(info) {
   return ITEM_TYPES[info.type] ? ITEM_TYPES[info.type].label : 'Item';
 }
 
-const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'infobox', 'trap', 'mistake', 'image', 'pdf'];
-const DL_LABEL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics',
+const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'flashcard', 'infobox', 'trap', 'mistake', 'image', 'pdf'];
+const DL_LABEL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics', flashcard: 'Flashcards',
                    infobox: 'Info boxes', trap: 'Traps', mistake: 'Mistake Vault', image: 'Photos', pdf: 'PDFs' };
 
 /* ---------- entry point ---------- */
@@ -2120,17 +2238,19 @@ async function buildFullBackupZip(onStatus) {
   topics.forEach(t => { topicsById[t.id] = t; });
   const withOrigin = rows => rows.map(r => ({ ...r, origin: fullOrigin(r, subjectsById, chaptersById, topicsById) }));
 
-  say('Reading your notes, formulas and mnemonics…');
-  const [notesRes, formulasRes, mnemonicsRes, boxesRes, trapsRes] = await Promise.all([
+  say('Reading your notes, formulas, mnemonics and flashcards…');
+  const [notesRes, formulasRes, mnemonicsRes, flashcardsRes, boxesRes, trapsRes] = await Promise.all([
     sb.from('notes').select('*').order('created_at', { ascending: true }),
     sb.from('formulas').select('*').order('created_at', { ascending: true }),
     sb.from('mnemonics').select('*').order('created_at', { ascending: true }),
+    sb.from('flashcards').select('*').order('created_at', { ascending: true }),
     sb.from('info_boxes').select('*').order('created_at', { ascending: true }),
     sb.from('traps').select('*').order('created_at', { ascending: true })
   ]);
   zip.file('workspace/notes.json', JSON.stringify(withOrigin(must(notesRes)), null, 2));
   zip.file('workspace/formulas.json', JSON.stringify(withOrigin(must(formulasRes)), null, 2));
   zip.file('workspace/mnemonics.json', JSON.stringify(withOrigin(must(mnemonicsRes)), null, 2));
+  zip.file('workspace/flashcards.json', JSON.stringify(withOrigin(must(flashcardsRes)), null, 2));
   zip.file('workspace/info_boxes.json', JSON.stringify(withOrigin(must(boxesRes)), null, 2));
   zip.file('workspace/traps.json', JSON.stringify(withOrigin(must(trapsRes)), null, 2));
 
@@ -2173,7 +2293,7 @@ async function buildFullBackupZip(onStatus) {
     'Athenaeum backup — ' + new Date().toLocaleString() + '\n\n' +
     'WHAT IS IN HERE\n' +
     '- profile.json — your username and account creation date\n' +
-    '- workspace/ — subjects, chapters, topics, notes, formulas, mnemonics, info boxes, traps, saved simulations and saved videos\n' +
+    '- workspace/ — subjects, chapters, topics, notes, formulas, mnemonics, flashcards, info boxes, traps, saved simulations and saved videos\n' +
     '- reference_vault.json — metadata for your Reference Vault photos, PDFs and Drive/OneDrive links (see note below)\n' +
     '- planner.json — your weekly routine, milestones, projects and ECAs\n' +
     '- progress/mistake_vault.json — your Mistake Vault entries\n' +
@@ -2284,10 +2404,17 @@ async function restoreBackupZip(file, onStatus) {
     return out;
   };
 
-  say('Restoring notes, formulas and mnemonics…');
+  say('Restoring notes, formulas, mnemonics and flashcards…');
   report.notes = await insertMappedRows('notes', await readJSON('workspace/notes.json', []), remapScope);
   report.formulas = await insertMappedRows('formulas', await readJSON('workspace/formulas.json', []), remapScope);
   report.mnemonics = await insertMappedRows('mnemonics', await readJSON('workspace/mnemonics.json', []), remapScope);
+  report.flashcards = await insertMappedRows('flashcards', await readJSON('workspace/flashcards.json', []), row => {
+    const out = remapScope(row);
+    // a restored card should resurface for review right away, not sit on whatever
+    // due date the backup happened to carry
+    if (out) { out.due_at = new Date().toISOString(); out.reps = 0; out.interval_days = 0; }
+    return out;
+  });
 
   say('Restoring info boxes and traps…');
   report.info_boxes = await insertMappedRows('info_boxes', await readJSON('workspace/info_boxes.json', []), remapScope);
@@ -2329,7 +2456,7 @@ async function restoreBackupZip(file, onStatus) {
 
 const RESTORE_LABEL = {
   subjects: 'Subjects', chapters: 'Chapters', topics: 'Topics', notes: 'Notes',
-  formulas: 'Formulas', mnemonics: 'Mnemonics', info_boxes: 'Info boxes', traps: 'Traps',
+  formulas: 'Formulas', mnemonics: 'Mnemonics', flashcards: 'Flashcards', info_boxes: 'Info boxes', traps: 'Traps',
   sources: 'Reference Vault entries', saved_simulations: 'Saved simulations', saved_videos: 'Saved videos',
   planner_items: 'Planner items', projects: 'Projects', ai_chats: 'AI chats', ai_messages: 'AI messages',
   mistake_vault: 'Mistake Vault entries'
@@ -2640,6 +2767,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'youtube')    return youtubeHub(ids[1]);
   if (ids[0] === 'summarizer') return summarizerHub(ids[1]);
   if (ids[0] === 'quiz')       return quizHub(ids[1]);
+  if (ids[0] === 'flashgen')   return flashcardGenHub();
   if (ids[0] === 'vault')      return vaultHub();
   if (ids[0] === 'translate')  return translatorHub(ids[1]);
   if (ids[0] === 'study')      return studyHub(ids[1]);
@@ -2665,6 +2793,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
+        linkRow({ href: '#ai/flashgen', title: 'Flashcard Generator', meta: 'Turn notes into spaced-repetition flashcards' }),
         linkRow({ href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' }),
         linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' }),
         linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
@@ -3622,6 +3751,19 @@ async function recordMistake(chatId, index, scope, scopeNames, type, questionTex
         tags: mvAutoTags(scopeNames, questionText)
       });
       if (res.error) { console.error('Mistake Vault: insert failed.', res.error); return { ok: false, error: res.error }; }
+      // B1: a first-time miss also seeds a flashcard, so weak spots feed straight
+      // into spaced-repetition review. Only on the first miss (not a repeat), and
+      // only when the question had a scope to save the card into; best-effort —
+      // never lets a flashcard-sync failure affect the mistake being recorded.
+      if (scope && scope.subjectId && (correctAnswer || explanation)) {
+        try {
+          await sb.from('flashcards').insert({
+            ...scopeCols(scope), title: questionText, body: correctAnswer || explanation,
+            source: 'mistake', mistake_key: key,
+            due_at: new Date().toISOString(), interval_days: 0, ease: 2.5, reps: 0, lapses: 0
+          });
+        } catch (e) { console.error('Mistake Vault: flashcard seed failed.', e); }
+      }
     }
     return { ok: true };
   } catch (e) { console.error('Mistake Vault: sync threw.', e); return { ok: false, error: e }; }
@@ -3877,6 +4019,88 @@ async function quizPast(chatId) {
     if (quiz && QUIZ_KINDS[quiz.type]) typeChip = h('span', { class: 'chip', text: QUIZ_KINDS[quiz.type].label });
   } catch (e) { node = h('p', { class: 'none', text: 'Could not read this saved quiz.' }); }
   return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), typeChip, node, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
+}
+
+/* ---------- Flashcard Generator (B1) ----------
+   Unlike Quiz Generator, there's no separate chat history to browse — generated
+   cards are inserted straight into `flashcards` at the chosen scope, so they
+   simply show up there like any manually-added flashcard (and in this tool's
+   own "just generated" preview for immediate feedback). */
+const FLASHCARD_SYSTEM =
+  'You are the Flashcard Generator in a student\'s Athenaeum workspace app. Reply with ONLY valid JSON, no markdown code ' +
+  'fences, no commentary before or after it, in exactly this shape: {"cards":[{"front":"...","back":"..."}]}. front is a short ' +
+  'question, term, or prompt; back is its concise answer — a sentence or two at most, not an essay. Base every card only on ' +
+  'the material given. Write plain text inside the strings, no markdown.';
+
+function flashcardPrompt(count, material) {
+  return 'Make ' + count + ' flashcards from this material:\n\n' + material;
+}
+
+function parseFlashcardsJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !Array.isArray(data.cards) || !data.cards.length) throw new Error('The flashcards came back in an unexpected shape.');
+  return data.cards.filter(c => c && c.front && c.back);
+}
+
+function flashcardGenPanel(tree) {
+  const fMaterial = makeField('Notes or topic', { multiline: true, rows: 4, placeholder: 'Paste notes, or type a topic' });
+  const picker = scopePickerFields(tree);
+  const fCount = makeField('Number of cards', { value: '10' });
+  fCount.input.type = 'number'; fCount.input.min = '1'; fCount.input.max = '30';
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate flashcards' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const material = fMaterial.input.value.trim();
+    const count = Math.max(1, Math.min(30, parseInt(fCount.input.value, 10) || 10));
+    const scope = picker.getScope();
+    err.hidden = true; result.replaceChildren();
+    if (!material) { err.textContent = 'Paste some notes or a topic.'; err.hidden = false; return; }
+    if (!scope.subjectId) { err.textContent = 'Choose a subject to save the cards into.'; err.hidden = false; return; }
+    goBtn.disabled = true; goBtn.textContent = 'Generating…';
+    try {
+      const raw = await callAI(FLASHCARD_SYSTEM, [{ role: 'user', content: flashcardPrompt(count, material) }]);
+      const cards = parseFlashcardsJSON(raw);
+      const now = new Date().toISOString();
+      const rows = cards.map(c => ({
+        ...scopeCols(scope), title: c.front.trim(), body: c.back.trim(), source: 'generated',
+        due_at: now, interval_days: 0, ease: 2.5, reps: 0, lapses: 0
+      }));
+      const ins = await sb.from('flashcards').insert(rows);
+      if (ins.error) throw ins.error;
+      result.replaceChildren(
+        h('p', { class: 'msg ok', text: 'Saved ' + plural(cards.length, 'flashcard', 'flashcards') + ' to ' +
+          [picker.getScopeNames().subject, picker.getScopeNames().chapter, picker.getScopeNames().topic].filter(Boolean).join(' › ') + '.' }),
+        h('div', { class: 'list' }, cards.map(c => h('div', { class: 'item' },
+          h('span', { class: 'item-head' }, h('span', { class: 'chip', text: 'Flashcard' })),
+          h('strong', { text: c.front }), h('span', { class: 'body', text: c.back })))));
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not generate flashcards. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Generate flashcards';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Generate from notes' })),
+    fMaterial.wrap,
+    fCount.wrap,
+    h('p', { class: 'hint-line', text: 'Choose where the cards should be saved — they\'ll appear there right away, ready to study.' }),
+    picker.wrap,
+    goBtn, err, result);
+}
+
+async function flashcardGenHub() {
+  if (!aiConfigured()) return aiNeedsSetup('Flashcard Generator');
+  const tree = await loadScopeTree();
+  return { title: 'Flashcard Generator', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    flashcardGenPanel(tree),
+    h('p', { class: 'hint-line', text: 'Cards you make manually, or that get seeded from a missed quiz question, show up alongside these in each subject/chapter/topic\'s Flashcards section.' })
+  ] };
 }
 
 /* ---------- Mistake Vault hub (4.1) ----------
@@ -4935,6 +5159,7 @@ async function subjectPage(sid) {
             meta: plural(counts[ch.id] || 0, 'topic', 'topics') })))
         : h('p', { class: 'none', text: 'No chapters yet.' })),
     itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.'),
+    flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
     sourcesSection(scope, sources)
@@ -4969,6 +5194,7 @@ async function chapterPage(sid, cid) {
             href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })))
         : h('p', { class: 'none', text: 'No topics yet.' })),
     itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.'),
+    flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
     sourcesSection(scope, sources)
@@ -5002,6 +5228,7 @@ async function topicPage(sid, cid, tid) {
     ]),
     editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
     itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.'),
+    flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
     sourcesSection(scope, sources)
@@ -5190,6 +5417,12 @@ function openItemDialog(scope, existing) {
       else if (T.table === 'notes') payload = { title: v.title || null, body: v.body, kind: existing ? row.kind : T.kind, updated_at: new Date().toISOString() };
       else                          payload = { title: v.title, body: v.body };
       if (T.table !== 'notes') delete payload.updated_at;
+      // a freshly-created flashcard starts brand new in the spaced-repetition
+      // schedule (due right away); editing the front/back text of an existing
+      // card must never reset its review progress, so this only applies on insert
+      if (!existing && type === 'flashcard') {
+        Object.assign(payload, { source: 'manual', due_at: new Date().toISOString(), interval_days: 0, ease: 2.5, reps: 0, lapses: 0 });
+      }
 
       const res = existing
         ? await sb.from(T.table).update(payload).eq('id', row.id)
