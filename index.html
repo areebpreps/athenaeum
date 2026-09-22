@@ -897,7 +897,7 @@ function parseHash() {
   const tab = TABS[parts[0]] ? parts[0] : 'workspace';
   const ids = tab === 'subjects' ? parts.slice(1, 4)
             : tab === 'workspace' ? parts.slice(1, 3)
-            : tab === 'ai' ? parts.slice(1, 3)
+            : tab === 'ai' ? parts.slice(1, 4)
             : [];
   return { tab, ids };
 }
@@ -906,7 +906,11 @@ function parentHash(ids) { return ids.length <= 1 ? '#subjects' : '#subjects/' +
 // #workspace/planner or #workspace/wiki/<article>. Back always goes up one segment.
 function workspaceParentHash(ids) { return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0]; }
 // AI tools (Phase 3.2) follow the same shape: #ai/<tool>[/<chat id>]. Back always goes up one segment.
-function aiParentHash(ids) { return ids.length <= 1 ? '#ai' : '#ai/' + ids[0]; }
+function aiParentHash(ids) {
+  if (ids.length <= 1) return '#ai';
+  if (ids.length >= 3 && ids[0] === 'translate' && ids[1] === 'check') return '#ai/translate/check';
+  return '#ai/' + ids[0];
+}
 
 /* ---------- router ---------- */
 let renderToken = 0;
@@ -1027,7 +1031,7 @@ function confirmDeleteChat(chatId) {
       const delChat = await sb.from('ai_chats').delete().eq('id', chatId);
       if (delChat.error) throw delChat.error;
       const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-      if (parts[2] === chatId) go('#ai/' + parts[1]); else route();
+      if (parts[parts.length - 1] === chatId) go('#' + parts.slice(0, -1).join('/')); else route();
     }
   });
 }
