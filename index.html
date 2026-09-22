@@ -2039,6 +2039,7 @@ function renderOnlineDownloads(rows, offlineKeys, offlineRecords) {
   if (rows.length) nodes.push(...sections);
   else nodes.push(emptyBlock('Nothing to download yet', 'Add notes, formulas, photos or PDFs in Subjects, then come back here.'));
   if (offlineKeys.size) nodes.push(h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Clear all downloads', onclick: confirmClearAllDownloads }));
+  nodes.push(backupPanel());
 
   return { nodes };
 }
@@ -2130,6 +2131,147 @@ function renderOfflineDownloads(records) {
   });
   nodes.push(h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Clear all downloads', onclick: confirmClearAllDownloads }));
   return { nodes };
+}
+
+/* ---------- Local backup (4.2) ----------
+   One-click JSON/ZIP export of the whole account: hierarchy, study items,
+   planner/projects, Mistake Vault and AI chat history. Built the same way
+   as the NotebookLM export (straight reads from Supabase, zipped with
+   JSZip). Never touches localStorage, so the Gemini key — which lives only
+   on this device and is never synced to Supabase — can never end up in a
+   backup. Reference Vault photos/PDFs are listed by metadata only, not
+   their binary content; use the Download Manager above for an offline
+   copy of the files themselves. */
+async function buildFullBackupZip(onStatus) {
+  const zip = new JSZip();
+  const say = m => { if (onStatus) onStatus(m); };
+
+  say('Reading your profile…');
+  const userRes = await sb.auth.getUser();
+  const user = userRes.data && userRes.data.user;
+  zip.file('profile.json', JSON.stringify({
+    username: user ? usernameFrom(user) : null,
+    account_created_at: user ? user.created_at : null,
+    exported_at: new Date().toISOString(),
+    app: 'Athenaeum',
+    backup_version: 1
+  }, null, 2));
+
+  say('Reading your subjects, chapters and topics…');
+  const [subjRes, chapRes, topicRes] = await Promise.all([
+    ordered(sb.from('subjects').select('*')),
+    ordered(sb.from('chapters').select('*')),
+    ordered(sb.from('topics').select('*'))
+  ]);
+  const subjects = must(subjRes), chapters = must(chapRes), topics = must(topicRes);
+  zip.file('workspace/subjects.json', JSON.stringify(subjects, null, 2));
+  zip.file('workspace/chapters.json', JSON.stringify(chapters, null, 2));
+  zip.file('workspace/topics.json', JSON.stringify(topics, null, 2));
+
+  const subjectsById = {}, chaptersById = {}, topicsById = {};
+  subjects.forEach(s => { subjectsById[s.id] = s; });
+  chapters.forEach(c => { chaptersById[c.id] = c; });
+  topics.forEach(t => { topicsById[t.id] = t; });
+  const withOrigin = rows => rows.map(r => ({ ...r, origin: fullOrigin(r, subjectsById, chaptersById, topicsById) }));
+
+  say('Reading your notes, formulas and mnemonics…');
+  const [notesRes, formulasRes, mnemonicsRes, boxesRes, trapsRes] = await Promise.all([
+    sb.from('notes').select('*').order('created_at', { ascending: true }),
+    sb.from('formulas').select('*').order('created_at', { ascending: true }),
+    sb.from('mnemonics').select('*').order('created_at', { ascending: true }),
+    sb.from('info_boxes').select('*').order('created_at', { ascending: true }),
+    sb.from('traps').select('*').order('created_at', { ascending: true })
+  ]);
+  zip.file('workspace/notes.json', JSON.stringify(withOrigin(must(notesRes)), null, 2));
+  zip.file('workspace/formulas.json', JSON.stringify(withOrigin(must(formulasRes)), null, 2));
+  zip.file('workspace/mnemonics.json', JSON.stringify(withOrigin(must(mnemonicsRes)), null, 2));
+  zip.file('workspace/info_boxes.json', JSON.stringify(withOrigin(must(boxesRes)), null, 2));
+  zip.file('workspace/traps.json', JSON.stringify(withOrigin(must(trapsRes)), null, 2));
+
+  say('Reading your Reference Vault…');
+  const sourcesRes = await sb.from('sources')
+    .select('id, subject_id, chapter_id, topic_id, kind, title, storage_path, external_url, created_at')
+    .order('created_at', { ascending: true });
+  zip.file('reference_vault.json', JSON.stringify(withOrigin(must(sourcesRes)), null, 2));
+
+  say('Reading your saved simulations and videos…');
+  const [simsRes, videosRes] = await Promise.all([
+    sb.from('saved_simulations').select('*').order('created_at', { ascending: true }),
+    sb.from('saved_videos').select('*').order('created_at', { ascending: true })
+  ]);
+  zip.file('workspace/saved_simulations.json', JSON.stringify(must(simsRes), null, 2));
+  zip.file('workspace/saved_videos.json', JSON.stringify(must(videosRes), null, 2));
+
+  say('Reading your planner and projects…');
+  const [plannerRes, projectsRes] = await Promise.all([
+    sb.from('planner_items').select('*').order('created_at', { ascending: true }),
+    sb.from('projects').select('*').order('created_at', { ascending: true })
+  ]);
+  zip.file('planner.json', JSON.stringify({ planner_items: must(plannerRes), projects: must(projectsRes) }, null, 2));
+
+  say('Reading your Mistake Vault…');
+  const mistakeRes = await sb.from('mistake_vault').select('*').order('last_missed_at', { ascending: true });
+  zip.file('progress/mistake_vault.json', JSON.stringify(withOrigin(must(mistakeRes)), null, 2));
+
+  say('Reading your AI chat history…');
+  const [chatsRes, msgsRes] = await Promise.all([
+    sb.from('ai_chats').select('*').order('created_at', { ascending: true }),
+    sb.from('ai_messages').select('*').order('created_at', { ascending: true })
+  ]);
+  const chats = must(chatsRes), msgs = must(msgsRes);
+  const msgsByChat = {};
+  msgs.forEach(m => { (msgsByChat[m.chat_id] = msgsByChat[m.chat_id] || []).push(m); });
+  zip.file('ai/chats.json', JSON.stringify(chats.map(c => ({ ...c, messages: msgsByChat[c.id] || [] })), null, 2));
+
+  zip.file('README.txt',
+    'Athenaeum backup — ' + new Date().toLocaleString() + '\n\n' +
+    'WHAT IS IN HERE\n' +
+    '- profile.json — your username and account creation date\n' +
+    '- workspace/ — subjects, chapters, topics, notes, formulas, mnemonics, info boxes, traps, saved simulations and saved videos\n' +
+    '- reference_vault.json — metadata for your Reference Vault photos, PDFs and Drive/OneDrive links (see note below)\n' +
+    '- planner.json — your weekly routine, milestones, projects and ECAs\n' +
+    '- progress/mistake_vault.json — your Mistake Vault entries\n' +
+    '- ai/chats.json — every AI tool conversation, with its full message history\n\n' +
+    'WHAT IS NOT IN HERE\n' +
+    '- Your Gemini API key. It lives only in this device\'s browser storage and is never uploaded to your account, so it can never appear in a backup.\n' +
+    '- The actual bytes of your Reference Vault photos and PDFs — only their titles, type and storage path or link are listed. Use the Download Manager in the app for an offline copy of the files themselves.\n\n' +
+    'This is a read-only snapshot for safekeeping. There is no import/restore button — restoring means re-entering this data through the app, or directly in Supabase.'
+  );
+
+  return zip;
+}
+
+function backupPanel() {
+  const btn = h('button', { class: 'btn quiet small', type: 'button', text: 'Download full backup (.zip)' });
+  const status = h('p', { class: 'hint-line', hidden: true });
+  const err = h('p', { class: 'msg err', hidden: true });
+
+  btn.addEventListener('click', async () => {
+    err.hidden = true;
+    if (!window.JSZip) { err.textContent = 'The ZIP library did not load. Check your connection and try again.'; err.hidden = false; return; }
+    btn.disabled = true; btn.textContent = 'Building…';
+    status.hidden = false; status.textContent = 'Gathering your data…';
+    try {
+      const zip = await buildFullBackupZip(m => { status.textContent = m; });
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'athenaeum-backup-' + new Date().toISOString().slice(0, 10) + '.zip';
+      document.body.append(a); a.click(); a.remove();
+      status.textContent = 'Backup downloaded. It contains no API keys.';
+    } catch (e) {
+      status.hidden = true;
+      err.textContent = (e && e.message) ? e.message : 'Could not build the backup. Try again.';
+      err.hidden = false;
+    } finally {
+      btn.disabled = false; btn.textContent = 'Download full backup (.zip)';
+    }
+  });
+
+  return section('Backup', null, null,
+    h('p', { class: 'hint-line', text: 'A one-click export of your whole account — subjects, notes, planner, Mistake Vault and AI chat history — as a ZIP of JSON files. Your Gemini key and the actual photo/PDF files are never included.' }),
+    h('div', { class: 'edit-row' }, btn),
+    status, err);
 }
 
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
