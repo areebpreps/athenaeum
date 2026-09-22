@@ -302,6 +302,7 @@
   .chat-input .control { flex: 1; }
   .chat-input .btn.small { flex: none; }
   .provider-note { color: var(--dim); font-size: 14px; margin: 0 0 20px; }
+  .key-link { margin-bottom: 12px; }
   .seg.types { margin-bottom: 0; }
   .swatches { display: flex; flex-wrap: wrap; gap: 10px; }
   .swatch { width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent; background: var(--c); box-shadow: inset 0 0 0 2px var(--paper); }
@@ -1996,42 +1997,50 @@ async function buildWorkspaceRoot() {
 
 /* =====================================================================
    Phase 3.2: AI tools
-   Live under the AI tools tab: #ai/<tool>[/<chat id>]. Two providers are
-   supported — Gemini and Claude — chosen in #ai/settings. Whichever is
-   marked active there is the one every tool below calls. Both API keys
-   are stored with `store` (localStorage only): never synced to Supabase,
-   never included in the JSON/ZIP backup, same rule as the Gemini key in
-   the blueprint's security section.
+   Live under the AI tools tab: #ai/<tool>[/<chat id>]. Gemini only — the
+   key and model name are set in #ai/settings and every tool below calls
+   through callAI() (text) or callAIVision() (photo + text). The key is
+   stored with `store` (localStorage only): never synced to Supabase,
+   never included in the JSON/ZIP backup, per the blueprint's security
+   section.
    ===================================================================== */
 const AI_KEYS = {
-  provider:    'aw.ai.provider',       // 'gemini' | 'claude'
   geminiKey:   'aw.ai.gemini.key',
-  geminiModel: 'aw.ai.gemini.model',
-  claudeKey:   'aw.ai.claude.key',
-  claudeModel: 'aw.ai.claude.model'
+  geminiModel: 'aw.ai.gemini.model'
 };
 
 function aiSettings() {
   return {
-    provider:    store.get(AI_KEYS.provider) === 'claude' ? 'claude' : 'gemini',
     geminiKey:   store.get(AI_KEYS.geminiKey)   || '',
-    geminiModel: store.get(AI_KEYS.geminiModel) || '',
-    claudeKey:   store.get(AI_KEYS.claudeKey)   || '',
-    claudeModel: store.get(AI_KEYS.claudeModel) || ''
+    geminiModel: store.get(AI_KEYS.geminiModel) || ''
   };
 }
 function aiConfigured() {
   const s = aiSettings();
-  return s.provider === 'claude' ? !!(s.claudeKey && s.claudeModel) : !!(s.geminiKey && s.geminiModel);
+  return !!(s.geminiKey && s.geminiModel);
 }
 
-/* ---------- provider callers ----------
-   Both take (system, history) where history is [{role:'user'|'assistant', content}, ...]
-   (already includes the newest message) and resolve to the reply text. */
-async function callGemini(model, key, system, history) {
+const GEMINI_MODEL_RE = /^[a-zA-Z0-9._-]+$/;
+
+// Accepts stray whitespace, quotes, or a "models/" prefix pasted along with the name,
+// and cleans them up rather than sending a request Gemini will reject outright.
+function normalizeGeminiModel(raw) {
+  return (raw || '').trim().replace(/^["']|["']$/g, '').replace(/^models\//, '');
+}
+
+/* ---------- provider caller ----------
+   Takes (system, history) where history is [{role:'user'|'assistant', content}, ...]
+   (already includes the newest message) and resolves to the reply text. */
+// Lowest-level caller: takes a ready-made Gemini `contents` array (so callers
+// can mix text and inline image parts) and returns the reply text.
+async function callGeminiRaw(model, key, system, contents) {
+  const modelId = normalizeGeminiModel(model);
+  if (!GEMINI_MODEL_RE.test(modelId)) {
+    throw new Error('That Gemini model name looks off. In Settings, use just the model id with no extra text — e.g. gemini-2.5-flash.');
+  }
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-              encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key);
-  const body = { contents: history.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })) };
+              encodeURIComponent(modelId) + ':generateContent?key=' + encodeURIComponent(key);
+  const body = { contents };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
@@ -2042,40 +2051,43 @@ async function callGemini(model, key, system, history) {
   return text;
 }
 
-async function callClaude(model, key, system, history) {
-  const body = { model, max_tokens: 1500, messages: history.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })) };
-  if (system) body.system = system;
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify(body)
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data.error && data.error.message) || ('Claude error (' + res.status + ').'));
-  const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-  if (!text) throw new Error('Claude returned an empty response.');
-  return text;
+async function callGemini(model, key, system, history) {
+  return callGeminiRaw(model, key, system,
+    history.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })));
 }
 
 async function callAI(system, history) {
   const s = aiSettings();
-  if (s.provider === 'claude') {
-    if (!s.claudeKey || !s.claudeModel) throw new Error('Add your Claude key and model name in AI Settings.');
-    return callClaude(s.claudeModel, s.claudeKey, system, history);
-  }
   if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
   return callGemini(s.geminiModel, s.geminiKey, system, history);
+}
+
+// Single-turn photo + text call, for Question Solver and (later) Fact Checker.
+// imageBase64 is raw base64 with no "data:...;base64," prefix.
+async function callAIVision(system, textPrompt, imageBase64, mimeType) {
+  const s = aiSettings();
+  if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
+  const parts = [];
+  if (textPrompt) parts.push({ text: textPrompt });
+  parts.push({ inline_data: { mime_type: mimeType || 'image/jpeg', data: imageBase64 } });
+  return callGeminiRaw(s.geminiModel, s.geminiKey, system, [{ role: 'user', parts }]);
+}
+
+// FileReader -> raw base64 (strips the "data:...;base64," prefix).
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(new Error('Could not read that photo.'));
+    reader.readAsDataURL(blob);
+  });
 }
 
 /* ---------- routing ---------- */
 function buildAI(ids = []) {
   if (ids[0] === 'settings') return aiSettingsPage();
   if (ids[0] === 'ask')      return askAIHub(ids[1]);
+  if (ids[0] === 'solver')   return solverHub(ids[1]);
   return buildAIRoot();
 }
 
@@ -2086,15 +2098,14 @@ function disabledRow(title, meta) {
 
 function buildAIRoot() {
   const configured = aiConfigured();
-  const providerLabel = aiSettings().provider === 'claude' ? 'Claude' : 'Gemini';
   return { nodes: [
     section('AI tools', null, null,
       h('div', { class: 'list' },
-        linkRow({ href: '#ai/settings', title: 'Settings', meta: configured ? 'Active provider: ' + providerLabel : 'Add a Gemini or Claude key to begin' }),
-        linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }))),
+        linkRow({ href: '#ai/settings', title: 'Settings', meta: configured ? 'Gemini key added' : 'Add your Gemini key to begin' }),
+        linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }),
+        linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }))),
     section('Coming soon', null, null,
       h('div', { class: 'list' },
-        disabledRow('Question Solver', 'Photo in, direct answer first, then an Explain button'),
         disabledRow('Fact Checker', 'True / False / Partially true, with a source link'),
         disabledRow('YouTube summarizer', 'Player plus a summary from the link or a pasted transcript'),
         disabledRow('Summarizer & Formula Excerptor', 'Turn notes into summaries and cheat sheets'),
@@ -2106,7 +2117,7 @@ function buildAIRoot() {
 function aiNeedsSetup(toolName) {
   return { title: toolName, nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    emptyBlock('Add an AI key first', 'Add a Gemini or Claude key in Settings to use ' + toolName + '.'),
+    emptyBlock('Add a Gemini key first', 'Add your Gemini key in Settings to use ' + toolName + '.'),
     h('a', { class: 'btn', href: '#ai/settings', text: 'Open Settings' })
   ] };
 }
@@ -2114,31 +2125,10 @@ function aiNeedsSetup(toolName) {
 /* ---------- Settings ---------- */
 function aiSettingsPage() {
   const s = aiSettings();
-  let provider = s.provider;
-
-  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Active AI provider' },
-    h('button', { type: 'button', 'data-p': 'gemini', text: 'Gemini' }),
-    h('button', { type: 'button', 'data-p': 'claude', text: 'Claude' }));
-  const syncSeg = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.p === provider)));
 
   const fGeminiKey   = makeField('Gemini API key',   { value: s.geminiKey,   placeholder: 'Paste your Google AI Studio key' });
   const fGeminiModel = makeField('Gemini model name', { value: s.geminiModel, placeholder: 'e.g. gemini-2.5-flash' });
   fGeminiKey.input.type = 'password'; fGeminiKey.input.autocomplete = 'off';
-
-  const fClaudeKey   = makeField('Claude API key',   { value: s.claudeKey,   placeholder: 'Paste your Anthropic Console key' });
-  const fClaudeModel = makeField('Claude model name', { value: s.claudeModel, placeholder: 'e.g. claude-sonnet-4-5' });
-  fClaudeKey.input.type = 'password'; fClaudeKey.input.autocomplete = 'off';
-
-  const geminiBlock = h('div', {},
-    fGeminiKey.wrap, fGeminiModel.wrap,
-    h('p', { class: 'hint-line', text: 'Get a free key at Google AI Studio, and confirm the model name is in its model list.' }));
-  const claudeBlock = h('div', {},
-    fClaudeKey.wrap, fClaudeModel.wrap,
-    h('p', { class: 'hint-line', text: 'Get a key from the Anthropic Console. Handy as a backup if Gemini is rate-limited, or as your main provider.' }));
-
-  const paint = () => { geminiBlock.hidden = provider !== 'gemini'; claudeBlock.hidden = provider !== 'claude'; syncSeg(); };
-  seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { provider = b.dataset.p; paint(); }));
-  paint();
 
   const msg = h('div', { class: 'msg', hidden: true });
   const showMsgLocal = (text, kind) => { msg.className = 'msg ' + kind; msg.textContent = text; msg.hidden = false; };
@@ -2146,23 +2136,26 @@ function aiSettingsPage() {
   const form = h('form', {
     onsubmit: e => {
       e.preventDefault();
-      const gKey = fGeminiKey.input.value.trim(), gModel = fGeminiModel.input.value.trim();
-      const cKey = fClaudeKey.input.value.trim(), cModel = fClaudeModel.input.value.trim();
-      if (provider === 'gemini' && (!gKey || !gModel)) return showMsgLocal('Enter a Gemini key and model name, or switch to Claude.', 'err');
-      if (provider === 'claude' && (!cKey || !cModel)) return showMsgLocal('Enter a Claude key and model name, or switch to Gemini.', 'err');
-      store.set(AI_KEYS.provider, provider);
-      store.set(AI_KEYS.geminiKey, gKey);   store.set(AI_KEYS.geminiModel, gModel);
-      store.set(AI_KEYS.claudeKey, cKey);   store.set(AI_KEYS.claudeModel, cModel);
-      showMsgLocal('Saved. This device will now use ' + (provider === 'claude' ? 'Claude' : 'Gemini') + '.', 'ok');
+      const gKey = fGeminiKey.input.value.trim(), gModel = normalizeGeminiModel(fGeminiModel.input.value);
+      if (!gKey || !gModel) return showMsgLocal('Enter both a Gemini key and a model name.', 'err');
+      if (!GEMINI_MODEL_RE.test(gModel)) return showMsgLocal('That model name looks off — paste just the id, e.g. gemini-2.5-flash, with no extra text.', 'err');
+      store.set(AI_KEYS.geminiKey, gKey);
+      store.set(AI_KEYS.geminiModel, gModel);
+      fGeminiModel.input.value = gModel;
+      showMsgLocal('Saved.', 'ok');
     }
   },
-    h('div', { class: 'field' }, h('label', { text: 'Active provider' }), seg),
-    geminiBlock, claudeBlock, msg,
+    h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://aistudio.google.com/apikey', text: 'Get a Gemini key ↗' }),
+    fGeminiKey.wrap,
+    h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://ai.google.dev/gemini-api/docs/models', text: 'Check the model list ↗' }),
+    fGeminiModel.wrap,
+    h('p', { class: 'hint-line', text: 'Free at Google AI Studio. Paste the model id exactly as it appears on the model list — no spaces, no "models/" prefix.' }),
+    msg,
     h('button', { class: 'btn', type: 'submit', text: 'Save' }));
 
   return { title: 'Settings', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    h('p', { class: 'provider-note', text: 'Both keys stay on this device only — never synced to your account, never in the backup file. Switch providers here any time; every AI tool uses whichever is active.' }),
+    h('p', { class: 'provider-note', text: 'Your key stays on this device only — never synced to your account, never in the backup file.' }),
     form
   ] };
 }
@@ -2274,6 +2267,193 @@ async function askAIChat(chatId) {
     log, err,
     h('div', { class: 'chat-input' }, ta, sendBtn)
   ] };
+}
+
+/* ---------- Question Solver (2-stage) ----------
+   Photo in -> a direct, concise answer first; the step-by-step reasoning
+   is a second Gemini call, made only if "Explain" is tapped. The photo is
+   uploaded to the same private `reference-files` bucket the Reference
+   Vault uses (path <user_id>/solver-<uuid>.jpg, never a public list entry),
+   and its path is saved on the "[Photo question]" row in ai_messages
+   (image_path column — see schema-update-3.2-solver.sql). That means
+   Explain keeps working after a reload or on another device: if the image
+   isn't already in the in-memory cache (pendingSolveImages, a same-session
+   fast path), it's re-fetched from storage via a signed URL. If the
+   upload itself failed (e.g. offline), the question still gets solved —
+   it just falls back to session-only Explain, same as before. */
+const pendingSolveImages = {}; // chat id -> { b64, mime }, same-session fast path only
+
+const SOLVER_ANSWER_SYSTEM =
+  'You are the Question Solver in a student\'s Athenaeum workspace app. Look at the photo of the question and reply with ' +
+  'only the direct final answer — no working, no steps, no preamble, no restating the question. Keep it as short as correctness allows.';
+const SOLVER_EXPLAIN_SYSTEM =
+  'You are the Question Solver in a student\'s Athenaeum workspace app. You already gave the direct answer to the photographed ' +
+  'question; now show the full step-by-step reasoning that gets to it. Plain text, no markdown headers or tables.';
+
+// Uploads a solved question's photo to the same private bucket the
+// Reference Vault uses, but not as a `sources` row — it's not tied to any
+// subject/chapter/topic, just kept for this chat's own Explain step.
+async function uploadSolverImage(blob) {
+  const path = currentUser.id + '/solver-' + crypto.randomUUID() + '.jpg';
+  const up = await sb.storage.from(REF_BUCKET).upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: false });
+  if (up.error) throw up.error;
+  return path;
+}
+
+// Re-derives base64 image data from a saved storage path, for Explain when
+// the photo isn't in this session's in-memory cache (reload, other device).
+async function base64FromStoragePath(path) {
+  const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(path, 120);
+  if (signed.error) throw signed.error;
+  const resp = await fetch(signed.data.signedUrl);
+  if (!resp.ok) throw new Error('Could not load the saved photo.');
+  const blob = await resp.blob();
+  return { b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg' };
+}
+
+function solverHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Question Solver');
+  return chatId ? solverPast(chatId) : solverList();
+}
+
+async function solverList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'solver').order('created_at', { ascending: false });
+  const chats = must(res);
+
+  const history = chats.length
+    ? [section('Past questions', null, null,
+        h('div', { class: 'list' }, chats.map(c => linkRow({
+          href: '#ai/solver/' + c.id,
+          title: c.title || 'Solved question',
+          meta: new Date(c.created_at).toLocaleString()
+        }))))]
+    : [h('p', { class: 'none', text: 'No questions solved yet.' })];
+
+  return { title: 'Question Solver', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    solverPanel(),
+    ...history
+  ] };
+}
+
+// The "take/choose a photo -> answer -> Explain" panel on the list page.
+function solverPanel() {
+  const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const snapBtn = h('button', { class: 'btn small', type: 'button', text: 'Take or choose a photo', onclick: () => fileInput.click() });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    fileInput.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { err.textContent = 'Choose a photo.'; err.hidden = false; return; }
+
+    err.hidden = true; result.replaceChildren();
+    snapBtn.disabled = true; snapBtn.textContent = 'Reading photo…';
+    try {
+      const blob = await compressImage(file);
+      const mime = blob.type || 'image/jpeg';
+      const b64 = await blobToBase64(blob);
+
+      snapBtn.textContent = 'Solving…';
+      const answer = await callAIVision(SOLVER_ANSWER_SYSTEM, 'Give the direct answer to the question in this photo.', b64, mime);
+      result.replaceChildren(solverResultBlock(answer, null, null, null));
+
+      let imagePath = null;
+      try { imagePath = await uploadSolverImage(blob); } catch (e) { /* non-fatal: keep the answer, Explain falls back to this-session-only */ }
+
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'solver', title: answer.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const chatId = chatIns.data.id;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatId, role: 'user', content: '[Photo question]', image_path: imagePath },
+         { chat_id: chatId, role: 'assistant', content: answer }]);
+      if (msgIns.error) throw msgIns.error;
+      pendingSolveImages[chatId] = { b64, mime };
+      result.replaceChildren(solverResultBlock(answer, chatId, b64, mime));
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not solve that photo. Try again.';
+      err.hidden = false;
+    } finally {
+      snapBtn.disabled = false; snapBtn.textContent = 'Take or choose a photo';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New question' })),
+    h('p', { class: 'hint-line', text: 'Snap a photo of a question for a direct answer first, then tap Explain for the steps.' }),
+    h('div', { class: 'vault-actions' }, snapBtn, fileInput),
+    err, result);
+}
+
+// Builds the Explain control: appends the explanation bubble into `log`
+// (owned by the caller) and saves it once fetched. getImage() is called
+// lazily on click and must resolve to { b64, mime } — this lets the same
+// control work for a photo already in hand (live solve) and for one that
+// needs re-fetching from storage first (reopening a past question).
+function solverExplainControl(chatId, getImage, log) {
+  const err = h('p', { class: 'msg err', hidden: true });
+  const explainBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Explain', disabled: !chatId });
+
+  explainBtn.addEventListener('click', async () => {
+    explainBtn.disabled = true; explainBtn.textContent = 'Working…'; err.hidden = true;
+    try {
+      const { b64, mime } = await getImage();
+      const explanation = await callAIVision(SOLVER_EXPLAIN_SYSTEM, 'Explain step by step how to reach the answer to the question in this photo.', b64, mime);
+      log.append(h('div', { class: 'bubble assistant', text: explanation }));
+      explainBtn.remove();
+      const ins = await sb.from('ai_messages').insert({ chat_id: chatId, role: 'assistant', content: explanation });
+      if (ins.error) throw ins.error;
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not get the steps. Try again.';
+      err.hidden = false;
+      explainBtn.disabled = false; explainBtn.textContent = 'Explain';
+    }
+  });
+
+  return h('div', {}, err, explainBtn);
+}
+
+// The answer bubble plus its Explain state. If chatId is null the save is
+// still in flight, so Explain stays disabled until it lands.
+function solverResultBlock(answer, chatId, b64, mime) {
+  const log = h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer }));
+  return h('div', {}, log, solverExplainControl(chatId, async () => ({ b64, mime }), log));
+}
+
+async function solverPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Question Solver', href: '#ai/solver' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, image_path, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Question Solver', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+
+  const allMsgs = must(msgRes);
+  const photoRow = allMsgs.find(m => m.role === 'user' && m.content === '[Photo question]');
+  const messages = allMsgs.filter(m => m !== photoRow);
+
+  const log = h('div', { class: 'chat-log' },
+    photoRow && photoRow.image_path ? dlThumb(photoRow.image_path) : null,
+    messages.length
+      ? messages.map(m => h('div', { class: 'bubble ' + (m.role === 'assistant' ? 'assistant' : 'user'), text: m.content }))
+      : h('p', { class: 'none', text: 'No answer saved.' }));
+
+  const alreadyExplained = messages.filter(m => m.role === 'assistant').length > 1;
+  const cached = pendingSolveImages[chatId];
+  let explainNode = null;
+  if (!alreadyExplained) {
+    if (cached) {
+      explainNode = solverExplainControl(chatId, async () => cached, log);
+    } else if (photoRow && photoRow.image_path) {
+      explainNode = solverExplainControl(chatId, () => base64FromStoragePath(photoRow.image_path), log);
+    } else {
+      explainNode = h('p', { class: 'hint-line', text: 'The photo for this question was not saved, so steps aren\'t available.' });
+    }
+  }
+
+  return { title: chatRes.data.title || 'Solved question', nodes: [crumbs(crumb), log, explainNode] };
 }
 
 /* ---------- Subjects > Chapter > Topic pages ---------- */
