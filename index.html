@@ -306,7 +306,9 @@
   .search-row { display: flex; gap: 10px; margin-bottom: 16px; }
   .search-row .control { flex: 1; min-width: 0; }
   .search-row .btn { width: auto; padding: 0 18px; }
-  .embed-frame { width: 100%; height: min(70dvh, 640px); border: 0; border-radius: 16px; background: var(--paper-hi); margin-top: 10px; display: block; }
+  .launch-card { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 18px; display: grid; gap: 10px; margin-top: 10px; }
+  .launch-card > p:first-child { margin: 0; color: var(--dim); }
+  .launch-btn { display: inline-flex; width: auto; padding: 0 20px; text-decoration: none; }
   .day-head.today { color: var(--marker); font-size: 19px; }
 
   /* subject filter chips (simulation hub) */
@@ -2717,36 +2719,20 @@ async function wikiArticle(title) {
   }
 }
 
-/* ---------- Embeds: iframe with an always-visible "open in a browser tab" fallback ---------- */
-// Some sites cannot be embedded: their own pages, or PhET / GeoGebra "share" pages, need a
-// different address to work inside a frame. Everything else is used as pasted.
-function embedUrlFor(raw) {
-  let u;
-  try { u = new URL(raw); } catch (e) { return raw; }
-  const host = u.hostname.replace(/^www\./, '');
-  if (host === 'phet.colorado.edu') {
-    const m = u.pathname.match(/^\/(?:[a-z]{2}(?:_[A-Za-z]{2})?\/)?simulations?\/([a-z0-9-]+)\/?$/i);
-    if (m && !/^(filter|browse|translated|category|keyword|index|search|legacy)$/i.test(m[1])) {
-      return 'https://phet.colorado.edu/sims/html/' + m[1] + '/latest/' + m[1] + '_en.html';
-    }
-  }
-  if (host === 'geogebra.org') {
-    const m = u.pathname.match(/^\/m\/([A-Za-z0-9]+)\/?$/);
-    if (m) return 'https://www.geogebra.org/material/iframe/id/' + m[1];
-  }
-  return raw;
-}
-
-function embedPage(title, url, crumbList, actions = [], tip = '') {
-  const openBtn = h('a', { class: 'btn quiet small', href: url, target: '_blank', rel: 'noopener', text: 'Open in a browser tab ↗' });
-  const frame = h('iframe', { class: 'embed-frame', src: embedUrlFor(url), title, loading: 'lazy',
-                              allow: 'fullscreen', referrerpolicy: 'no-referrer-when-downgrade' });
+// Most simulation and portal sites refuse to load inside an iframe (they send
+// X-Frame-Options / CSP frame-ancestors headers that the browser enforces).
+// That block only applies to framing, not to opening the page directly, so
+// this hands off to a normal same-tab navigation instead: the back button
+// or back gesture returns straight to the app afterwards.
+function launchPage(title, url, crumbList, actions = [], tip = '') {
+  const openLink = h('a', { class: 'btn small launch-btn', href: url, text: 'Open ' + title });
   return { title, nodes: [
     crumbs(crumbList),
-    h('div', { class: 'dl-actions' }, openBtn, actions),
-    tip ? h('p', { class: 'hint-line', text: tip }) : null,
-    h('p', { class: 'hint-line', text: 'Blank page or “refused to connect”? That site does not allow embedding. Use “Open in a browser tab”.' }),
-    frame
+    h('div', { class: 'launch-card' },
+      h('p', { text: 'This opens in your browser, outside the app.' }),
+      h('div', { class: 'dl-actions' }, openLink, actions),
+      tip ? h('p', { class: 'hint-line', text: tip }) : null,
+      h('p', { class: 'hint-line', text: 'When you\u2019re done, use your phone\u2019s back button or back gesture to return here.' }))
   ] };
 }
 
@@ -2760,7 +2746,7 @@ function portalsPage(itemKey) {
   if (itemKey) {
     const item = PORTALS.find(i => i.key === itemKey);
     if (!item || !item.url) return go('#workspace/portals');
-    return embedPage(item.name, item.url, [...crumbList, { text: 'Portals', href: '#workspace/portals' }]);
+    return launchPage(item.name, item.url, [...crumbList, { text: 'Portals', href: '#workspace/portals' }]);
   }
   return { title: 'Portals', nodes: [
     crumbs(crumbList),
@@ -2847,7 +2833,7 @@ async function simHub(itemKey) {
 
 function simSiteViewer(site) {
   const save = h('button', { class: 'btn small', type: 'button', text: '+ Save a simulation', onclick: () => openSimDialog(null, site.cat) });
-  return embedPage(site.name, site.url, SIM_CRUMBS, [save],
+  return launchPage(site.name, site.url, SIM_CRUMBS, [save],
     'Found one you like? Tap “Open in a browser tab”, copy its link, come back and save it.');
 }
 
@@ -2855,7 +2841,7 @@ async function savedSimViewer(id) {
   const row = must(await sb.from('saved_simulations').select('*').eq('id', id).maybeSingle());
   if (!row) return go('#workspace/threed');
   const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSimDialog(row) });
-  return embedPage(row.title, row.url, SIM_CRUMBS, [edit], simCatLabel(row.category) + ' · saved simulation');
+  return launchPage(row.title, row.url, SIM_CRUMBS, [edit], simCatLabel(row.category) + ' · saved simulation');
 }
 
 function openSimDialog(existing, presetCat) {
