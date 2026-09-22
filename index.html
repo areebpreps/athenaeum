@@ -3203,27 +3203,40 @@ function mvAutoTags(scopeNames, text) {
 function mvKey(chatId, index) { return chatId + ':' + index; }
 
 async function recordMistake(chatId, index, scope, scopeNames, type, questionText, correctAnswer, explanation) {
-  if (!chatId) return;
+  if (!chatId) return { ok: false };
   try {
     const key = mvKey(chatId, index);
     const existing = await sb.from('mistake_vault').select('id, wrong_count').eq('question_key', key).maybeSingle();
-    if (existing.error) return;
+    if (existing.error) { console.error('Mistake Vault: could not check for an existing entry.', existing.error); return { ok: false, error: existing.error }; }
     if (existing.data) {
-      await sb.from('mistake_vault').update({
+      const res = await sb.from('mistake_vault').update({
         wrong_count: (existing.data.wrong_count || 1) + 1, last_missed_at: new Date().toISOString()
       }).eq('id', existing.data.id);
+      if (res.error) { console.error('Mistake Vault: update failed.', res.error); return { ok: false, error: res.error }; }
     } else {
-      await sb.from('mistake_vault').insert({
+      const res = await sb.from('mistake_vault').insert({
         ...scopeCols(scope || {}), quiz_chat_id: chatId, question_key: key, question_type: type,
         question_text: questionText, correct_answer: correctAnswer || null, explanation: explanation || null,
         tags: mvAutoTags(scopeNames, questionText)
       });
+      if (res.error) { console.error('Mistake Vault: insert failed.', res.error); return { ok: false, error: res.error }; }
     }
-  } catch (e) {}
+    return { ok: true };
+  } catch (e) { console.error('Mistake Vault: sync threw.', e); return { ok: false, error: e }; }
 }
 async function clearMistake(chatId, index) {
-  if (!chatId) return;
-  try { await sb.from('mistake_vault').delete().eq('question_key', mvKey(chatId, index)); } catch (e) {}
+  if (!chatId) return { ok: false };
+  try {
+    const res = await sb.from('mistake_vault').delete().eq('question_key', mvKey(chatId, index));
+    if (res.error) { console.error('Mistake Vault: delete failed.', res.error); return { ok: false, error: res.error }; }
+    return { ok: true };
+  } catch (e) { console.error('Mistake Vault: clear threw.', e); return { ok: false, error: e }; }
+}
+// Shown inline the moment a sync call fails, instead of failing invisibly —
+// almost always means schema-update-4.1-mistakevault.sql hasn't been run yet.
+function mvSyncFailedHint(result) {
+  const msg = result && result.error && result.error.message ? result.error.message : 'unknown error';
+  return h('p', { class: 'msg err', text: 'Could not sync to the Mistake Vault (' + msg + '). Make sure schema-update-4.1-mistakevault.sql has been run in Supabase.' });
 }
 function confirmRemoveMistake(row, after) {
   showDialog({
@@ -3271,13 +3284,15 @@ function quizPlayer(quiz, chatId) {
       const report = h('div', { class: 'vault-actions', hidden: true }, rightBtn, wrongBtn, status);
       rightBtn.addEventListener('click', async () => {
         rightBtn.disabled = true; wrongBtn.disabled = true;
-        await clearMistake(chatId, i);
-        status.textContent = 'Nice — cleared from your Mistake Vault.';
+        const r = await clearMistake(chatId, i);
+        status.textContent = r.ok ? 'Nice — cleared from your Mistake Vault.' : '';
+        if (!r.ok) report.append(mvSyncFailedHint(r));
       });
       wrongBtn.addEventListener('click', async () => {
         rightBtn.disabled = true; wrongBtn.disabled = true;
-        await recordMistake(chatId, i, scope, scopeNames, quiz.type, q.question, q.answer, isMath ? q.solution : null);
-        status.textContent = 'Added to your Mistake Vault.';
+        const r = await recordMistake(chatId, i, scope, scopeNames, quiz.type, q.question, q.answer, isMath ? q.solution : null);
+        status.textContent = r.ok ? 'Added to your Mistake Vault.' : '';
+        if (!r.ok) report.append(mvSyncFailedHint(r));
       });
       reveal.addEventListener('click', () => {
         answerP.hidden = !answerP.hidden;
@@ -3311,8 +3326,9 @@ function quizPlayer(quiz, chatId) {
               else if (b === btn) b.classList.add('wrong');
             });
             if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
-            if (correct) await clearMistake(chatId, i);
-            else await recordMistake(chatId, i, scope, scopeNames, 'true_false', q.statement, correctVal ? 'True' : 'False', q.explanation);
+            const r = correct ? await clearMistake(chatId, i)
+                               : await recordMistake(chatId, i, scope, scopeNames, 'true_false', q.statement, correctVal ? 'True' : 'False', q.explanation);
+            if (chatId && !r.ok) opts.append(mvSyncFailedHint(r));
             retryBtn.hidden = correct || !chatId;
           });
           opts.append(btn);
@@ -3343,8 +3359,9 @@ function quizPlayer(quiz, chatId) {
             else if (bi === oi) b.classList.add('wrong');
           });
           if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
-          if (correct) await clearMistake(chatId, i);
-          else await recordMistake(chatId, i, scope, scopeNames, 'mcq', q.question, (q.options || [])[q.answerIndex], q.explanation);
+          const r = correct ? await clearMistake(chatId, i)
+                             : await recordMistake(chatId, i, scope, scopeNames, 'mcq', q.question, (q.options || [])[q.answerIndex], q.explanation);
+          if (chatId && !r.ok) opts.append(mvSyncFailedHint(r));
           retryBtn.hidden = correct || !chatId;
         });
         opts.append(btn);
