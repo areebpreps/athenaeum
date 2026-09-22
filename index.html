@@ -2798,7 +2798,7 @@ function hubsSection() {
       linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
       linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
-      linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Chorcha Question Bank' }),
+      linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Question banks — Bangladesh & international' }),
       linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
       linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Browse YouTube, save videos to watch in-app' })));
 }
@@ -6770,10 +6770,25 @@ function launchPage(title, url, crumbList, actions = [], tip = '') {
   ] };
 }
 
-/* ---------- Portals ---------- */
-const PORTALS = [
-  { key: 'chorcha', name: 'Chorcha Question Bank', url: CONFIG.PORTAL_CHORCHA_URL, note: 'Question bank' }
+/* ---------- Portals (C1: Chorcha plus more, filterable by country) ---------- */
+const PORTAL_COUNTRIES = [
+  { key: 'bd',   label: 'Bangladesh' },
+  { key: 'intl', label: 'International' }
 ];
+const portalCountryLabel = k => (PORTAL_COUNTRIES.find(c => c.key === k) || { label: 'Other' }).label;
+
+const PORTALS = [
+  { key: 'chorcha',     country: 'bd',   name: 'Chorcha Question Bank',      url: CONFIG.PORTAL_CHORCHA_URL, subject: 'University admission', note: 'Question bank' },
+  { key: 'khan',        country: 'intl', name: 'Khan Academy',               url: 'https://www.khanacademy.org/', subject: 'Math, science & SAT', note: 'Free lessons and practice questions' },
+  { key: 'ck12',        country: 'intl', name: 'CK-12',                      url: 'https://www.ck12.org/', subject: 'STEM', note: 'Free K-12 STEM practice & flashcards' },
+  { key: 'ielts',       country: 'intl', name: 'IELTS by British Council',   url: 'https://takeielts.britishcouncil.org/take-ielts/prepare', subject: 'English test', note: 'Official free IELTS practice materials' },
+  { key: 'duolingo-et', country: 'intl', name: 'Duolingo English Test',      url: 'https://englishtest.duolingo.com/', subject: 'English test', note: 'Practice test for the DET' },
+  { key: 'quizlet',     country: 'intl', name: 'Quizlet',                    url: 'https://quizlet.com/', subject: 'General', note: 'Flashcards and practice sets, any subject' },
+  { key: 'pmt',         country: 'intl', name: 'Physics & Maths Tutor',      url: 'https://www.physicsandmathstutor.com/', subject: 'A-Level / IGCSE', note: 'Free past papers, mark schemes & topic questions' },
+  { key: 'act-academy', country: 'intl', name: 'ACT Academy',                url: 'https://www.act.org/academy', subject: 'ACT test', note: 'Free official ACT practice questions and tests' }
+];
+
+let portalFilter = 'all';
 
 function portalsPage(itemKey) {
   const crumbList = [{ text: 'Workspace', href: '#workspace' }];
@@ -6782,10 +6797,29 @@ function portalsPage(itemKey) {
     if (!item || !item.url) return go('#workspace/portals');
     return launchPage(item.name, item.url, [...crumbList, { text: 'Portals', href: '#workspace/portals' }]);
   }
+
+  const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by country' });
+  const box = h('div');
+  const show = c => portalFilter === 'all' || portalFilter === c;
+
+  const paint = () => {
+    chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.c === portalFilter)));
+    const list = PORTALS.filter(i => i.url && show(i.country));
+    box.replaceChildren(list.length
+      ? h('div', { class: 'list' }, list.map(it => linkRow({
+          href: '#workspace/portals/' + it.key, title: it.name,
+          meta: [portalCountryLabel(it.country), it.subject, it.note].filter(Boolean).join(' · ') })))
+      : h('p', { class: 'none', text: 'No portals for this filter yet.' }));
+  };
+  [{ key: 'all', label: 'All' }, ...PORTAL_COUNTRIES].forEach(c => chips.append(h('button', {
+    type: 'button', class: 'chip-btn', 'data-c': c.key, text: c.label, onclick: () => { portalFilter = c.key; paint(); }
+  })));
+  paint();
+
   return { title: 'Portals', nodes: [
     crumbs(crumbList),
-    h('div', { class: 'list' }, PORTALS.filter(i => i.url).map(it => linkRow({
-      href: '#workspace/portals/' + it.key, title: it.name, meta: it.note })))
+    chips,
+    box
   ] };
 }
 
