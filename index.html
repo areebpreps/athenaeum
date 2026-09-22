@@ -303,6 +303,14 @@
   .chat-input .btn.small { flex: none; }
   .provider-note { color: var(--dim); font-size: 14px; margin: 0 0 20px; }
   .key-link { margin-bottom: 12px; }
+  .qopt {
+    min-height: 48px; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--paper); color: var(--chalk); text-align: left; font-size: 15px; line-height: 1.4;
+  }
+  .qopt:active { background: var(--paper-hi); }
+  .qopt:disabled { opacity: 1; }
+  .qopt.correct { border-color: var(--ok); background: rgba(127,209,160,.14); color: var(--ok); }
+  .qopt.wrong   { border-color: var(--err); background: rgba(255,154,154,.14); color: var(--err); }
   .seg.types { margin-bottom: 0; }
   .swatches { display: flex; flex-wrap: wrap; gap: 10px; }
   .swatch { width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent; background: var(--c); box-shadow: inset 0 0 0 2px var(--paper); }
@@ -1996,13 +2004,17 @@ async function buildWorkspaceRoot() {
 }
 
 /* =====================================================================
-   Phase 3.2: AI tools
+   Phase 3.2: AI tools — DONE (all six tools built)
    Live under the AI tools tab: #ai/<tool>[/<chat id>]. Gemini only — the
-   key and model name are set in #ai/settings and every tool below calls
-   through callAI() (text) or callAIVision() (photo + text). The key is
-   stored with `store` (localStorage only): never synced to Supabase,
-   never included in the JSON/ZIP backup, per the blueprint's security
-   section.
+   key and model name are set in #ai/settings. Every tool below calls
+   through one of: callAI() (text), callAIVision() (photo + text), or
+   callGeminiGroundedRaw() (text/photo + Google Search grounding, used by
+   the Fact Checker). The key is stored with `store` (localStorage only):
+   never synced to Supabase, never included in the JSON/ZIP backup, per
+   the blueprint's security section. No schema changes were needed beyond
+   schema-update-3.2-solver.sql (the ai_messages.image_path column) — the
+   Quiz Generator saves its questions as a JSON string in ai_messages.content,
+   and everything else is plain text.
    ===================================================================== */
 const AI_KEYS = {
   geminiKey:   'aw.ai.gemini.key',
@@ -2073,6 +2085,30 @@ async function callAIVision(system, textPrompt, imageBase64, mimeType) {
   return callGeminiRaw(s.geminiModel, s.geminiKey, system, [{ role: 'user', parts }]);
 }
 
+// Grounded caller (Fact Checker): same shape as callGeminiRaw, but turns on
+// Gemini's google_search tool and pulls a source link out of the grounding
+// metadata Gemini returns alongside the answer.
+async function callGeminiGroundedRaw(model, key, system, contents) {
+  const modelId = normalizeGeminiModel(model);
+  if (!GEMINI_MODEL_RE.test(modelId)) {
+    throw new Error('That Gemini model name looks off. In Settings, use just the model id with no extra text — e.g. gemini-2.5-flash.');
+  }
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+              encodeURIComponent(modelId) + ':generateContent?key=' + encodeURIComponent(key);
+  const body = { contents, tools: [{ google_search: {} }] };
+  if (system) body.systemInstruction = { parts: [{ text: system }] };
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data.error && data.error.message) || ('Gemini error (' + res.status + ').'));
+  const cand = data.candidates && data.candidates[0];
+  const parts = cand && cand.content && cand.content.parts;
+  const text = parts ? parts.map(p => p.text || '').join('') : '';
+  if (!text) throw new Error('Gemini returned an empty response. It may have blocked the reply — try rephrasing.');
+  const chunks = (cand.groundingMetadata && cand.groundingMetadata.groundingChunks) || [];
+  const sources = chunks.map(c => c.web).filter(w => w && w.uri);
+  return { text, sources };
+}
+
 // FileReader -> raw base64 (strips the "data:...;base64," prefix).
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -2085,9 +2121,14 @@ function blobToBase64(blob) {
 
 /* ---------- routing ---------- */
 function buildAI(ids = []) {
-  if (ids[0] === 'settings') return aiSettingsPage();
-  if (ids[0] === 'ask')      return askAIHub(ids[1]);
-  if (ids[0] === 'solver')   return solverHub(ids[1]);
+  if (ids[0] === 'settings')   return aiSettingsPage();
+  if (ids[0] === 'ask')        return askAIHub(ids[1]);
+  if (ids[0] === 'solver')     return solverHub(ids[1]);
+  if (ids[0] === 'factcheck')  return factcheckHub(ids[1]);
+  if (ids[0] === 'youtube')    return youtubeHub(ids[1]);
+  if (ids[0] === 'summarizer') return summarizerHub(ids[1]);
+  if (ids[0] === 'quiz')       return quizHub(ids[1]);
+  if (ids[0] === 'translate')  return translatorHub(ids[1]);
   return buildAIRoot();
 }
 
@@ -2103,14 +2144,12 @@ function buildAIRoot() {
       h('div', { class: 'list' },
         linkRow({ href: '#ai/settings', title: 'Settings', meta: configured ? 'Gemini key added' : 'Add your Gemini key to begin' }),
         linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }),
-        linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }))),
-    section('Coming soon', null, null,
-      h('div', { class: 'list' },
-        disabledRow('Fact Checker', 'True / False / Partially true, with a source link'),
-        disabledRow('YouTube summarizer', 'Player plus a summary from the link or a pasted transcript'),
-        disabledRow('Summarizer & Formula Excerptor', 'Turn notes into summaries and cheat sheets'),
-        disabledRow('Quiz Generator', 'MCQ and essay tests from your notes'),
-        disabledRow('Translator & Dictionary', 'English / Bangla translation and vocabulary lookup')))
+        linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }),
+        linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, with a source link' }),
+        linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
+        linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
+        linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
+        linkRow({ href: '#ai/translate', title: 'Translator & Dictionary', meta: 'English / Bangla translation and vocabulary lookup' })))
   ] };
 }
 
@@ -2293,12 +2332,13 @@ const SOLVER_EXPLAIN_SYSTEM =
 // Uploads a solved question's photo to the same private bucket the
 // Reference Vault uses, but not as a `sources` row — it's not tied to any
 // subject/chapter/topic, just kept for this chat's own Explain step.
-async function uploadSolverImage(blob) {
-  const path = currentUser.id + '/solver-' + crypto.randomUUID() + '.jpg';
+async function uploadToolImage(prefix, blob) {
+  const path = currentUser.id + '/' + prefix + '-' + crypto.randomUUID() + '.jpg';
   const up = await sb.storage.from(REF_BUCKET).upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: false });
   if (up.error) throw up.error;
   return path;
 }
+async function uploadSolverImage(blob) { return uploadToolImage('solver', blob); }
 
 // Re-derives base64 image data from a saved storage path, for Explain when
 // the photo isn't in this session's in-memory cache (reload, other device).
@@ -2454,6 +2494,541 @@ async function solverPast(chatId) {
   }
 
   return { title: chatRes.data.title || 'Solved question', nodes: [crumbs(crumb), log, explainNode] };
+}
+
+/* ---------- Fact Checker ----------
+   Single-shot: a claim (text and/or a photo of one) in, a verdict out.
+   Uses callGeminiGroundedRaw so Gemini can search the web; the top source
+   it cites is appended to the saved answer as a plain "Source: <url>" line
+   (no new columns needed — same ai_chats/ai_messages tables as everything
+   else in 3.2). A photo, if added, is uploaded the same private way the
+   Question Solver does it. */
+const FACTCHECK_SYSTEM =
+  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. ' +
+  'Use web search to verify it. Reply in plain text, no markdown. The very first line must be exactly one of these three ' +
+  'words: True, False, or Partially true. Then, on the next lines, a short explanation (2-4 sentences) of why, based on what you found.';
+
+async function callAIFactCheck(claimText, imageB64, mime) {
+  const s = aiSettings();
+  if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
+  const parts = [];
+  if (claimText) parts.push({ text: claimText });
+  if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
+  return callGeminiGroundedRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }]);
+}
+
+// Renders the verdict word as a coloured status card (reuses the .status
+// card the app already uses for error states) followed by the explanation.
+function verdictBadge(answer) {
+  const m = answer.match(/^(True|False|Partially true)\s*/i);
+  const word = m ? m[0].trim() : 'Result';
+  const rest = m ? answer.slice(m[0].length).trim() : answer;
+  const kind = /^false$/i.test(word) ? 'bad' : /^true$/i.test(word) ? 'good' : '';
+  return h('div', { class: 'status ' + kind }, h('strong', { text: word }), rest);
+}
+
+function factcheckHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Fact Checker');
+  return chatId ? factcheckPast(chatId) : factcheckList();
+}
+
+function factcheckPanel() {
+  const ta = h('textarea', { class: 'control area', rows: 3, placeholder: 'Paste a claim to check…' });
+  const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  let pickedFile = null;
+  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add a photo instead', onclick: () => fileInput.click() });
+  const photoLabel = h('p', { class: 'hint-line', hidden: true });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Check' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  fileInput.addEventListener('change', () => {
+    pickedFile = (fileInput.files && fileInput.files[0]) || null;
+    photoLabel.hidden = !pickedFile;
+    photoLabel.textContent = pickedFile ? ('Photo added: ' + pickedFile.name) : '';
+  });
+
+  goBtn.addEventListener('click', async () => {
+    const claim = ta.value.trim();
+    if (!claim && !pickedFile) { err.textContent = 'Type a claim or add a photo.'; err.hidden = false; return; }
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Checking…';
+    try {
+      let blob = null, b64 = null, mime = null, imagePath = null;
+      if (pickedFile) {
+        blob = await compressImage(pickedFile);
+        mime = blob.type || 'image/jpeg';
+        b64 = await blobToBase64(blob);
+      }
+      const { text, sources } = await callAIFactCheck(claim, b64, mime);
+      const answer = text + (sources.length ? ('\n\nSource: ' + sources[0].uri) : '');
+      result.replaceChildren(verdictBadge(answer));
+
+      if (blob) { try { imagePath = await uploadToolImage('factcheck', blob); } catch (e) { /* non-fatal */ } }
+
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'factcheck', title: (claim || 'Photo claim').slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: claim || '[Photo claim]', image_path: imagePath },
+         { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
+      if (msgIns.error) throw msgIns.error;
+
+      ta.value = ''; pickedFile = null; fileInput.value = ''; photoLabel.hidden = true;
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not check that claim. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Check';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New claim' })),
+    h('p', { class: 'hint-line', text: 'Paste a claim, or add a photo of one, and get a verdict with a source.' }),
+    h('div', { class: 'field' }, ta),
+    h('div', { class: 'vault-actions' }, photoBtn, fileInput),
+    photoLabel, goBtn, err, result);
+}
+
+async function factcheckList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'factcheck').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'Fact Checker', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    factcheckPanel(),
+    ...(chats.length
+      ? [section('Past checks', null, null,
+          h('div', { class: 'list' }, chats.map(c => linkRow({
+            href: '#ai/factcheck/' + c.id, title: c.title || 'Checked claim', meta: new Date(c.created_at).toLocaleString()
+          }))))]
+      : [h('p', { class: 'none', text: 'No claims checked yet.' })])
+  ] };
+}
+
+async function factcheckPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Fact Checker', href: '#ai/factcheck' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, image_path, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Fact Checker', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const claimRow = msgs.find(m => m.role === 'user');
+  const answerRow = msgs.find(m => m.role === 'assistant');
+  return { title: chatRes.data.title || 'Checked claim', nodes: [
+    crumbs(crumb),
+    (claimRow && claimRow.content !== '[Photo claim]') ? h('p', { class: 'hint-line', text: claimRow.content }) : null,
+    (claimRow && claimRow.image_path) ? dlThumb(claimRow.image_path) : null,
+    answerRow ? verdictBadge(answerRow.content) : h('p', { class: 'none', text: 'No result saved.' })
+  ] };
+}
+
+/* ---------- YouTube summarizer ----------
+   A public YouTube link is passed straight to Gemini as a file_data part
+   (no download/transcription on our side); if a link can't be read,
+   pasting the transcript text falls back to a normal text call. */
+const YOUTUBE_SYSTEM =
+  'You are the YouTube summarizer in a student\'s Athenaeum workspace app. Summarize the video (or the pasted transcript) for exam ' +
+  'study: a short overview, then the key points as plain lines — no markdown bullets, headers or asterisks, just line breaks. Keep it focused.';
+
+async function callAIYoutube(url, transcript) {
+  const s = aiSettings();
+  if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
+  const contents = url
+    ? [{ role: 'user', parts: [{ file_data: { file_uri: url } }, { text: 'Summarize this video for studying.' }] }]
+    : [{ role: 'user', parts: [{ text: 'Summarize this transcript for studying:\n\n' + transcript }] }];
+  return callGeminiRaw(s.geminiModel, s.geminiKey, YOUTUBE_SYSTEM, contents);
+}
+
+function youtubeHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('YouTube summarizer');
+  return chatId ? youtubePast(chatId) : youtubeList();
+}
+
+function youtubePanel() {
+  const fUrl = makeField('YouTube link', { placeholder: 'https://www.youtube.com/watch?v=…' });
+  const fTranscript = makeField('…or paste a transcript instead', { multiline: true, rows: 4, placeholder: 'Paste the transcript text here' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Summarize' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const url = fUrl.input.value.trim();
+    const transcript = fTranscript.input.value.trim();
+    if (!url && !transcript) { err.textContent = 'Paste a YouTube link or a transcript.'; err.hidden = false; return; }
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Summarizing…';
+    try {
+      const summary = await callAIYoutube(url, transcript);
+      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: summary })));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'youtube', title: (url || transcript).slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: url ? ('[YouTube] ' + url) : ('[Transcript] ' + transcript.slice(0, 500)) },
+         { chat_id: chatIns.data.id, role: 'assistant', content: summary }]);
+      if (msgIns.error) throw msgIns.error;
+      fUrl.input.value = ''; fTranscript.input.value = '';
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not summarize that. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Summarize';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
+    h('p', { class: 'hint-line', text: 'Paste a public YouTube link, or a transcript if the link can\'t be read.' }),
+    fUrl.wrap, fTranscript.wrap, goBtn, err, result);
+}
+
+async function youtubeList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'youtube').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'YouTube summarizer', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    youtubePanel(),
+    ...(chats.length
+      ? [section('Past summaries', null, null,
+          h('div', { class: 'list' }, chats.map(c => linkRow({
+            href: '#ai/youtube/' + c.id, title: c.title || 'Video summary', meta: new Date(c.created_at).toLocaleString()
+          }))))]
+      : [h('p', { class: 'none', text: 'No summaries yet.' })])
+  ] };
+}
+
+async function youtubePast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'YouTube summarizer', href: '#ai/youtube' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'YouTube summarizer', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const src = msgs.find(m => m.role === 'user');
+  const ans = msgs.find(m => m.role === 'assistant');
+  return { title: chatRes.data.title || 'Video summary', nodes: [
+    crumbs(crumb),
+    src ? h('p', { class: 'hint-line', text: src.content }) : null,
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' })
+  ] };
+}
+
+/* ---------- Summarizer & Formula Excerptor ---------- */
+const SUMMARIZER_SYSTEM =
+  'You are the Summarizer and Formula Excerptor in a student\'s Athenaeum workspace app. You are given a block of notes. Reply in ' +
+  'plain text, no markdown. First write a line "SUMMARY:" followed by a tight study summary. Then a blank line, then a line ' +
+  '"FORMULAS:" followed by every formula found, one per line, each with a short label — or, if none are in the notes, the single ' +
+  'line "None found in these notes."';
+
+function summarizerHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Summarizer & Formula Excerptor');
+  return chatId ? summarizerPast(chatId) : summarizerList();
+}
+
+function summarizerPanel() {
+  const ta = h('textarea', { class: 'control area', rows: 6, placeholder: 'Paste your notes here…' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Summarize' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const notes = ta.value.trim();
+    if (!notes) { err.textContent = 'Paste some notes first.'; err.hidden = false; return; }
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Summarizing…';
+    try {
+      const answer = await callAI(SUMMARIZER_SYSTEM, [{ role: 'user', content: notes }]);
+      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'summarizer', title: notes.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: notes.slice(0, 2000) },
+         { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
+      if (msgIns.error) throw msgIns.error;
+      ta.value = '';
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not summarize that. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Summarize';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
+    h('p', { class: 'hint-line', text: 'Paste notes to get a summary plus any formulas pulled out as a cheat sheet.' }),
+    h('div', { class: 'field' }, ta), goBtn, err, result);
+}
+
+async function summarizerList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'summarizer').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'Summarizer & Formula Excerptor', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    summarizerPanel(),
+    ...(chats.length
+      ? [section('Past summaries', null, null,
+          h('div', { class: 'list' }, chats.map(c => linkRow({
+            href: '#ai/summarizer/' + c.id, title: c.title || 'Summary', meta: new Date(c.created_at).toLocaleString()
+          }))))]
+      : [h('p', { class: 'none', text: 'No summaries yet.' })])
+  ] };
+}
+
+async function summarizerPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Summarizer & Formula Excerptor', href: '#ai/summarizer' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Summarizer & Formula Excerptor', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const ans = msgs.find(m => m.role === 'assistant');
+  return { title: chatRes.data.title || 'Summary', nodes: [
+    crumbs(crumb),
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' })
+  ] };
+}
+
+/* ---------- Quiz Generator ----------
+   Gemini is asked to reply with strict JSON only (no markdown fences); it's
+   parsed and rendered as an interactive quiz (tap an option / reveal a
+   model answer). The raw JSON is what's saved as the assistant message,
+   so reopening a past quiz re-parses and re-renders it the same way. */
+const QUIZ_SYSTEM =
+  'You are the Quiz Generator in a student\'s Athenaeum workspace app. Reply with ONLY valid JSON, no markdown code fences, no ' +
+  'commentary before or after it. For "mcq" quizzes return exactly this shape: {"type":"mcq","questions":[{"question":"...",' +
+  '"options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. For "essay" quizzes return exactly this shape: ' +
+  '{"type":"essay","questions":[{"question":"...","modelAnswer":"..."}]}. Base every question only on the material given. ' +
+  'Write plain text inside the strings, no markdown.';
+
+function quizPrompt(kind, count, material) {
+  return 'Make a ' + count + '-question ' + (kind === 'mcq' ? 'multiple choice' : 'essay') + ' quiz (' +
+    (kind === 'mcq' ? '4 options each, exactly one correct' : 'short essay prompts, each with a model answer') +
+    ') from this material:\n\n' + material;
+}
+
+function parseQuizJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !Array.isArray(data.questions) || !data.questions.length) throw new Error('The quiz came back in an unexpected shape.');
+  return data;
+}
+
+// Interactive player: tapping an MCQ option locks that question in and
+// shows right/wrong plus the explanation; essay questions reveal a model
+// answer on tap. Used both for a freshly generated quiz and a saved one.
+function quizPlayer(quiz) {
+  if (quiz.type === 'essay') {
+    return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
+      const answerP = h('p', { class: 'hint-line', hidden: true, text: q.modelAnswer });
+      const reveal = h('button', { class: 'btn quiet small', type: 'button', text: 'Show model answer' });
+      reveal.addEventListener('click', () => {
+        answerP.hidden = !answerP.hidden;
+        reveal.textContent = answerP.hidden ? 'Show model answer' : 'Hide model answer';
+      });
+      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), reveal, answerP);
+    }));
+  }
+  return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
+    const opts = h('div', { class: 'list' });
+    let answered = false;
+    (q.options || []).forEach((opt, oi) => {
+      const btn = h('button', { class: 'qopt', type: 'button', text: opt });
+      btn.addEventListener('click', () => {
+        if (answered) return;
+        answered = true;
+        opts.querySelectorAll('.qopt').forEach((b, bi) => {
+          b.disabled = true;
+          if (bi === q.answerIndex) b.classList.add('correct');
+          else if (bi === oi) b.classList.add('wrong');
+        });
+        if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
+      });
+      opts.append(btn);
+    });
+    return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), opts);
+  }));
+}
+
+function quizHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Quiz Generator');
+  return chatId ? quizPast(chatId) : quizList();
+}
+
+function quizPanel() {
+  const fMaterial = makeField('Notes or topic', { multiline: true, rows: 4, placeholder: 'Paste notes, or type a topic' });
+  let kind = 'mcq';
+  const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Quiz type' },
+    [['mcq', 'MCQ'], ['essay', 'Essay']].map(([k, l]) => h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { kind = k; syncSeg(); } })));
+  const syncSeg = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === kind)));
+  syncSeg();
+  const fCount = makeField('Number of questions', { value: '5' });
+  fCount.input.type = 'number'; fCount.input.min = '1'; fCount.input.max = '20';
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate quiz' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const material = fMaterial.input.value.trim();
+    const count = Math.max(1, Math.min(20, parseInt(fCount.input.value, 10) || 5));
+    if (!material) { err.textContent = 'Paste some notes or a topic.'; err.hidden = false; return; }
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Generating…';
+    try {
+      const raw = await callAI(QUIZ_SYSTEM, [{ role: 'user', content: quizPrompt(kind, count, material) }]);
+      const quiz = parseQuizJSON(raw);
+      result.replaceChildren(quizPlayer(quiz));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'quiz', title: material.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + kind.toUpperCase() + ' · ' + count + ' questions] ' + material.slice(0, 300) },
+         { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(quiz) }]);
+      if (msgIns.error) throw msgIns.error;
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not generate that quiz. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Generate quiz';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New quiz' })),
+    fMaterial.wrap,
+    h('div', { class: 'field' }, h('label', { text: 'Type' }), seg),
+    fCount.wrap, goBtn, err, result);
+}
+
+async function quizList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'quiz').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'Quiz Generator', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    quizPanel(),
+    ...(chats.length
+      ? [section('Past quizzes', null, null,
+          h('div', { class: 'list' }, chats.map(c => linkRow({
+            href: '#ai/quiz/' + c.id, title: c.title || 'Quiz', meta: new Date(c.created_at).toLocaleString()
+          }))))]
+      : [h('p', { class: 'none', text: 'No quizzes yet.' })])
+  ] };
+}
+
+async function quizPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Quiz Generator', href: '#ai/quiz' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Quiz Generator', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const ans = msgs.find(m => m.role === 'assistant');
+  let node;
+  try { node = ans ? quizPlayer(JSON.parse(ans.content)) : h('p', { class: 'none', text: 'No quiz saved.' }); }
+  catch (e) { node = h('p', { class: 'none', text: 'Could not read this saved quiz.' }); }
+  return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), node] };
+}
+
+/* ---------- Translator & Dictionary ---------- */
+const TRANSLATE_SYSTEM =
+  'You are the Translator and Dictionary in a student\'s Athenaeum workspace app, working between English and Bangla. Reply in ' +
+  'plain text, no markdown.';
+
+function translatePrompt(mode, direction, text) {
+  if (mode === 'dictionary') {
+    return 'Give a dictionary entry for "' + text + '": part of speech, a clear definition, one example sentence, 2-3 synonyms, ' +
+      'and its Bangla equivalent. Label each line plainly, e.g. "Definition: …".';
+  }
+  const dirLine = direction === 'en2bn' ? 'Translate this English text into Bangla'
+                : direction === 'bn2en' ? 'Translate this Bangla text into English'
+                : 'Detect the language and translate it into the other of English/Bangla';
+  return dirLine + ':\n\n' + text;
+}
+
+function translatorHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Translator & Dictionary');
+  return chatId ? translatorPast(chatId) : translatorList();
+}
+
+function translatorPanel() {
+  let mode = 'translate', direction = 'auto';
+  const modeSeg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Mode' },
+    [['translate', 'Translate'], ['dictionary', 'Dictionary']].map(([k, l]) =>
+      h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { mode = k; syncMode(); } })));
+  const dirSeg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Direction' },
+    [['auto', 'Auto'], ['en2bn', 'En → Bn'], ['bn2en', 'Bn → En']].map(([k, l]) =>
+      h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { direction = k; syncDir(); } })));
+  const dirWrap = h('div', { class: 'field' }, h('label', { text: 'Direction' }), dirSeg);
+  const syncMode = () => { modeSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === mode))); dirWrap.hidden = mode !== 'translate'; };
+  const syncDir = () => dirSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === direction)));
+  syncMode(); syncDir();
+
+  const fText = makeField('Word, phrase or text', { multiline: true, rows: 3, placeholder: 'Type here…' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Go' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const text = fText.input.value.trim();
+    if (!text) { err.textContent = 'Type something first.'; err.hidden = false; return; }
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Working…';
+    try {
+      const answer = await callAI(TRANSLATE_SYSTEM, [{ role: 'user', content: translatePrompt(mode, direction, text) }]);
+      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'translate', title: text.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + mode + (mode === 'translate' ? ' · ' + direction : '') + '] ' + text },
+         { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
+      if (msgIns.error) throw msgIns.error;
+      fText.input.value = '';
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not do that. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Go';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New lookup' })),
+    h('div', { class: 'field' }, h('label', { text: 'Mode' }), modeSeg),
+    dirWrap, fText.wrap, goBtn, err, result);
+}
+
+async function translatorList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'translate').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'Translator & Dictionary', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    translatorPanel(),
+    ...(chats.length
+      ? [section('Past lookups', null, null,
+          h('div', { class: 'list' }, chats.map(c => linkRow({
+            href: '#ai/translate/' + c.id, title: c.title || 'Lookup', meta: new Date(c.created_at).toLocaleString()
+          }))))]
+      : [h('p', { class: 'none', text: 'No lookups yet.' })])
+  ] };
+}
+
+async function translatorPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Translator & Dictionary', href: '#ai/translate' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Translator & Dictionary', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const src = msgs.find(m => m.role === 'user');
+  const ans = msgs.find(m => m.role === 'assistant');
+  return { title: chatRes.data.title || 'Lookup', nodes: [
+    crumbs(crumb),
+    src ? h('p', { class: 'hint-line', text: src.content }) : null,
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' })
+  ] };
 }
 
 /* ---------- Subjects > Chapter > Topic pages ---------- */
