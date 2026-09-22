@@ -359,6 +359,23 @@
   .swatch { width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent; background: var(--c); box-shadow: inset 0 0 0 2px var(--paper); }
   .swatch[aria-checked="true"] { border-color: var(--chalk); }
 
+  /* ---------- Phase B2: grammar & citation checker (Translator) ---------- */
+  .mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+  .mode-tabs a {
+    text-align: center; min-height: 48px; display: flex; align-items: center; justify-content: center;
+    border-radius: 14px; border: 1px solid var(--line); background: var(--paper); color: var(--dim);
+    font-weight: 600; text-decoration: none;
+  }
+  .mode-tabs a.active { background: var(--paper-hi); color: var(--chalk); border-color: var(--marker); }
+  .issue-list { display: grid; gap: 10px; margin: 0 0 16px; }
+  .issue-card { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: grid; gap: 6px; }
+  .issue-card .chip.grammar    { color: var(--chalk); background: rgba(154,162,186,.16); }
+  .issue-card .chip.citation   { color: var(--err); background: rgba(255,154,154,.12); }
+  .issue-card del { color: var(--err); text-decoration: line-through; opacity: .8; }
+  .issue-card ins { color: var(--ok); text-decoration: none; }
+  .issue-card p { margin: 0; font-size: 14px; color: var(--dim); }
+  .issue-card .snippet { font-size: 15px; color: var(--chalk); }
+
   /* ---------- Phase 3.1: hubs (planner, projects, wiki, portals, 3D) ---------- */
   .bullets { margin: 6px 0 0; padding-left: 20px; color: var(--dim); font-size: 15px; }
   .bullets li { margin-bottom: 2px; }
@@ -2778,7 +2795,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'quiz')       return quizHub(ids[1]);
   if (ids[0] === 'flashgen')   return flashcardGenHub();
   if (ids[0] === 'vault')      return vaultHub();
-  if (ids[0] === 'translate')  return translatorHub(ids[1]);
+  if (ids[0] === 'translate')  return translatorHub(ids.slice(1));
   if (ids[0] === 'study')      return studyHub(ids[1]);
   if (ids[0] === 'infographic') return infographicHub(ids[1]);
   if (ids[0] === 'export')      return exportHub();
@@ -2804,7 +2821,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
         linkRow({ href: '#ai/flashgen', title: 'Flashcard Generator', meta: 'Turn notes into spaced-repetition flashcards' }),
         linkRow({ href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' }),
-        linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' }),
+        linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation, plus grammar & citation checking' }),
         linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
         linkRow({ href: '#ai/infographic', title: 'Infographic Generator', meta: 'Notes drawn as styled cards, saved as an image' }),
         linkRow({ href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' })))
@@ -4227,8 +4244,18 @@ async function callGoogleTranslate(text, sl, tl) {
   return translated;
 }
 
-function translatorHub(chatId) {
-  return chatId ? translatorPast(chatId) : translatorList();
+function translatorHub(ids = []) {
+  if (ids[0] === 'check') return checkWritingHub(ids[1]);
+  return ids[0] ? translatorPast(ids[0]) : translatorList();
+}
+
+// Two modes share the Translator screen (per the blueprint: "Check writing"
+// lives inside the existing Translator section) — this renders the tab strip
+// that switches between them. `active` is 'translate' or 'check'.
+function translatorModeTabs(active) {
+  return h('div', { class: 'mode-tabs', role: 'tablist' },
+    h('a', { href: '#ai/translate', class: active === 'translate' ? 'active' : '', text: 'Translate' }),
+    h('a', { href: '#ai/translate/check', class: active === 'check' ? 'active' : '', text: 'Check writing' }));
 }
 
 function translatorPanel() {
@@ -4290,6 +4317,7 @@ async function translatorList() {
   const chats = must(res);
   return { title: 'Translator', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
+    translatorModeTabs('translate'),
     translatorPanel(),
     ...(chats.length
       ? [section('Past translations', null, null,
@@ -4310,10 +4338,143 @@ async function translatorPast(chatId) {
   const ans = msgs.find(m => m.role === 'assistant');
   return { title: chatRes.data.title || 'Translation', nodes: [
     crumbs(crumb),
+    translatorModeTabs('translate'),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
     ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' }),
     ans ? listenButton(() => ans.content) : null,
     editButton('Delete chat', () => confirmDeleteChat(chatId))
+  ] };
+}
+
+/* ---------- Grammar & citation checker (B2) ----------
+   Lives inside the Translator section per the blueprint. Uses the same
+   Gemini connection as every other AI tool (callAI). Saved under the same
+   ai_chats/ai_messages tables as everything else, with tool: 'checkwriting',
+   so it gets history, deletion and offline-download for free like the rest
+   of the AI Study Suite — the assistant message stores the raw JSON verdict,
+   parsed back out when reopened, the same pattern the Infographic Generator uses. */
+const CHECK_WRITING_SYSTEM =
+  'You are the Grammar & Citation Checker inside a student\'s Athenaeum workspace app, part of the Translator tool. Reply with ' +
+  'ONLY valid JSON, no markdown code fences, no commentary before or after it. Return exactly this shape: {"correctedText":"...",' +
+  '"grammarIssues":[{"original":"...","suggestion":"...","explanation":"..."}],"citationIssues":[{"passage":"...","concern":"...",' +
+  '"suggestion":"..."}],"citationFormatNotes":"..."}. "correctedText" is the full text with grammar, spelling, punctuation and ' +
+  'wording issues fixed, keeping the author\'s own meaning and voice — do not rewrite style choices that are not actually wrong. ' +
+  '"grammarIssues" lists each specific problem found: "original" is the exact problem snippet, "suggestion" is the fix, ' +
+  '"explanation" is one short plain-English reason; return an empty array if there are none. "citationIssues" flags passages that ' +
+  'read as likely uncredited or copied text (a sudden shift in style or vocabulary, a specific claim or statistic stated with no ' +
+  'source, phrasing that sounds lifted from elsewhere) or that cite a source with incomplete or inconsistent formatting — for each, ' +
+  '"passage" quotes the text, "concern" states what is off, "suggestion" says how to fix it; return an empty array if there are ' +
+  'none. Never state as fact where a passage came from — only describe how it reads and why it is worth the student double-checking. ' +
+  '"citationFormatNotes" is one short overall note on citation-style consistency across the whole text (e.g. mixed APA/MLA, missing ' +
+  'in-text citations for quoted or specific numbers) — return an empty string if there is nothing to flag. Base everything only on ' +
+  'the text given.';
+
+function parseCheckWritingJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || typeof data.correctedText !== 'string') throw new Error('The writing check came back in an unexpected shape.');
+  if (!Array.isArray(data.grammarIssues)) data.grammarIssues = [];
+  if (!Array.isArray(data.citationIssues)) data.citationIssues = [];
+  if (typeof data.citationFormatNotes !== 'string') data.citationFormatNotes = '';
+  return data;
+}
+
+function checkWritingResultBlock(data, sourceText) {
+  const grammarCards = data.grammarIssues.map(iss => h('div', { class: 'issue-card' },
+    h('span', { class: 'chip grammar', text: 'Grammar' }),
+    h('p', { class: 'snippet' }, h('del', { text: iss.original }), ' → ', h('ins', { text: iss.suggestion })),
+    h('p', { text: iss.explanation })));
+  const citationCards = data.citationIssues.map(iss => h('div', { class: 'issue-card' },
+    h('span', { class: 'chip citation', text: 'Citation / originality' }),
+    h('p', { class: 'snippet', text: '"' + iss.passage + '"' }),
+    h('p', { text: iss.concern }),
+    h('p', { text: 'Suggestion: ' + iss.suggestion })));
+
+  return h('div', {},
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Corrected text' })),
+    h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: data.correctedText })),
+    listenButton(() => data.correctedText),
+    (grammarCards.length || citationCards.length || data.citationFormatNotes)
+      ? h('div', { class: 'sec-head' }, h('h3', { text: 'Issues found' }))
+      : h('p', { class: 'hint-line', text: 'No grammar or citation issues found.' }),
+    (grammarCards.length || citationCards.length) ? h('div', { class: 'issue-list' }, grammarCards, citationCards) : null,
+    data.citationFormatNotes ? h('p', { class: 'hint-line', text: 'Citation formatting: ' + data.citationFormatNotes }) : null);
+}
+
+function checkWritingPanel() {
+  const fText = makeField('Paste or type your text', { multiline: true, rows: 8, placeholder: 'Paste an essay, paragraph or answer here…' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Check writing' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const text = fText.input.value.trim();
+    if (!text) { err.textContent = 'Paste or type something first.'; err.hidden = false; return; }
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Checking…';
+    try {
+      const raw = await callAI(CHECK_WRITING_SYSTEM, [{ role: 'user', content: text }]);
+      const data = parseCheckWritingJSON(raw);
+      result.replaceChildren(checkWritingResultBlock(data, text));
+
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'checkwriting', title: text.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: text.slice(0, 4000) },
+         { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(data) }]);
+      if (msgIns.error) throw msgIns.error;
+      fText.input.value = '';
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not check that. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Check writing';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New check' })),
+    h('p', { class: 'hint-line', text: 'Grammar, spelling and clarity fixes side by side with the original, plus a flag on any passage that reads as uncredited/copied or has inconsistent citation formatting.' }),
+    fText.wrap, goBtn, err, result);
+}
+
+function checkWritingHub(chatId) {
+  return chatId ? checkWritingPast(chatId) : checkWritingList();
+}
+
+async function checkWritingList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'checkwriting').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'Check writing', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }, { text: 'Translator', href: '#ai/translate' }]),
+    translatorModeTabs('check'),
+    checkWritingPanel(),
+    ...(chats.length
+      ? [section('Past checks', null, null,
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/translate/check/' + c.id, c.title || 'Writing check', new Date(c.created_at).toLocaleString(), c.id))))]
+      : [h('p', { class: 'none', text: 'No writing checks yet.' })])
+  ] };
+}
+
+async function checkWritingPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Translator', href: '#ai/translate' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Check writing', nodes: [crumbs(crumb), translatorModeTabs('check'), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const src = msgs.find(m => m.role === 'user');
+  const ans = msgs.find(m => m.role === 'assistant');
+  let data = null;
+  if (ans) { try { data = parseCheckWritingJSON(ans.content); } catch (e) { /* fall through to raw view */ } }
+  return { title: chatRes.data.title || 'Writing check', nodes: [
+    crumbs(crumb),
+    translatorModeTabs('check'),
+    src ? h('p', { class: 'hint-line', text: src.content }) : null,
+    data ? checkWritingResultBlock(data, src && src.content)
+         : h('p', { class: 'none', text: 'No result saved.' }),
+    editButton('Delete check', () => confirmDeleteChat(chatId))
   ] };
 }
 
