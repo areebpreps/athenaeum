@@ -1846,6 +1846,7 @@ async function loadAllSources() {
 
 function dlLabel(info) {
   if (info.type === 'trap') return (info.row.warning || 'Trap').slice(0, 60);
+  if (info.type === 'mistake') return (info.row.question_text || 'Mistake').slice(0, 60);
   if (info.row.title) return info.row.title;
   if (info.type === 'note') return (info.row.body || 'Note').slice(0, 60);
   if (info.type === 'image') return 'Photo';
@@ -1853,9 +1854,9 @@ function dlLabel(info) {
   return ITEM_TYPES[info.type] ? ITEM_TYPES[info.type].label : 'Item';
 }
 
-const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'infobox', 'trap', 'image', 'pdf'];
+const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'infobox', 'trap', 'mistake', 'image', 'pdf'];
 const DL_LABEL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics',
-                   infobox: 'Info boxes', trap: 'Traps', image: 'Photos', pdf: 'PDFs' };
+                   infobox: 'Info boxes', trap: 'Traps', mistake: 'Mistake Vault', image: 'Photos', pdf: 'PDFs' };
 
 /* ---------- entry point ---------- */
 async function buildDownloads() {
@@ -1875,16 +1876,18 @@ async function buildDownloads() {
     must(cRes).forEach(c => { chaptersById[c.id] = c; });
     must(tRes).forEach(t => { topicsById[t.id] = t; });
 
-    const [items, sources, boxRes, trapRes] = await Promise.all([
+    const [items, sources, boxRes, trapRes, mistakeRes] = await Promise.all([
       loadAllItems(), loadAllSources(),
       sb.from('info_boxes').select('*').order('created_at', { ascending: false }),
-      sb.from('traps').select('*').order('created_at', { ascending: false })
+      sb.from('traps').select('*').order('created_at', { ascending: false }),
+      sb.from('mistake_vault').select('*').order('last_missed_at', { ascending: false })
     ]);
     const rows = [];
     const originOfRow = row => fullOrigin(row, subjectsById, chaptersById, topicsById);
     items.forEach(it => rows.push({ key: it.type + ':' + it.row.id, type: it.type, row: it.row, origin: originOfRow(it.row) }));
     must(boxRes).forEach(r => rows.push({ key: 'infobox:' + r.id, type: 'infobox', row: r, origin: originOfRow(r) }));
     must(trapRes).forEach(r => rows.push({ key: 'trap:' + r.id, type: 'trap', row: r, origin: originOfRow(r) }));
+    must(mistakeRes).forEach(r => rows.push({ key: 'mistake:' + r.id, type: 'mistake', row: r, origin: r.subject_id ? originOfRow(r) : null }));
     sources.forEach(s => {
       // Drive / OneDrive links live in the cloud, so there is nothing to keep offline.
       if (s.row.kind === 'link' || !s.row.storage_path) return;
@@ -2089,6 +2092,12 @@ function offlineItemCard(r) {
   }
   if (r.type === 'trap') {
     return h('div', { class: 'item' }, head('Trap'), h('span', { class: 'body', text: r.row.warning }));
+  }
+  if (r.type === 'mistake') {
+    return h('div', { class: 'item' },
+      head(QUIZ_KINDS[r.row.question_type] ? QUIZ_KINDS[r.row.question_type].label : 'Mistake'),
+      h('strong', { text: r.row.question_text }),
+      h('span', { class: 'body', text: 'Correct answer: ' + (r.row.correct_answer || '—') }));
   }
   const detail = r.type === 'formula' ? r.row.description : r.row.body;
   return h('div', { class: 'item' },
@@ -2301,6 +2310,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'youtube')    return youtubeHub(ids[1]);
   if (ids[0] === 'summarizer') return summarizerHub(ids[1]);
   if (ids[0] === 'quiz')       return quizHub(ids[1]);
+  if (ids[0] === 'vault')      return vaultHub();
   if (ids[0] === 'translate')  return translatorHub(ids[1]);
   if (ids[0] === 'study')      return studyHub(ids[1]);
   if (ids[0] === 'infographic') return infographicHub(ids[1]);
@@ -2325,6 +2335,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
+        linkRow({ href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' }),
         linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' }),
         linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
         linkRow({ href: '#ai/infographic', title: 'Infographic Generator', meta: 'Notes drawn as styled cards, saved as an image' }),
@@ -3169,10 +3180,73 @@ function parseQuizJSON(text) {
   return data;
 }
 
+/* ---------- Mistake Vault sync (4.1) ----------
+   A wrong MCQ/True-False tap, or a self-reported wrong Short/Math answer,
+   upserts a mistake_vault row keyed on "<quiz chat id>:<question index>" —
+   a repeat miss on the same question bumps wrong_count instead of
+   duplicating. A correct retake of that exact question deletes the row.
+   Rows carry the quiz's scope (if one was chosen) plus a few auto-derived
+   tags, so the vault can be filtered and searched like the rest of the app.
+   Every call here is best-effort: a vault write failing never blocks the
+   student from taking or seeing the result of the quiz itself. */
+const MV_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'to', 'in', 'is', 'are', 'and', 'or', 'for', 'on', 'at', 'by',
+  'with', 'what', 'which', 'who', 'whom', 'how', 'why', 'when', 'where', 'does', 'do', 'did', 'was', 'were', 'be',
+  'been', 'being', 'this', 'that', 'these', 'those', 'it', 'its', 'as', 'from', 'can', 'you', 'your', 'their', 'his',
+  'her', 'not', 'no', 'into', 'than', 'then', 'also', 'about']);
+function mvAutoTags(scopeNames, text) {
+  const tags = [];
+  if (scopeNames) [scopeNames.subject, scopeNames.chapter, scopeNames.topic].forEach(n => { if (n) tags.push(n); });
+  const words = ((text || '').toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []).filter(w => !MV_STOPWORDS.has(w));
+  for (const w of words) { if (tags.length >= 8) break; if (!tags.includes(w)) tags.push(w); }
+  return tags.slice(0, 8);
+}
+function mvKey(chatId, index) { return chatId + ':' + index; }
+
+async function recordMistake(chatId, index, scope, scopeNames, type, questionText, correctAnswer, explanation) {
+  if (!chatId) return;
+  try {
+    const key = mvKey(chatId, index);
+    const existing = await sb.from('mistake_vault').select('id, wrong_count').eq('question_key', key).maybeSingle();
+    if (existing.error) return;
+    if (existing.data) {
+      await sb.from('mistake_vault').update({
+        wrong_count: (existing.data.wrong_count || 1) + 1, last_missed_at: new Date().toISOString()
+      }).eq('id', existing.data.id);
+    } else {
+      await sb.from('mistake_vault').insert({
+        ...scopeCols(scope || {}), quiz_chat_id: chatId, question_key: key, question_type: type,
+        question_text: questionText, correct_answer: correctAnswer || null, explanation: explanation || null,
+        tags: mvAutoTags(scopeNames, questionText)
+      });
+    }
+  } catch (e) {}
+}
+async function clearMistake(chatId, index) {
+  if (!chatId) return;
+  try { await sb.from('mistake_vault').delete().eq('question_key', mvKey(chatId, index)); } catch (e) {}
+}
+function confirmRemoveMistake(row, after) {
+  showDialog({
+    title: 'Remove from Mistake Vault?',
+    text: 'This just clears the reminder — it does not change any quiz, note or grade.',
+    submitLabel: 'Remove', danger: true,
+    async onSubmit() {
+      const res = await sb.from('mistake_vault').delete().eq('id', row.id);
+      if (res.error) throw res.error;
+      (after || route)();
+    }
+  });
+}
+
 // Interactive player: tapping an MCQ/true-false option locks that question in and
-// shows right/wrong plus the explanation; essay/short/math questions reveal an
-// answer on tap. Used both for a freshly generated quiz and a saved one.
-function quizPlayer(quiz) {
+// shows right/wrong plus the explanation (and syncs the Mistake Vault); short/math
+// questions reveal an answer on tap plus a self-report control; essay questions
+// just reveal a model answer, with no vault sync (there's no single right answer).
+// chatId is the quiz's ai_chats row id — pass it so wrong answers can be tracked
+// and a "Try again" retake can clear them; omit it for a read-only render.
+function quizPlayer(quiz, chatId) {
+  const scope = quiz.scope || null;
+  const scopeNames = quiz.scopeNames || null;
   if (quiz.type === 'essay') {
     return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
       const answerP = h('p', { class: 'hint-line', hidden: true, text: q.modelAnswer });
@@ -3184,69 +3258,101 @@ function quizPlayer(quiz) {
       return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), reveal, answerP);
     }));
   }
-  if (quiz.type === 'short') {
+  if (quiz.type === 'short' || quiz.type === 'math') {
+    const isMath = quiz.type === 'math';
+    const showLabel = isMath ? 'Show answer & steps' : 'Show answer';
     return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
-      const answerP = h('p', { class: 'hint-line', hidden: true, text: 'Answer: ' + q.answer });
-      const reveal = h('button', { class: 'btn quiet small', type: 'button', text: 'Show answer' });
+      const answerText = 'Answer: ' + q.answer + (isMath && q.solution ? '\n' + q.solution : '');
+      const answerP = h('p', { class: 'hint-line', hidden: true, text: answerText });
+      const reveal = h('button', { class: 'btn quiet small', type: 'button', text: showLabel });
+      const status = h('small', { class: 'hint-line' });
+      const rightBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'I got it right' });
+      const wrongBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'I got it wrong' });
+      const report = h('div', { class: 'vault-actions', hidden: true }, rightBtn, wrongBtn, status);
+      rightBtn.addEventListener('click', async () => {
+        rightBtn.disabled = true; wrongBtn.disabled = true;
+        await clearMistake(chatId, i);
+        status.textContent = 'Nice — cleared from your Mistake Vault.';
+      });
+      wrongBtn.addEventListener('click', async () => {
+        rightBtn.disabled = true; wrongBtn.disabled = true;
+        await recordMistake(chatId, i, scope, scopeNames, quiz.type, q.question, q.answer, isMath ? q.solution : null);
+        status.textContent = 'Added to your Mistake Vault.';
+      });
       reveal.addEventListener('click', () => {
         answerP.hidden = !answerP.hidden;
-        reveal.textContent = answerP.hidden ? 'Show answer' : 'Hide answer';
+        reveal.textContent = answerP.hidden ? showLabel : showLabel.replace(/^Show/, 'Hide');
+        if (chatId) report.hidden = answerP.hidden;
       });
-      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question + ' (1 mark)' }), reveal, answerP);
-    }));
-  }
-  if (quiz.type === 'math') {
-    return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
-      const answerP = h('p', { class: 'hint-line', hidden: true, text: 'Answer: ' + q.answer + (q.solution ? '\n' + q.solution : '') });
-      const reveal = h('button', { class: 'btn quiet small', type: 'button', text: 'Show answer & steps' });
-      reveal.addEventListener('click', () => {
-        answerP.hidden = !answerP.hidden;
-        reveal.textContent = answerP.hidden ? 'Show answer & steps' : 'Hide answer & steps';
-      });
-      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), reveal, answerP);
+      return h('div', { class: 'sec' },
+        h('p', { text: (i + 1) + '. ' + q.question + (isMath ? '' : ' (1 mark)') }),
+        reveal, answerP, report);
     }));
   }
   if (quiz.type === 'true_false') {
     return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
       const opts = h('div', { class: 'list' });
+      const retryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', hidden: true });
+      function render() {
+        opts.replaceChildren();
+        retryBtn.hidden = true;
+        let answered = false;
+        [['True', true], ['False', false]].forEach(([label, val]) => {
+          const btn = h('button', { class: 'qopt', type: 'button', text: label });
+          btn.addEventListener('click', async () => {
+            if (answered) return;
+            answered = true;
+            const correctVal = !!q.answer;
+            const correct = val === correctVal;
+            opts.querySelectorAll('.qopt').forEach((b, bi) => {
+              b.disabled = true;
+              const bVal = bi === 0; // 'True' button is always first
+              if (bVal === correctVal) b.classList.add('correct');
+              else if (b === btn) b.classList.add('wrong');
+            });
+            if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
+            if (correct) await clearMistake(chatId, i);
+            else await recordMistake(chatId, i, scope, scopeNames, 'true_false', q.statement, correctVal ? 'True' : 'False', q.explanation);
+            retryBtn.hidden = correct || !chatId;
+          });
+          opts.append(btn);
+        });
+      }
+      render();
+      retryBtn.addEventListener('click', render);
+      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.statement }), opts, retryBtn);
+    }));
+  }
+  // mcq (default)
+  return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
+    const opts = h('div', { class: 'list' });
+    const retryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', hidden: true });
+    function render() {
+      opts.replaceChildren();
+      retryBtn.hidden = true;
       let answered = false;
-      [['True', true], ['False', false]].forEach(([label, val]) => {
-        const btn = h('button', { class: 'qopt', type: 'button', text: label });
-        btn.addEventListener('click', () => {
+      (q.options || []).forEach((opt, oi) => {
+        const btn = h('button', { class: 'qopt', type: 'button', text: opt });
+        btn.addEventListener('click', async () => {
           if (answered) return;
           answered = true;
-          const correctVal = !!q.answer;
+          const correct = oi === q.answerIndex;
           opts.querySelectorAll('.qopt').forEach((b, bi) => {
             b.disabled = true;
-            const bVal = bi === 0; // 'True' button is always first
-            if (bVal === correctVal) b.classList.add('correct');
-            else if (b === btn) b.classList.add('wrong');
+            if (bi === q.answerIndex) b.classList.add('correct');
+            else if (bi === oi) b.classList.add('wrong');
           });
           if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
+          if (correct) await clearMistake(chatId, i);
+          else await recordMistake(chatId, i, scope, scopeNames, 'mcq', q.question, (q.options || [])[q.answerIndex], q.explanation);
+          retryBtn.hidden = correct || !chatId;
         });
         opts.append(btn);
       });
-      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.statement }), opts);
-    }));
-  }
-  return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
-    const opts = h('div', { class: 'list' });
-    let answered = false;
-    (q.options || []).forEach((opt, oi) => {
-      const btn = h('button', { class: 'qopt', type: 'button', text: opt });
-      btn.addEventListener('click', () => {
-        if (answered) return;
-        answered = true;
-        opts.querySelectorAll('.qopt').forEach((b, bi) => {
-          b.disabled = true;
-          if (bi === q.answerIndex) b.classList.add('correct');
-          else if (bi === oi) b.classList.add('wrong');
-        });
-        if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
-      });
-      opts.append(btn);
-    });
-    return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), opts);
+    }
+    render();
+    retryBtn.addEventListener('click', render);
+    return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), opts, retryBtn);
   }));
 }
 
@@ -3255,8 +3361,9 @@ function quizHub(chatId) {
   return chatId ? quizPast(chatId) : quizList();
 }
 
-function quizPanel() {
+function quizPanel(tree) {
   const fMaterial = makeField('Notes or topic', { multiline: true, rows: 4, placeholder: 'Paste notes, or type a topic' });
+  const picker = scopePickerFields(tree);
   let kind = 'mcq';
   const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Quiz type' },
     Object.keys(QUIZ_KINDS).map(k => h('button', { type: 'button', 'data-k': k, text: QUIZ_KINDS[k].label, onclick: () => { kind = k; syncSeg(); } })));
@@ -3277,9 +3384,11 @@ function quizPanel() {
     try {
       const raw = await callAI(QUIZ_SYSTEM, [{ role: 'user', content: quizPrompt(kind, count, material) }]);
       const quiz = parseQuizJSON(raw);
-      result.replaceChildren(quizPlayer(quiz));
+      const scope = picker.getScope();
+      if (scope.subjectId) { quiz.scope = scope; quiz.scopeNames = picker.getScopeNames(); }
       const chatIns = await sb.from('ai_chats').insert({ tool: 'quiz', title: material.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
+      result.replaceChildren(quizPlayer(quiz, chatIns.data.id));
       const msgIns = await sb.from('ai_messages').insert(
         [{ chat_id: chatIns.data.id, role: 'user', content: '[' + QUIZ_KINDS[kind].label + ' · ' + count + ' questions] ' + material.slice(0, 300) },
          { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(quiz) }]);
@@ -3296,15 +3405,21 @@ function quizPanel() {
     h('div', { class: 'sec-head' }, h('h3', { text: 'New quiz' })),
     fMaterial.wrap,
     h('div', { class: 'field' }, h('label', { text: 'Type' }), seg),
-    fCount.wrap, goBtn, err, result);
+    fCount.wrap,
+    h('p', { class: 'hint-line', text: 'Optional — tag this quiz to a subject so wrong answers land in the right place in your Mistake Vault.' }),
+    picker.wrap,
+    goBtn, err, result);
 }
 
 async function quizList() {
-  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'quiz').order('created_at', { ascending: false });
+  const [res, tree] = await Promise.all([
+    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'quiz').order('created_at', { ascending: false }),
+    loadScopeTree()
+  ]);
   const chats = must(res);
   return { title: 'Quiz Generator', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    quizPanel(),
+    quizPanel(tree),
     ...(chats.length
       ? [section('Past quizzes', null, null,
           h('div', { class: 'list' }, chats.map(c => chatRow('#ai/quiz/' + c.id, c.title || 'Quiz', new Date(c.created_at).toLocaleString(), c.id))))]
@@ -3322,9 +3437,96 @@ async function quizPast(chatId) {
   const msgs = must(msgRes);
   const ans = msgs.find(m => m.role === 'assistant');
   let node;
-  try { node = ans ? quizPlayer(JSON.parse(ans.content)) : h('p', { class: 'none', text: 'No quiz saved.' }); }
+  try { node = ans ? quizPlayer(JSON.parse(ans.content), chatId) : h('p', { class: 'none', text: 'No quiz saved.' }); }
   catch (e) { node = h('p', { class: 'none', text: 'Could not read this saved quiz.' }); }
   return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), node, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
+}
+
+/* ---------- Mistake Vault hub (4.1) ----------
+   Every wrong quiz answer above lands here automatically — this screen is a
+   scoped, searchable view over those same mistake_vault rows. The scope
+   filter is roll-up like everywhere else (a subject shows its chapters and
+   topics too); search is a client-side Fuse.js re-rank since the whole
+   vault is already loaded for the filter. */
+function mvOrigin(row, subjectsById, chaptersById, topicsById) {
+  if (!row.subject_id) return null;
+  return fullOrigin(row, subjectsById, chaptersById, topicsById);
+}
+function mvWithinScope(row, scope) {
+  if (!scope.subjectId) return true;
+  if (row.subject_id !== scope.subjectId) return false;
+  if (scope.topicId) return row.topic_id === scope.topicId;
+  if (scope.chapterId) return row.chapter_id === scope.chapterId; // roll-up: chapter includes its topics
+  return true; // whole subject
+}
+function mistakeCard(it) {
+  const r = it.row;
+  const typeLabel = QUIZ_KINDS[r.question_type] ? QUIZ_KINDS[r.question_type].label : (r.question_type || 'Question');
+  const listenBtn = listenButton(
+    () => [r.question_text, r.correct_answer ? ('Answer: ' + r.correct_answer) : null, r.explanation].filter(Boolean).join('. '),
+    { iconOnly: true, stopPropagation: true });
+  const removeBtn = h('button', {
+    class: 'item-edit', type: 'button', 'aria-label': 'Remove from Mistake Vault',
+    onclick: () => confirmRemoveMistake(r)
+  }, '×');
+  return h('div', { class: 'item' },
+    h('span', { class: 'item-head' },
+      h('span', { class: 'chip', text: typeLabel }),
+      it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
+      listenBtn, removeBtn),
+    h('strong', { text: r.question_text }),
+    h('span', { class: 'body', text: 'Correct answer: ' + (r.correct_answer || '—') }),
+    r.explanation ? h('p', { class: 'hint-line', text: r.explanation }) : null,
+    h('p', { class: 'hint-line', text: 'Missed ' + plural(r.wrong_count || 1, 'time', 'times') +
+      (r.tags && r.tags.length ? ' · ' + r.tags.slice(0, 4).join(', ') : '') }),
+    r.quiz_chat_id ? h('a', { class: 'btn quiet small', href: '#ai/quiz/' + r.quiz_chat_id, text: 'Open that quiz' }) : null);
+}
+
+async function vaultHub() {
+  const [rowsRes, tree] = await Promise.all([
+    sb.from('mistake_vault').select('*').order('last_missed_at', { ascending: false }),
+    loadScopeTree()
+  ]);
+  const rows = must(rowsRes);
+  const subjectsById = {}, chaptersById = {}, topicsById = {};
+  tree.subjects.forEach(s => subjectsById[s.id] = s);
+  tree.chapters.forEach(c => chaptersById[c.id] = c);
+  tree.topics.forEach(t => topicsById[t.id] = t);
+  const items = rows.map(r => ({ row: r, origin: mvOrigin(r, subjectsById, chaptersById, topicsById) }));
+
+  const fuse = new Fuse(items, { keys: ['row.question_text', 'row.tags', 'row.correct_answer'], threshold: 0.4 });
+  const picker = scopePickerFields(tree);
+  const search = h('input', { class: 'control', type: 'search', placeholder: 'Search your mistakes', 'aria-label': 'Search Mistake Vault' });
+  const count = h('p', { class: 'hint-line' });
+  const list = h('div', { class: 'list' });
+
+  function paint() {
+    const scope = picker.getScope();
+    const q = search.value.trim();
+    let pool = items.filter(it => mvWithinScope(it.row, scope));
+    if (q) {
+      const ranked = new Set(fuse.search(q).map(r => r.item));
+      pool = pool.filter(it => ranked.has(it));
+    }
+    count.textContent = rows.length ? (plural(pool.length, 'item', 'items') + (pool.length !== rows.length ? ' of ' + rows.length : '')) : '';
+    list.replaceChildren();
+    if (!pool.length) {
+      list.append(h('p', { class: 'none', text: rows.length ? 'No matches.' : 'No mistakes yet. Take a quiz — wrong answers land here automatically.' }));
+      return;
+    }
+    list.append(...pool.map(mistakeCard));
+  }
+  search.addEventListener('input', paint);
+  picker.wrap.querySelectorAll('select').forEach(s => s.addEventListener('change', paint));
+  paint();
+
+  return { title: 'Mistake Vault', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    h('p', { class: 'hint-line', text: 'Every quiz question you get wrong lands here. Get it right on a retake — or mark a short/math question right — and it clears itself.' }),
+    picker.wrap,
+    h('div', { class: 'search-row' }, search),
+    count, list
+  ] };
 }
 
 /* ---------- Translator ---------- */
@@ -3568,7 +3770,12 @@ function scopePickerFields(tree) {
     h('div', { class: 'field' }, h('label', { text: 'Subject' }), subjSel),
     h('div', { class: 'field' }, h('label', { text: 'Chapter (optional — narrows the search)' }), chapSel),
     h('div', { class: 'field' }, h('label', { text: 'Topic (optional — narrows further)' }), topicSel));
-  return { wrap, getScope: () => ({ subjectId: subjSel.value || null, chapterId: chapSel.value || null, topicId: topicSel.value || null }) };
+  const getScopeNames = () => ({
+    subject: subjSel.value ? subjSel.selectedOptions[0].text : null,
+    chapter: chapSel.value ? chapSel.selectedOptions[0].text : null,
+    topic: topicSel.value ? topicSel.selectedOptions[0].text : null
+  });
+  return { wrap, getScope: () => ({ subjectId: subjSel.value || null, chapterId: chapSel.value || null, topicId: topicSel.value || null }), getScopeNames };
 }
 
 function studyAnswerBlock(answer, chunks) {
@@ -4080,9 +4287,8 @@ function mdSection(heading, items) {
   return out;
 }
 
-// Best-effort: the mistake_vault table exists from the 1.1 schema but nothing
-// populates it until Phase 4.1, and its exact columns aren't fixed by this app
-// yet, so a schema mismatch here is swallowed rather than breaking the export.
+// Phase 4.1 fixed the mistake_vault columns (question_text, correct_answer, ...);
+// still wrapped in try/catch as defense-in-depth, same as the rest of this export.
 async function mistakeVaultSection(scope) {
   try {
     let q = sb.from('mistake_vault').select('*').eq('subject_id', scope.subjectId);
@@ -4092,9 +4298,7 @@ async function mistakeVaultSection(scope) {
     if (res.error || !res.data || !res.data.length) return '';
     let out = '## Mistake Vault\n\n';
     res.data.forEach(r => {
-      const question = r.question || r.prompt || r.title || 'Question';
-      const answer = r.correct_answer || r.answer || '';
-      out += '- **' + question + '**' + (answer ? ' — ' + answer : '') + '\n';
+      out += '- **' + (r.question_text || 'Question') + '**' + (r.correct_answer ? ' — ' + r.correct_answer : '') + '\n';
     });
     return out + '\n';
   } catch (e) { return ''; }
