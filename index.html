@@ -2586,13 +2586,34 @@ const FACTCHECK_SYSTEM =
   'Use web search to verify it. Reply in plain text, no markdown. The very first line must be exactly one of these three ' +
   'words: True, False, or Partially true. Then, on the next lines, a short explanation (2-4 sentences) of why, based on what you found.';
 
+// Fallback used when the search-grounding call is quota-limited (grounding has its own,
+// much stricter free-tier quota than plain generation). Same verdict format, just answered
+// from the model's own knowledge with no live source link, so the tool keeps working for free.
+const FACTCHECK_SYSTEM_NO_SEARCH =
+  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. ' +
+  'Web search is unavailable right now, so answer from your own knowledge and say so is not needed in the reply itself. ' +
+  'Reply in plain text, no markdown. The very first line must be exactly one of these three words: True, False, or Partially ' +
+  'true. Then, on the next lines, a short explanation (2-4 sentences) of why.';
+
+function isQuotaError(e) {
+  const msg = ((e && e.message) || '').toLowerCase();
+  return msg.includes('quota') || msg.includes('rate limit') || msg.includes('resource_exhausted') || msg.includes('429');
+}
+
 async function callAIFactCheck(claimText, imageB64, mime) {
   const s = aiSettings();
   if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
   const parts = [];
   if (claimText) parts.push({ text: claimText });
   if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
-  return callGeminiGroundedRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }]);
+  try {
+    return await callGeminiGroundedRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }]);
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    // Search-grounding quota hit: retry without it so the tool still works, just with no live source.
+    const text = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_NO_SEARCH, [{ role: 'user', parts }]);
+    return { text, sources: [], noSearch: true };
+  }
 }
 
 // Renders the verdict word as a coloured status card (reuses the .status
@@ -2638,8 +2659,9 @@ function factcheckPanel() {
         mime = blob.type || 'image/jpeg';
         b64 = await blobToBase64(blob);
       }
-      const { text, sources } = await callAIFactCheck(claim, b64, mime);
-      const answer = text + (sources.length ? ('\n\nSource: ' + sources[0].uri) : '');
+      const { text, sources, noSearch } = await callAIFactCheck(claim, b64, mime);
+      const answer = text + (sources.length ? ('\n\nSource: ' + sources[0].uri)
+                     : noSearch ? '\n\n(Live web search hit its quota — this answer is from the model\'s own knowledge, no source link.)' : '');
       result.replaceChildren(verdictBadge(answer));
 
       if (blob) { try { imagePath = await uploadToolImage('factcheck', blob); } catch (e) { /* non-fatal */ } }
