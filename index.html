@@ -253,13 +253,15 @@
   .item .expr { display: block; padding: 8px 10px; background: var(--paper-hi); border-radius: 8px; overflow-x: auto; white-space: pre; font-size: 15px; }
   .item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
   .origin { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
-  .item-edit {
+  .item-edit, .item-listen {
     margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
     width: 30px; height: 30px; padding: 0; border-radius: 999px; border: 1px solid var(--line);
     background: var(--paper-hi); color: var(--dim);
   }
-  .item-edit:active { color: var(--chalk); }
-  .item-edit svg { width: 16px; height: 16px; }
+  .item-listen { margin-left: 0; }
+  .item-edit:active, .item-listen:active { color: var(--chalk); }
+  .item-edit svg, .item-listen svg { width: 16px; height: 16px; }
+  .item-listen[data-speaking="true"] { color: var(--marker); border-color: var(--marker); }
   .chip {
     justify-self: start; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
@@ -403,6 +405,13 @@
 
   /* reference vault actions and full-screen file viewer */
   .vault-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+
+  /* ---------- AI tools (3.4): infographics, read-aloud, export ---------- */
+  .canvas-wrap { max-width: 100%; overflow-x: auto; border-radius: 16px; border: 1px solid var(--line); margin-bottom: 12px; }
+  .infographic-canvas { display: block; max-width: 100%; height: auto; }
+  .check-field { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .check-field input { width: 20px; height: 20px; accent-color: var(--marker); flex: none; }
+  .check-field span { font-size: 15px; }
   .viewer { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; background: var(--ink); }
   .viewer-bar {
     display: flex; align-items: center; gap: 8px; padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px;
@@ -555,6 +564,7 @@
 <!-- Phase 3.3, Grounded Study Engine: pdf.js reads text out of vault PDFs, Fuse.js re-ranks search hits -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fuse.js/7.0.0/fuse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 /* =====================================================================
    CONFIG: the only part you edit.
@@ -1032,6 +1042,62 @@ function pencilIcon() {
   return t.content.firstChild;
 }
 
+/* ---------- Read-aloud (3.4) ----------
+   A small "Listen" control wrapping the phone's own speech engine (free,
+   private, offline). Language (English vs. Bangla) is guessed from the
+   text itself, so there is nothing extra to pick. */
+function speakerIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+  return t.content.firstChild;
+}
+function stopIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>';
+  return t.content.firstChild;
+}
+function pickVoice(lang) {
+  if (!window.speechSynthesis) return null;
+  const voices = window.speechSynthesis.getVoices() || [];
+  return voices.find(v => v.lang && v.lang.toLowerCase().startsWith(lang)) || null;
+}
+// getText() is called fresh each time Listen is pressed (so it can read live
+// input). opts.iconOnly gives a round icon button for item cards; otherwise
+// a small labelled button. opts.stopPropagation is for buttons nested inside
+// a bigger clickable card.
+function listenButton(getText, opts = {}) {
+  if (!window.speechSynthesis) return null;
+  const btn = h('button', {
+    class: 'btn quiet small' + (opts.iconOnly ? ' item-listen' : ''), type: 'button', 'aria-label': 'Listen'
+  });
+  if (opts.iconOnly) btn.append(speakerIcon()); else btn.textContent = 'Listen';
+  let speaking = false;
+  const sync = () => {
+    btn.setAttribute('aria-label', speaking ? 'Stop' : 'Listen');
+    btn.dataset.speaking = String(speaking);
+    if (opts.iconOnly) btn.replaceChildren(speaking ? stopIcon() : speakerIcon());
+    else btn.textContent = speaking ? 'Stop' : 'Listen';
+  };
+  const stop = () => { window.speechSynthesis.cancel(); speaking = false; sync(); };
+  btn.addEventListener('click', e => {
+    if (opts.stopPropagation) e.stopPropagation();
+    if (speaking) { stop(); return; }
+    const text = (getText() || '').trim();
+    if (!text) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    const lang = BANGLA_RE.test(text) ? 'bn' : 'en';
+    const voice = pickVoice(lang);
+    if (voice) utter.voice = voice;
+    utter.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
+    utter.onend = () => { speaking = false; sync(); };
+    utter.onerror = () => { speaking = false; sync(); };
+    speaking = true; sync();
+    window.speechSynthesis.speak(utter);
+  });
+  return btn;
+}
+
 // Tapping the card expands/collapses its clamped body text (harmless if the
 // text was already short enough to show in full); the small pencil button is
 // the only way to open the edit dialog, and stops the tap from also toggling.
@@ -1042,12 +1108,15 @@ function itemCard(scope, it) {
     class: 'item-edit', type: 'button', 'aria-label': 'Edit',
     onclick: e => { e.stopPropagation(); openItemDialog(scope, it); }
   }, pencilIcon());
+  const listenBtn = listenButton(
+    () => [row.title, type === 'formula' ? row.expression : null, detail].filter(Boolean).join('. '),
+    { iconOnly: true, stopPropagation: true });
 
   const card = h('div', { class: 'item', tabindex: '0', role: 'button', 'aria-expanded': 'false' },
     h('span', { class: 'item-head' },
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
-      editBtn),
+      listenBtn, editBtn),
     row.title ? h('strong', { text: row.title }) : null,
     type === 'formula' ? h('code', { class: 'expr', text: row.expression }) : null,
     detail ? h('span', { class: 'body', text: detail }) : null);
@@ -1058,7 +1127,7 @@ function itemCard(scope, it) {
   };
   card.addEventListener('click', toggle);
   card.addEventListener('keydown', e => {
-    if (e.target === editBtn) return;
+    if (e.target.closest && e.target.closest('button')) return;
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
   });
   return card;
@@ -2234,6 +2303,8 @@ function buildAI(ids = []) {
   if (ids[0] === 'quiz')       return quizHub(ids[1]);
   if (ids[0] === 'translate')  return translatorHub(ids[1]);
   if (ids[0] === 'study')      return studyHub(ids[1]);
+  if (ids[0] === 'infographic') return infographicHub(ids[1]);
+  if (ids[0] === 'export')      return exportHub();
   return buildAIRoot();
 }
 
@@ -2255,7 +2326,9 @@ function buildAIRoot() {
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
         linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' }),
-        linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' })))
+        linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
+        linkRow({ href: '#ai/infographic', title: 'Infographic Generator', meta: 'Notes drawn as styled cards, saved as an image' }),
+        linkRow({ href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' })))
   ] };
 }
 
@@ -2923,7 +2996,7 @@ function summarizerPanel() {
         answer = await callAI(system, [{ role: 'user', content: notes }]);
       }
 
-      const resultNodes = [h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer }))];
+      const resultNodes = [h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })), listenButton(() => answer)];
       if (kind === 'note') {
         resultNodes.push(h('button', {
           class: 'btn small', type: 'button', text: 'Save to a subject, chapter or topic',
@@ -2994,6 +3067,7 @@ async function summarizerPast(chatId) {
     ans ? h('div', { class: 'chat-log' },
             h('div', { class: 'bubble assistant', text: ans.content }))
         : h('p', { class: 'none', text: 'No summary saved.' }),
+    ans ? listenButton(() => ans.content) : null,
     ans ? h('button', { class: 'btn small', type: 'button', text: 'Save to a subject, chapter or topic',
                          onclick: () => openSaveNoteDialog(ans.content, (chatRes.data.title || 'Note').slice(0, 60)) }) : null,
     editButton('Delete chat', () => confirmDeleteChat(chatId))
@@ -3306,6 +3380,7 @@ function translatorPanel() {
       const translated = await callGoogleTranslate(text, sl, tl);
       result.replaceChildren(
         h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: translated })),
+        listenButton(() => translated),
         h('p', { class: 'hint-line', text: 'Source: Google Translate' }));
 
       const chatIns = await sb.from('ai_chats').insert({ tool: 'translate', title: text.slice(0, 60) }).select('id').single();
@@ -3356,6 +3431,7 @@ async function translatorPast(chatId) {
     crumbs(crumb),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
     ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' }),
+    ans ? listenButton(() => ans.content) : null,
     editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
@@ -3497,8 +3573,9 @@ function scopePickerFields(tree) {
 
 function studyAnswerBlock(answer, chunks) {
   const notFound = /can.t find that in your sources/i.test(answer);
-  return h('div', { class: 'chat-log' },
-    h('div', { class: 'bubble assistant', text: answer }),
+  return h('div', {},
+    h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })),
+    listenButton(() => answer),
     (!notFound && chunks.length) ? h('p', { class: 'hint-line', text: 'From: ' + chunks.map(c => c.origin_label).join('; ') }) : null);
 }
 
@@ -3675,6 +3752,488 @@ async function studyPast(chatId) {
           chunkLabels.length ? h('p', { class: 'hint-line', text: 'From: ' + chunkLabels.join('; ') }) : null)
       : h('p', { class: 'none', text: 'No answer saved.' }),
     editButton('Delete chat', () => confirmDeleteChat(chatId))
+  ] };
+}
+
+/* ---------- Infographic Generator (3.4) ----------
+   Same shape as the Quiz Generator: Gemini is asked for strict JSON (a title,
+   a few sections of short points, optional key numbers); the app then draws
+   that data onto a canvas itself, so spelling always matches the notes it
+   came from. The JSON (plus the style and scope used) is what's saved, so
+   reopening a past infographic redraws the same canvas. */
+const INFOGRAPHIC_SYSTEM =
+  'You are the Infographic Generator in a student\'s Athenaeum workspace app. Reply with ONLY valid JSON, no markdown code fences, ' +
+  'no commentary before or after it. Return exactly this shape: {"title":"...","sections":[{"heading":"...","items":["...","..."]}],' +
+  '"keyNumbers":[{"label":"...","value":"..."}]}. "keyNumbers" is optional — include a few only for a "key facts" style, and leave it ' +
+  'as an empty array otherwise. Each item in "items" should be one short, exam-ready point, plain text with no markdown. Base it only ' +
+  'on the material given — never invent facts that are not in it. Keep it to at most 6 sections and at most 5 items per section.';
+
+const INFOGRAPHIC_STYLES = {
+  process:    { label: 'Process',    desc: 'ordered steps, one section per step, in the order they happen' },
+  comparison: { label: 'Comparison', desc: 'two or more things compared side by side, one section per thing, with matching points' },
+  timeline:   { label: 'Timeline',   desc: 'events in order, one section per event with its date or stage as the heading' },
+  keyfacts:   { label: 'Key facts',  desc: 'the most important facts grouped into a few short sections, plus a "keyNumbers" list of standout figures' }
+};
+
+function infographicPrompt(style, material) {
+  return 'Make a ' + INFOGRAPHIC_STYLES[style].label + ' infographic (' + INFOGRAPHIC_STYLES[style].desc + ') from this material:\n\n' + material;
+}
+
+function parseInfographicJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !data.title || !Array.isArray(data.sections) || !data.sections.length) throw new Error('The infographic came back in an unexpected shape.');
+  if (!Array.isArray(data.keyNumbers)) data.keyNumbers = [];
+  return data;
+}
+
+// Gathers a scope's notes/definitions/formulas/mnemonics (with roll-up) as one text blob for Gemini to read.
+async function materialForScope(scope) {
+  const items = await loadItems(scope, { chapters: {}, topics: {} });
+  if (!items.length) return '';
+  return items.map(it => {
+    const r = it.row;
+    if (it.type === 'formula')    return '[Formula] ' + (r.title || '') + (r.expression ? ': ' + r.expression : '') + (r.description ? ' — ' + r.description : '');
+    if (it.type === 'definition') return '[Definition] ' + (r.title || '') + ': ' + (r.body || '');
+    if (it.type === 'mnemonic')   return '[Mnemonic] ' + (r.title || '') + ': ' + (r.body || '');
+    return '[Note] ' + (r.title ? r.title + ': ' : '') + (r.body || '');
+  }).join('\n\n');
+}
+
+// Draws the structured data as navy/yellow cards on a canvas — text only, no
+// AI-generated imagery, so spelling always matches the source notes exactly.
+async function renderInfographic(data, style) {
+  if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) {} }
+  const C = { bg: '#0D1220', card: '#151C2E', line: '#2B3554', chalk: '#ECE9E1', dim: '#9AA2BA', marker: '#F3C955', markerInk: '#1A1400' };
+  const W = 900, PAD = 36, CARD_PAD = 20, GAP = 16, colW = W - PAD * 2;
+  const scratch = document.createElement('canvas').getContext('2d');
+  function wrap(text, font, maxW) {
+    scratch.font = font;
+    const words = String(text || '').split(/\s+/).filter(Boolean);
+    const lines = []; let line = '';
+    words.forEach(w => {
+      const t = line ? line + ' ' + w : w;
+      if (scratch.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t;
+    });
+    lines.push(line);
+    return lines;
+  }
+  const isFlow = style === 'process' || style === 'timeline';
+  const badgeW = isFlow ? 28 : 0;
+
+  const titleLines = wrap(data.title, '700 30px Newsreader, Georgia, serif', colW);
+  const hasKeyNumbers = Array.isArray(data.keyNumbers) && data.keyNumbers.length > 0;
+  const keyNumH = hasKeyNumbers ? 74 : 0;
+
+  const cardH = data.sections.map(sec => {
+    const headLines = wrap(sec.heading || '', '700 15px Figtree, sans-serif', colW - CARD_PAD * 2 - badgeW);
+    let hh = CARD_PAD * 2 + headLines.length * 20 + 8;
+    (sec.items || []).forEach(it => {
+      const lines = wrap('•  ' + it, '400 15px Figtree, sans-serif', colW - CARD_PAD * 2);
+      hh += lines.length * 21 + 6;
+    });
+    return hh;
+  });
+
+  const totalH = PAD + titleLines.length * 38 + 16 + keyNumH + cardH.reduce((a, b) => a + b + GAP, 0) + PAD;
+  const scale = 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = W * scale; canvas.height = Math.ceil(totalH) * scale;
+  canvas.style.width = W + 'px'; canvas.style.height = Math.ceil(totalH) + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.textBaseline = 'top';
+
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, totalH);
+  ctx.fillStyle = C.chalk; ctx.font = '700 30px Newsreader, Georgia, serif';
+  let y = PAD;
+  titleLines.forEach(l => { ctx.fillText(l, PAD, y); y += 38; });
+  y += 16;
+
+  function roundRect(x, ry, w, hh, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, ry);
+    ctx.arcTo(x + w, ry, x + w, ry + hh, r);
+    ctx.arcTo(x + w, ry + hh, x, ry + hh, r);
+    ctx.arcTo(x, ry + hh, x, ry, r);
+    ctx.arcTo(x, ry, x + w, ry, r);
+    ctx.closePath();
+  }
+
+  if (hasKeyNumbers) {
+    const n = data.keyNumbers.length;
+    const pillW = (colW - GAP * (n - 1)) / n;
+    let x = PAD;
+    data.keyNumbers.forEach(k => {
+      ctx.fillStyle = C.card; roundRect(x, y, pillW, keyNumH - 10, 14); ctx.fill();
+      ctx.strokeStyle = C.line; ctx.lineWidth = 1; roundRect(x, y, pillW, keyNumH - 10, 14); ctx.stroke();
+      ctx.fillStyle = C.marker; ctx.font = '700 20px Newsreader, Georgia, serif'; ctx.textAlign = 'center';
+      ctx.fillText(String(k.value), x + pillW / 2, y + 10);
+      ctx.fillStyle = C.dim; ctx.font = '600 11px Figtree, sans-serif';
+      ctx.fillText(String(k.label).toUpperCase(), x + pillW / 2, y + 38);
+      ctx.textAlign = 'left';
+      x += pillW + GAP;
+    });
+    y += keyNumH;
+  }
+
+  data.sections.forEach((sec, i) => {
+    const hh = cardH[i];
+    ctx.fillStyle = C.card; roundRect(PAD, y, colW, hh, 16); ctx.fill();
+    ctx.strokeStyle = C.line; ctx.lineWidth = 1; roundRect(PAD, y, colW, hh, 16); ctx.stroke();
+
+    let tx = PAD + CARD_PAD, ty2 = y + CARD_PAD;
+    if (isFlow) {
+      ctx.fillStyle = C.marker;
+      ctx.beginPath(); ctx.arc(tx + 10, ty2 + 10, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.markerInk; ctx.font = '700 12px Figtree, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), tx + 10, ty2 + 11);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      tx += 28;
+    }
+    ctx.fillStyle = C.marker; ctx.font = '700 15px Figtree, sans-serif';
+    wrap(sec.heading || '', '700 15px Figtree, sans-serif', colW - CARD_PAD * 2 - badgeW).forEach(l => { ctx.fillText(l, tx, ty2); ty2 += 20; });
+    ty2 += 8;
+    ctx.fillStyle = C.chalk; ctx.font = '400 15px Figtree, sans-serif';
+    (sec.items || []).forEach(it => {
+      wrap('•  ' + it, '400 15px Figtree, sans-serif', colW - CARD_PAD * 2).forEach(l => { ctx.fillText(l, PAD + CARD_PAD, ty2); ty2 += 21; });
+      ty2 += 6;
+    });
+
+    const nextY = y + hh + GAP;
+    if (isFlow && i < data.sections.length - 1) {
+      ctx.strokeStyle = C.line; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(PAD + 10, y + hh); ctx.lineTo(PAD + 10, nextY); ctx.stroke();
+    }
+    y = nextY;
+  });
+
+  return canvas;
+}
+
+function infographicHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Infographic Generator');
+  return chatId ? infographicPast(chatId) : infographicList();
+}
+
+function infographicResultBlock(canvas, data, style, scope) {
+  canvas.className = 'infographic-canvas';
+  const saveBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Save to Reference Vault' });
+  const dlBtn = h('a', { class: 'btn quiet small', text: 'Download' });
+  const status = h('small', {});
+  saveBtn.addEventListener('click', async () => {
+    if (!scope || !scope.subjectId) { status.textContent = 'Choose a scope above and generate again before saving.'; return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    try {
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      const path = currentUser.id + '/' + crypto.randomUUID() + '.png';
+      const up = await sb.storage.from(REF_BUCKET).upload(path, blob, { contentType: 'image/png', upsert: false });
+      if (up.error) throw up.error;
+      const ins = await sb.from('sources').insert({ ...scopeCols(scope), title: data.title, kind: 'image', storage_path: path });
+      if (ins.error) { await sb.storage.from(REF_BUCKET).remove([path]); throw ins.error; }
+      status.textContent = 'Saved to the Reference Vault.';
+    } catch (e) {
+      status.textContent = (e && e.message) ? e.message : 'Could not save that.';
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = 'Save to Reference Vault';
+    }
+  });
+  canvas.toBlob(blob => { if (blob) dlBtn.href = URL.createObjectURL(blob); }, 'image/png');
+  dlBtn.download = (data.title || 'infographic').replace(/[^\w\- ]+/g, '').trim().slice(0, 60) + '.png';
+  const listen = listenButton(() => [data.title, ...data.sections.flatMap(s => [s.heading, ...(s.items || [])])].join('. '));
+  return h('div', {},
+    h('div', { class: 'canvas-wrap' }, canvas),
+    h('div', { class: 'vault-actions' }, saveBtn, dlBtn, listen),
+    status);
+}
+
+function infographicPanel(tree) {
+  const picker = scopePickerFields(tree);
+  let style = 'process';
+  const seg = h('div', { class: 'seg seg-mini', role: 'group', 'aria-label': 'Style' },
+    Object.keys(INFOGRAPHIC_STYLES).map(k => h('button', { type: 'button', 'data-k': k, text: INFOGRAPHIC_STYLES[k].label, onclick: () => { style = k; syncSeg(); } })));
+  const syncSeg = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === style)));
+  syncSeg();
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate infographic' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  goBtn.addEventListener('click', async () => {
+    const scope = picker.getScope();
+    err.hidden = true; result.replaceChildren();
+    if (!scope.subjectId) { err.textContent = 'Choose a subject to draw from.'; err.hidden = false; return; }
+    goBtn.disabled = true; goBtn.textContent = 'Reading your notes…';
+    try {
+      const material = await materialForScope(scope);
+      if (!material) throw new Error('Nothing saved at that scope yet — add some notes first.');
+      goBtn.textContent = 'Generating…';
+      const raw = await callAI(INFOGRAPHIC_SYSTEM, [{ role: 'user', content: infographicPrompt(style, material) }]);
+      const data = parseInfographicJSON(raw);
+      const canvas = await renderInfographic(data, style);
+      result.replaceChildren(infographicResultBlock(canvas, data, style, scope));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'infographic', title: data.title.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + INFOGRAPHIC_STYLES[style].label + '] ' + levelName(scope) + ' scope' },
+         { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify({ ...data, style, scope }) }]);
+      if (msgIns.error) throw msgIns.error;
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not generate that infographic. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Generate infographic';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New infographic' })),
+    picker.wrap,
+    h('div', { class: 'field' }, h('label', { text: 'Style' }), seg),
+    goBtn, err, result);
+}
+
+async function infographicList() {
+  const [chatsRes, tree] = await Promise.all([
+    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'infographic').order('created_at', { ascending: false }),
+    loadScopeTree()
+  ]);
+  const chats = must(chatsRes);
+  return { title: 'Infographic Generator', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    h('p', { class: 'hint-line', text: 'Pick a scope and a style — Gemini reads only your own notes there and returns structured data, which the app draws as cards, so spelling always matches your notes.' }),
+    infographicPanel(tree),
+    ...(chats.length
+      ? [section('Past infographics', null, null,
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/infographic/' + c.id, c.title || 'Infographic', new Date(c.created_at).toLocaleString(), c.id))))]
+      : [h('p', { class: 'none', text: 'No infographics yet.' })])
+  ] };
+}
+
+async function infographicPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Infographic Generator', href: '#ai/infographic' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Infographic Generator', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const ans = msgs.find(m => m.role === 'assistant');
+  if (!ans) return { title: chatRes.data.title || 'Infographic', nodes: [crumbs(crumb), h('p', { class: 'none', text: 'No infographic saved.' }), editButton('Delete infographic', () => confirmDeleteChat(chatId))] };
+  let data;
+  try { data = JSON.parse(ans.content); } catch (e) { return { title: chatRes.data.title, nodes: [crumbs(crumb), errorCard(e)] }; }
+  const style = data.style || 'process';
+  const canvas = await renderInfographic(data, style);
+  return { title: chatRes.data.title || data.title, nodes: [
+    crumbs(crumb),
+    infographicResultBlock(canvas, data, style, data.scope || null),
+    editButton('Delete infographic', () => confirmDeleteChat(chatId))
+  ] };
+}
+
+/* ---------- Export to NotebookLM (3.4) ----------
+   Client-side only: reads the chosen scope's items straight from Supabase and
+   packages them into Markdown files (one per chapter for a whole-subject
+   export), zipped with JSZip, then downloaded. This app stays the master
+   copy — NotebookLM only ever sees a one-way export of it. */
+function slugify(s) {
+  return (s || 'file').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'file';
+}
+
+// Items saved exactly at this scope's own level (not rolled up from below) — the
+// right granularity for building one file per chapter/topic with no duplicates.
+async function exactItems(scope) {
+  const q = t => {
+    let query = sb.from(t).select('*').eq('subject_id', scope.subjectId);
+    query = scope.chapterId ? query.eq('chapter_id', scope.chapterId) : query.is('chapter_id', null);
+    query = scope.topicId ? query.eq('topic_id', scope.topicId) : query.is('topic_id', null);
+    return query;
+  };
+  const [n, f, m] = await Promise.all([q('notes'), q('formulas'), q('mnemonics')]);
+  return [
+    ...must(n).map(r => ({ type: r.kind === 'definition' ? 'definition' : 'note', row: r })),
+    ...must(f).map(r => ({ type: 'formula', row: r })),
+    ...must(m).map(r => ({ type: 'mnemonic', row: r }))
+  ];
+}
+
+function mdSection(heading, items) {
+  if (!items.length) return '';
+  let out = '## ' + heading + '\n\n';
+  const byType = { definition: [], note: [], formula: [], mnemonic: [] };
+  items.forEach(it => { if (byType[it.type]) byType[it.type].push(it.row); });
+  if (byType.definition.length) {
+    out += '**Definitions**\n\n';
+    byType.definition.forEach(r => { out += '- **' + (r.title || '') + '**: ' + (r.body || '') + '\n'; });
+    out += '\n';
+  }
+  byType.note.forEach(r => { out += (r.title ? '**' + r.title + '**\n\n' : '') + (r.body || '') + '\n\n'; });
+  if (byType.formula.length) {
+    out += '**Formulas**\n\n';
+    byType.formula.forEach(r => { out += '- **' + (r.title || '') + '**: `' + (r.expression || '') + '`' + (r.description ? ' — ' + r.description : '') + '\n'; });
+    out += '\n';
+  }
+  if (byType.mnemonic.length) {
+    out += '**Mnemonics**\n\n';
+    byType.mnemonic.forEach(r => { out += '- **' + (r.title || '') + '**: ' + (r.body || '') + '\n'; });
+    out += '\n';
+  }
+  return out;
+}
+
+// Best-effort: the mistake_vault table exists from the 1.1 schema but nothing
+// populates it until Phase 4.1, and its exact columns aren't fixed by this app
+// yet, so a schema mismatch here is swallowed rather than breaking the export.
+async function mistakeVaultSection(scope) {
+  try {
+    let q = sb.from('mistake_vault').select('*').eq('subject_id', scope.subjectId);
+    if (scope.chapterId) q = q.eq('chapter_id', scope.chapterId); else q = q.is('chapter_id', null);
+    if (scope.topicId) q = q.eq('topic_id', scope.topicId); else q = q.is('topic_id', null);
+    const res = await q;
+    if (res.error || !res.data || !res.data.length) return '';
+    let out = '## Mistake Vault\n\n';
+    res.data.forEach(r => {
+      const question = r.question || r.prompt || r.title || 'Question';
+      const answer = r.correct_answer || r.answer || '';
+      out += '- **' + question + '**' + (answer ? ' — ' + answer : '') + '\n';
+    });
+    return out + '\n';
+  } catch (e) { return ''; }
+}
+
+async function photoTranscriptSection(scope, onStatus) {
+  let q = sb.from('sources').select('*').eq('kind', 'image').eq('subject_id', scope.subjectId);
+  q = scope.chapterId ? q.eq('chapter_id', scope.chapterId) : q.is('chapter_id', null);
+  q = scope.topicId ? q.eq('topic_id', scope.topicId) : q.is('topic_id', null);
+  const rows = must(await q);
+  if (!rows.length) return '';
+  let out = '## Transcribed photos\n\n';
+  for (const r of rows) {
+    if (onStatus) onStatus('Transcribing ' + (r.title || 'a photo') + '…');
+    try {
+      const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(r.storage_path, 120);
+      if (signed.error) throw signed.error;
+      const resp = await fetch(signed.data.signedUrl);
+      if (!resp.ok) throw new Error('download failed');
+      const blob = await resp.blob();
+      const b64 = await blobToBase64(blob);
+      const text = await callAIVision('Transcribe all handwritten or printed text in this photo exactly, as plain text with no commentary.', '', b64, blob.type || 'image/jpeg');
+      out += '### ' + (r.title || 'Photo') + '\n\n' + text.trim() + '\n\n';
+    } catch (e) {
+      out += '### ' + (r.title || 'Photo') + '\n\n*Could not transcribe this photo.*\n\n';
+    }
+  }
+  return out;
+}
+
+async function buildExportZip(scope, convertPhotos, onStatus) {
+  const zip = new JSZip();
+  const [subjRes, chapRes] = await Promise.all([
+    sb.from('subjects').select('*').eq('id', scope.subjectId).single(),
+    scope.chapterId ? sb.from('chapters').select('*').eq('id', scope.chapterId).single() : Promise.resolve({ data: null, error: null })
+  ]);
+  const subject = must(subjRes);
+  const chapter = chapRes.data;
+
+  async function buildChapterMd(chapterRow) {
+    const scope2 = { subjectId: scope.subjectId, chapterId: chapterRow.id, topicId: null };
+    const [chapItems, topicsRes] = await Promise.all([
+      exactItems(scope2),
+      ordered(sb.from('topics').select('*').eq('chapter_id', chapterRow.id))
+    ]);
+    const topics = must(topicsRes);
+    let md = '# ' + subject.name + ' › ' + chapterRow.title + '\n\n' + mdSection('Chapter notes', chapItems);
+    md += await mistakeVaultSection(scope2);
+    if (convertPhotos) md += await photoTranscriptSection(scope2, onStatus);
+    for (const t of topics) {
+      const scope3 = { subjectId: scope.subjectId, chapterId: chapterRow.id, topicId: t.id };
+      const items = await exactItems(scope3);
+      md += mdSection(t.title, items);
+      md += await mistakeVaultSection(scope3);
+      if (convertPhotos) md += await photoTranscriptSection(scope3, onStatus);
+    }
+    return md;
+  }
+
+  if (scope.topicId) {
+    if (onStatus) onStatus('Writing topic file…');
+    const topic = must(await sb.from('topics').select('*').eq('id', scope.topicId).single());
+    const scope3 = { subjectId: scope.subjectId, chapterId: chapter.id, topicId: topic.id };
+    const items = await exactItems(scope3);
+    let md = '# ' + subject.name + ' › ' + chapter.title + ' › ' + topic.title + '\n\n' + mdSection(topic.title, items);
+    md += await mistakeVaultSection(scope3);
+    if (convertPhotos) md += await photoTranscriptSection(scope3, onStatus);
+    zip.file(slugify(topic.title) + '.md', md);
+  } else if (scope.chapterId) {
+    if (onStatus) onStatus('Writing ' + chapter.title + '…');
+    zip.file(slugify(chapter.title) + '.md', await buildChapterMd(chapter));
+  } else {
+    const subjItems = await exactItems({ subjectId: scope.subjectId, chapterId: null, topicId: null });
+    if (subjItems.length) {
+      if (onStatus) onStatus('Writing subject overview…');
+      let md = '# ' + subject.name + ' — overview\n\n' + mdSection('Saved at subject level', subjItems);
+      md += await mistakeVaultSection({ subjectId: scope.subjectId, chapterId: null, topicId: null });
+      zip.file('00-' + slugify(subject.name) + '-overview.md', md);
+    }
+    const chapters = must(await ordered(sb.from('chapters').select('*').eq('subject_id', scope.subjectId)));
+    if (!chapters.length && !subjItems.length) throw new Error('Nothing saved in this subject yet.');
+    let i = 1;
+    for (const ch of chapters) {
+      if (onStatus) onStatus('Writing ' + ch.title + '…');
+      zip.file(String(i).padStart(2, '0') + '-' + slugify(ch.title) + '.md', await buildChapterMd(ch));
+      i++;
+    }
+  }
+  return zip;
+}
+
+function exportPanel(tree) {
+  const picker = scopePickerFields(tree);
+  const toggle = h('input', { type: 'checkbox', id: 'export-photos' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Build export' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const status = h('p', { class: 'hint-line', hidden: true });
+  const openBtn = h('a', { class: 'btn quiet small', href: 'https://notebooklm.google.com', target: '_blank', rel: 'noopener', text: 'Open NotebookLM', hidden: true });
+
+  goBtn.addEventListener('click', async () => {
+    const scope = picker.getScope();
+    err.hidden = true; status.hidden = true; openBtn.hidden = true;
+    if (!scope.subjectId) { err.textContent = 'Choose at least a subject.'; err.hidden = false; return; }
+    if (!window.JSZip) { err.textContent = 'The ZIP library did not load. Check your connection and try again.'; err.hidden = false; return; }
+    goBtn.disabled = true; goBtn.textContent = 'Building…';
+    status.hidden = false; status.textContent = 'Gathering your notes…';
+    try {
+      const zip = await buildExportZip(scope, toggle.checked, msg => { status.textContent = msg; });
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'athenaeum-export-' + new Date().toISOString().slice(0, 10) + '.zip';
+      document.body.append(a); a.click(); a.remove();
+      status.textContent = 'ZIP downloaded. Upload its files into a NotebookLM notebook.';
+      openBtn.hidden = false;
+    } catch (e) {
+      status.hidden = true;
+      err.textContent = (e && e.message) ? e.message : 'Could not build the export. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = false; goBtn.textContent = 'Build export';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Build an export' })),
+    picker.wrap,
+    h('label', { class: 'check-field', for: 'export-photos' }, toggle, h('span', { text: 'Convert note photos to text first (uses Gemini vision)' })),
+    aiConfigured() ? null : h('p', { class: 'hint-line', text: 'Add a Gemini key in Settings to use the photo-conversion option.' }),
+    h('div', { class: 'vault-actions' }, goBtn, openBtn),
+    err, status);
+}
+
+async function exportHub() {
+  const tree = await loadScopeTree();
+  return { title: 'Export to NotebookLM', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    h('p', { class: 'hint-line', text: 'Package a subject, chapter or topic into Markdown files ready to upload to NotebookLM for its own infographics and audio overviews. This app stays the master copy — the export is one-way.' }),
+    exportPanel(tree)
   ] };
 }
 
