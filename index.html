@@ -2816,7 +2816,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'vault')      return vaultHub();
   if (ids[0] === 'translate')  return translatorHub(ids.slice(1));
   if (ids[0] === 'study')      return studyHub(ids[1]);
-  if (ids[0] === 'infographic') return infographicHub(ids[1]);
+  if (ids[0] === 'infographic') return notebookHub(ids[1]); // merged into Notebook Studio (B4)
   if (ids[0] === 'notebook')    return notebookHub(ids[1]);
   if (ids[0] === 'export')      return exportHub();
   return buildAIRoot();
@@ -2844,8 +2844,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' }),
         linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation, plus grammar & citation checking' }),
         linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
-        linkRow({ href: '#ai/infographic', title: 'Infographic Generator', meta: 'Notes drawn as styled cards, saved as an image' }),
-        linkRow({ href: '#ai/notebook', title: 'Notebook Studio', meta: 'Deep synthesis and two-host audio overviews of your own material' }),
+        linkRow({ href: '#ai/notebook', title: 'Notebook Studio', meta: 'Synthesis, audio, slides, mind maps, tables & infographics from your own material' }),
         linkRow({ href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' })))
   ] };
 }
@@ -5031,19 +5030,6 @@ function parseInfographicJSON(text) {
   return data;
 }
 
-// Gathers a scope's notes/definitions/formulas/mnemonics (with roll-up) as one text blob for Gemini to read.
-async function materialForScope(scope) {
-  const items = await loadItems(scope, { chapters: {}, topics: {} });
-  if (!items.length) return '';
-  return items.map(it => {
-    const r = it.row;
-    if (it.type === 'formula')    return '[Formula] ' + (r.title || '') + (r.expression ? ': ' + r.expression : '') + (r.description ? ' — ' + r.description : '');
-    if (it.type === 'definition') return '[Definition] ' + (r.title || '') + ': ' + (r.body || '');
-    if (it.type === 'mnemonic')   return '[Mnemonic] ' + (r.title || '') + ': ' + (r.body || '');
-    return '[Note] ' + (r.title ? r.title + ': ' : '') + (r.body || '');
-  }).join('\n\n');
-}
-
 // Draws the structured data as navy/yellow cards on a canvas — text only, no
 // AI-generated imagery, so spelling always matches the source notes exactly.
 async function renderInfographic(data, style) {
@@ -5155,11 +5141,6 @@ async function renderInfographic(data, style) {
   return canvas;
 }
 
-function infographicHub(chatId) {
-  if (!aiConfigured()) return aiNeedsSetup('Infographic Generator');
-  return chatId ? infographicPast(chatId) : infographicList();
-}
-
 function infographicResultBlock(canvas, data, style, scope) {
   canvas.className = 'infographic-canvas';
   const saveBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Save to Reference Vault' });
@@ -5189,89 +5170,6 @@ function infographicResultBlock(canvas, data, style, scope) {
     h('div', { class: 'canvas-wrap' }, canvas),
     h('div', { class: 'vault-actions' }, saveBtn, dlBtn, listen),
     status);
-}
-
-function infographicPanel(tree) {
-  const picker = scopePickerFields(tree);
-  let style = 'process';
-  const seg = h('div', { class: 'seg seg-mini', role: 'group', 'aria-label': 'Style' },
-    Object.keys(INFOGRAPHIC_STYLES).map(k => h('button', { type: 'button', 'data-k': k, text: INFOGRAPHIC_STYLES[k].label, onclick: () => { style = k; syncSeg(); } })));
-  const syncSeg = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === style)));
-  syncSeg();
-  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate infographic' });
-  const err = h('p', { class: 'msg err', hidden: true });
-  const result = h('div');
-
-  goBtn.addEventListener('click', async () => {
-    const scope = picker.getScope();
-    err.hidden = true; result.replaceChildren();
-    if (!scope.subjectId) { err.textContent = 'Choose a subject to draw from.'; err.hidden = false; return; }
-    goBtn.disabled = true; goBtn.textContent = 'Reading your notes…';
-    try {
-      const material = await materialForScope(scope);
-      if (!material) throw new Error('Nothing saved at that scope yet — add some notes first.');
-      goBtn.textContent = 'Generating…';
-      const raw = await callAI(INFOGRAPHIC_SYSTEM, [{ role: 'user', content: infographicPrompt(style, material) }]);
-      const data = parseInfographicJSON(raw);
-      const canvas = await renderInfographic(data, style);
-      result.replaceChildren(infographicResultBlock(canvas, data, style, scope));
-      const chatIns = await sb.from('ai_chats').insert({ tool: 'infographic', title: data.title.slice(0, 60) }).select('id').single();
-      if (chatIns.error) throw chatIns.error;
-      const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + INFOGRAPHIC_STYLES[style].label + '] ' + levelName(scope) + ' scope' },
-         { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify({ ...data, style, scope }) }]);
-      if (msgIns.error) throw msgIns.error;
-    } catch (e) {
-      err.textContent = (e && e.message) ? e.message : 'Could not generate that infographic. Try again.';
-      err.hidden = false;
-    } finally {
-      goBtn.disabled = false; goBtn.textContent = 'Generate infographic';
-    }
-  });
-
-  return h('section', { class: 'sec' },
-    h('div', { class: 'sec-head' }, h('h3', { text: 'New infographic' })),
-    picker.wrap,
-    h('div', { class: 'field' }, h('label', { text: 'Style' }), seg),
-    goBtn, err, result);
-}
-
-async function infographicList() {
-  const [chatsRes, tree] = await Promise.all([
-    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'infographic').order('created_at', { ascending: false }),
-    loadScopeTree()
-  ]);
-  const chats = must(chatsRes);
-  return { title: 'Infographic Generator', nodes: [
-    crumbs([{ text: 'AI tools', href: '#ai' }]),
-    h('p', { class: 'hint-line', text: 'Pick a scope and a style — Gemini reads only your own notes there and returns structured data, which the app draws as cards, so spelling always matches your notes.' }),
-    infographicPanel(tree),
-    ...(chats.length
-      ? [section('Past infographics', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/infographic/' + c.id, c.title || 'Infographic', new Date(c.created_at).toLocaleString(), c.id))))]
-      : [h('p', { class: 'none', text: 'No infographics yet.' })])
-  ] };
-}
-
-async function infographicPast(chatId) {
-  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Infographic Generator', href: '#ai/infographic' }];
-  const [chatRes, msgRes] = await Promise.all([
-    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
-    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
-  ]);
-  if (chatRes.error) return { title: 'Infographic Generator', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
-  const msgs = must(msgRes);
-  const ans = msgs.find(m => m.role === 'assistant');
-  if (!ans) return { title: chatRes.data.title || 'Infographic', nodes: [crumbs(crumb), h('p', { class: 'none', text: 'No infographic saved.' }), editButton('Delete infographic', () => confirmDeleteChat(chatId))] };
-  let data;
-  try { data = JSON.parse(ans.content); } catch (e) { return { title: chatRes.data.title, nodes: [crumbs(crumb), errorCard(e)] }; }
-  const style = data.style || 'process';
-  const canvas = await renderInfographic(data, style);
-  return { title: chatRes.data.title || data.title, nodes: [
-    crumbs(crumb),
-    infographicResultBlock(canvas, data, style, data.scope || null),
-    editButton('Delete infographic', () => confirmDeleteChat(chatId))
-  ] };
 }
 
 /* ---------- Export to NotebookLM (3.4) ----------
@@ -5480,15 +5378,41 @@ async function exportHub() {
 
 /* ---------- Notebook Studio (B4) ----------
    NotebookLM-equivalent tools brought in-app, so "Export to NotebookLM" is
-   optional rather than required for these use cases. Both outputs are
+   optional rather than required for these use cases. Every output here is
    grounded only in the student's own saved material at a chosen scope
    (roll-up, same as everywhere else) — items (notes/definitions/formulas/
    mnemonics) plus anything added as source material for the Grounded Study
-   Engine (source_chunks: pasted text, PDF extracts).
+   Engine (source_chunks: pasted text, PDF extracts). The standalone
+   Infographic Generator (3.4) merged in here too, so every NotebookLM-style
+   output lives in one place; its own JSON/canvas pieces (INFOGRAPHIC_SYSTEM,
+   parseInfographicJSON, renderInfographic, infographicResultBlock) stay
+   defined just above and are reused as-is, now drawing from
+   gatherNotebookMaterial() instead of its old standalone material loader.
    - Deep synthesis: a structured study-guide-style writeup (themes,
      cross-source connections, gaps/contradictions, review questions).
    - Audio overview: a short two-host discussion script, played back with
-     the same on-device speech engine as Read-Aloud, alternating voices. */
+     the same on-device speech engine as Read-Aloud, alternating voices.
+   - Infographic: notes drawn as styled cards on a canvas (unchanged).
+   - Slide deck: a swipeable in-app deck, heading + bullets per slide.
+   - Mind map: a branching outline tree, root topic down to sub-points.
+   - Data table: facts/figures pulled into rows and columns.
+   None of these produce a downloadable .pptx/.xlsx — they're in-app views,
+   like the Quiz player, not exported files. */
+const NOTEBOOK_KINDS = {
+  synth:      { label: 'Synthesis',   working: 'Synthesizing…' },
+  audio:      { label: 'Audio',       working: 'Writing the script…' },
+  infographic:{ label: 'Infographic', working: 'Drawing…' },
+  slides:     { label: 'Slides',      working: 'Building the deck…' },
+  mindmap:    { label: 'Mind Map',    working: 'Mapping it out…' },
+  table:      { label: 'Table',       working: 'Filling in the table…' }
+};
+// tool name saved on ai_chats for each kind ('infographic' kept as-is for continuity with pre-merge history)
+const NOTEBOOK_TOOL = {
+  synth: 'notebook_synth', audio: 'notebook_audio', infographic: 'infographic',
+  slides: 'notebook_slides', mindmap: 'notebook_mindmap', table: 'notebook_table'
+};
+const NOTEBOOK_TOOL_KIND = Object.fromEntries(Object.entries(NOTEBOOK_TOOL).map(([k, v]) => [v, k]));
+
 const SYNTH_SYSTEM =
   'You are the Notebook Studio\'s synthesis tool in a student\'s Athenaeum workspace app. You are given SOURCE passages taken only ' +
   'from the student\'s own saved material (notes, definitions, formulas, mnemonics and any added source text) for one subject, ' +
@@ -5511,10 +5435,56 @@ const AUDIO_SYSTEM =
   'usable material, reply with exactly: {"title":"Nothing to discuss yet","script":[{"speaker":"Mira","line":"There\'s nothing ' +
   'saved at this scope yet, so there\'s nothing for us to go over."}]}';
 
+const SLIDES_SYSTEM =
+  'You are the Notebook Studio\'s slide deck tool in a student\'s Athenaeum workspace app. You are given SOURCE passages from a ' +
+  'student\'s own saved material only — never add outside facts, stay grounded in what\'s given. Reply with ONLY valid JSON, no ' +
+  'markdown code fences, no commentary before or after it, in exactly this shape: {"title":"...","slides":[{"heading":"...",' +
+  '"bullets":["...","..."]}]}. Make 5 to 10 slides, each with a short heading and 2 to 5 short bullet points (under about 15 words ' +
+  'each), plain text with no markdown. If given no usable material, reply with exactly: {"title":"Nothing to build a deck from ' +
+  'yet","slides":[{"heading":"Nothing saved","bullets":["Add some notes, formulas or source material at this scope first."]}]}';
+
+const MINDMAP_SYSTEM =
+  'You are the Notebook Studio\'s mind map tool in a student\'s Athenaeum workspace app. You are given SOURCE passages from a ' +
+  'student\'s own saved material only — never add outside facts, stay grounded in what\'s given. Reply with ONLY valid JSON, no ' +
+  'markdown code fences, no commentary before or after it, in exactly this shape: {"title":"...","root":{"label":"...",' +
+  '"children":[{"label":"...","children":[{"label":"...","children":[]}]}]}}. Build the map at most 3 levels deep: the root is the ' +
+  'central topic, its children are the main branches (at most 6), and each branch may have up to 5 short sub-points as its own ' +
+  'children ("children" can be an empty array for a sub-point with nothing further to break down). Every label should be a few ' +
+  'words, plain text. If given no usable material, reply with exactly: {"title":"Nothing to map yet","root":{"label":"Nothing ' +
+  'saved","children":[{"label":"Add some notes, formulas or source material at this scope first.","children":[]}]}}';
+
+const TABLE_SYSTEM =
+  'You are the Notebook Studio\'s data table tool in a student\'s Athenaeum workspace app. You are given SOURCE passages from a ' +
+  'student\'s own saved material only — never add outside facts, stay grounded in what\'s given. Reply with ONLY valid JSON, no ' +
+  'markdown code fences, no commentary before or after it, in exactly this shape: {"title":"...","columns":["...","..."],' +
+  '"rows":[["...","..."],["...","..."]]}. Pull the concrete facts, figures, terms or comparisons out of the material into a table ' +
+  'with 2 to 5 columns and up to 15 rows; every cell short, plain text, and every row must have exactly as many cells as there are ' +
+  'columns. If given no usable material, reply with exactly: {"title":"Nothing to tabulate yet","columns":["Note"],' +
+  '"rows":[["Add some notes, formulas or source material at this scope first."]]}';
+
 function parseAudioJSON(text) {
   const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
   const data = JSON.parse(cleaned);
   if (!data || !Array.isArray(data.script) || !data.script.length) throw new Error('The audio overview came back in an unexpected shape.');
+  return data;
+}
+function parseSlidesJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !Array.isArray(data.slides) || !data.slides.length) throw new Error('The slide deck came back in an unexpected shape.');
+  data.slides.forEach(s => { if (!Array.isArray(s.bullets)) s.bullets = []; });
+  return data;
+}
+function parseMindMapJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !data.root || !data.root.label) throw new Error('The mind map came back in an unexpected shape.');
+  return data;
+}
+function parseTableJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !Array.isArray(data.columns) || !data.columns.length || !Array.isArray(data.rows)) throw new Error('The table came back in an unexpected shape.');
   return data;
 }
 
@@ -5607,21 +5577,93 @@ function synthResultBlock(answer, material) {
     h('button', { class: 'btn quiet small', type: 'button', text: 'Save as a note', onclick: () => openSaveNoteDialog(answer, 'Synthesis') }));
 }
 
+// Swipeable in-app slide viewer: one slide visible at a time, Prev/Next and a counter.
+function slideDeckResultBlock(data) {
+  let i = 0;
+  const counter = h('small', { class: 'hint-line' });
+  const heading = h('h4', {});
+  const bullets = h('div', { class: 'list' });
+  const prevBtn = h('button', { class: 'btn quiet small', type: 'button', text: '‹ Prev' });
+  const nextBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Next ›' });
+  const listenBtn = listenButton(() => [data.slides[i].heading, ...(data.slides[i].bullets || [])].join('. '));
+  function render() {
+    const slide = data.slides[i];
+    counter.textContent = 'Slide ' + (i + 1) + ' of ' + data.slides.length;
+    heading.textContent = slide.heading || '';
+    bullets.replaceChildren(...(slide.bullets || []).map(b => h('p', { text: '•  ' + b })));
+    prevBtn.disabled = i === 0; nextBtn.disabled = i === data.slides.length - 1;
+  }
+  prevBtn.addEventListener('click', () => { if (i > 0) { i--; render(); } });
+  nextBtn.addEventListener('click', () => { if (i < data.slides.length - 1) { i++; render(); } });
+  render();
+  return h('div', {},
+    h('h3', { text: data.title || 'Slide deck' }), counter,
+    h('div', { class: 'sec', style: 'border:1px solid var(--line); border-radius:16px; padding:20px; background:var(--paper); min-height:160px;' }, heading, bullets),
+    h('div', { class: 'vault-actions' }, prevBtn, nextBtn, listenBtn));
+}
+
+// Recursive branching outline: root -> up to ~6 branches -> up to ~5 sub-points.
+function mindMapNode(node, depth) {
+  const styleByDepth = [
+    'font-family:var(--serif); font-size:19px; font-weight:700; margin:0 0 6px;',
+    'font-weight:700; color:var(--marker); margin:10px 0 4px;',
+    'margin:3px 0; color:var(--chalk); font-size:14px;'
+  ];
+  return h('div', { style: depth ? 'margin-left:16px; padding-left:12px; border-left:2px solid var(--line);' : '' },
+    h('p', { style: styleByDepth[Math.min(depth, 2)], text: node.label || '' }),
+    (node.children || []).map(c => mindMapNode(c, depth + 1)));
+}
+function mindMapResultBlock(data) {
+  const flatten = n => [n.label, ...(n.children || []).flatMap(flatten)].join('. ');
+  return h('div', {},
+    h('div', { class: 'sec', style: 'border:1px solid var(--line); border-radius:16px; padding:16px; background:var(--paper);' },
+      mindMapNode(data.root, 0)),
+    h('div', { class: 'vault-actions' }, listenButton(() => flatten(data.root))));
+}
+
+// A plain HTML table in a horizontally scrolling wrapper (canvas-wrap already
+// gives the right border/overflow treatment used elsewhere for wide content).
+function dataTableResultBlock(data) {
+  const table = h('table', { style: 'border-collapse:collapse; width:100%; min-width:480px;' },
+    h('thead', {}, h('tr', {}, data.columns.map(c =>
+      h('th', { style: 'text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); color:var(--marker); font-size:13px; white-space:nowrap;', text: c })))),
+    h('tbody', {}, data.rows.map(row =>
+      h('tr', {}, row.map(cell =>
+        h('td', { style: 'padding:10px 12px; border-bottom:1px solid var(--line); font-size:14px;', text: String(cell) }))))));
+  const flatten = data.columns.join(', ') + '. ' + data.rows.map(r => r.join(', ')).join('. ');
+  return h('div', {},
+    h('h4', { text: data.title || 'Data table' }),
+    h('div', { class: 'canvas-wrap', style: 'padding:4px;' }, table),
+    h('div', { class: 'vault-actions' }, listenButton(() => flatten)));
+}
+
 function notebookPanel(tree) {
   const picker = scopePickerFields(tree);
-  const synthBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate synthesis' });
-  const audioBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Generate audio overview' });
+  let kind = 'synth', infoStyle = 'process';
+  const seg = h('div', { class: 'seg seg-mini', role: 'group', 'aria-label': 'Output' },
+    Object.keys(NOTEBOOK_KINDS).map(k => h('button', { type: 'button', 'data-k': k, text: NOTEBOOK_KINDS[k].label, onclick: () => { kind = k; syncSeg(); syncInfoSeg(); } })));
+  const syncSeg = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === kind)));
+  syncSeg();
+  const infoSegWrap = h('div', { class: 'field', hidden: true },
+    h('label', { text: 'Infographic style' }),
+    h('div', { class: 'seg seg-mini', role: 'group', 'aria-label': 'Infographic style' },
+      Object.keys(INFOGRAPHIC_STYLES).map(k => h('button', { type: 'button', 'data-k': k, text: INFOGRAPHIC_STYLES[k].label, onclick: () => { infoStyle = k; syncInfoSeg(); } }))));
+  const syncInfoSeg = () => {
+    infoSegWrap.hidden = kind !== 'infographic';
+    infoSegWrap.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === infoStyle)));
+  };
+  syncInfoSeg();
+
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate' });
   const err = h('p', { class: 'msg err', hidden: true });
   const status = h('p', { class: 'hint-line', hidden: true });
   const result = h('div');
 
-  async function run(kind) {
+  goBtn.addEventListener('click', async () => {
     const scope = picker.getScope();
     err.hidden = true; status.hidden = true; result.replaceChildren();
     if (!scope.subjectId) { err.textContent = 'Choose at least a subject.'; err.hidden = false; return; }
-    const btn = kind === 'synth' ? synthBtn : audioBtn, otherBtn = kind === 'synth' ? audioBtn : synthBtn;
-    btn.disabled = otherBtn.disabled = true;
-    btn.textContent = kind === 'synth' ? 'Reading your notes…' : 'Scripting the discussion…';
+    goBtn.disabled = true; goBtn.textContent = NOTEBOOK_KINDS[kind].working;
     status.hidden = false; status.textContent = 'Gathering your saved material…';
     try {
       const material = await gatherNotebookMaterial(scope);
@@ -5629,46 +5671,60 @@ function notebookPanel(tree) {
       const scopeNames = picker.getScopeNames();
       const scopeLabel = [scopeNames.subject, scopeNames.chapter, scopeNames.topic].filter(Boolean).join(' › ');
       const userPrompt = 'SOURCES FOR: ' + scopeLabel + '\n\n' + material.text;
-      status.textContent = kind === 'synth' ? 'Synthesizing…' : 'Writing the script…';
+      status.textContent = NOTEBOOK_KINDS[kind].working;
+
+      let title, assistantContent, node;
       if (kind === 'synth') {
         const answer = await callAI(SYNTH_SYSTEM, [{ role: 'user', content: userPrompt }]);
-        result.replaceChildren(synthResultBlock(answer, material));
-        const chatIns = await sb.from('ai_chats').insert({ tool: 'notebook_synth', title: scopeLabel || 'Synthesis' }).select('id').single();
-        if (chatIns.error) throw chatIns.error;
-        await sb.from('ai_messages').insert([
-          { chat_id: chatIns.data.id, role: 'user', content: JSON.stringify({ scopeLabel, sourceCount: material.count }) },
-          { chat_id: chatIns.data.id, role: 'assistant', content: answer }
-        ]);
-      } else {
+        title = scopeLabel || 'Synthesis'; assistantContent = answer; node = synthResultBlock(answer, material);
+      } else if (kind === 'audio') {
         const raw = await callAI(AUDIO_SYSTEM, [{ role: 'user', content: userPrompt }]);
         const script = parseAudioJSON(raw);
-        result.replaceChildren(audioResultBlock(script));
-        const chatIns = await sb.from('ai_chats').insert({ tool: 'notebook_audio', title: script.title || scopeLabel || 'Audio overview' }).select('id').single();
-        if (chatIns.error) throw chatIns.error;
-        await sb.from('ai_messages').insert([
-          { chat_id: chatIns.data.id, role: 'user', content: JSON.stringify({ scopeLabel, sourceCount: material.count }) },
-          { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(script) }
-        ]);
+        title = script.title || scopeLabel || 'Audio overview'; assistantContent = JSON.stringify(script); node = audioResultBlock(script);
+      } else if (kind === 'infographic') {
+        const raw = await callAI(INFOGRAPHIC_SYSTEM, [{ role: 'user', content: infographicPrompt(infoStyle, material.text) }]);
+        const data = parseInfographicJSON(raw);
+        const canvas = await renderInfographic(data, infoStyle);
+        title = data.title || scopeLabel || 'Infographic'; assistantContent = JSON.stringify({ ...data, style: infoStyle, scope });
+        node = infographicResultBlock(canvas, data, infoStyle, scope);
+      } else if (kind === 'slides') {
+        const raw = await callAI(SLIDES_SYSTEM, [{ role: 'user', content: userPrompt }]);
+        const data = parseSlidesJSON(raw);
+        title = data.title || scopeLabel || 'Slide deck'; assistantContent = JSON.stringify(data); node = slideDeckResultBlock(data);
+      } else if (kind === 'mindmap') {
+        const raw = await callAI(MINDMAP_SYSTEM, [{ role: 'user', content: userPrompt }]);
+        const data = parseMindMapJSON(raw);
+        title = data.title || scopeLabel || 'Mind map'; assistantContent = JSON.stringify(data); node = mindMapResultBlock(data);
+      } else {
+        const raw = await callAI(TABLE_SYSTEM, [{ role: 'user', content: userPrompt }]);
+        const data = parseTableJSON(raw);
+        title = data.title || scopeLabel || 'Data table'; assistantContent = JSON.stringify(data); node = dataTableResultBlock(data);
       }
+
+      result.replaceChildren(node);
+      const chatIns = await sb.from('ai_chats').insert({ tool: NOTEBOOK_TOOL[kind], title: title.slice(0, 60) }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      await sb.from('ai_messages').insert([
+        { chat_id: chatIns.data.id, role: 'user', content: JSON.stringify({ scopeLabel, sourceCount: material.count }) },
+        { chat_id: chatIns.data.id, role: 'assistant', content: assistantContent }
+      ]);
       status.hidden = true;
     } catch (e) {
       status.hidden = true;
       err.textContent = (e && e.message) ? e.message : 'Could not do that. Try again.';
       err.hidden = false;
     } finally {
-      synthBtn.disabled = false; audioBtn.disabled = false;
-      synthBtn.textContent = 'Generate synthesis'; audioBtn.textContent = 'Generate audio overview';
+      goBtn.disabled = false; goBtn.textContent = 'Generate';
     }
-  }
-  synthBtn.addEventListener('click', () => run('synth'));
-  audioBtn.addEventListener('click', () => run('audio'));
+  });
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New from your saved material' })),
     picker.wrap,
+    h('div', { class: 'field' }, h('label', { text: 'Output' }), seg),
+    infoSegWrap,
     h('p', { class: 'hint-line', text: 'Uses everything saved at that scope and below it — notes, definitions, formulas, mnemonics, and anything added as source material in the Grounded Study Engine.' }),
-    h('div', { class: 'vault-actions' }, synthBtn, audioBtn),
-    err, status, result);
+    goBtn, err, status, result);
 }
 
 function notebookHub(chatId) {
@@ -5677,24 +5733,20 @@ function notebookHub(chatId) {
 }
 
 async function notebookList() {
-  const [synthRes, audioRes, tree] = await Promise.all([
-    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'notebook_synth').order('created_at', { ascending: false }),
-    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'notebook_audio').order('created_at', { ascending: false }),
+  const [chatsRes, tree] = await Promise.all([
+    sb.from('ai_chats').select('id, title, tool, created_at').in('tool', Object.values(NOTEBOOK_TOOL)).order('created_at', { ascending: false }),
     loadScopeTree()
   ]);
-  const synthChats = must(synthRes), audioChats = must(audioRes);
+  const chats = must(chatsRes);
   return { title: 'Notebook Studio', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    h('p', { class: 'hint-line', text: 'Deeper synthesis and two-host audio overviews of your own saved material — grounded only in what\'s saved at the scope you pick, no exporting required.' }),
+    h('p', { class: 'hint-line', text: 'Synthesis, audio overviews, infographics, slide decks, mind maps and data tables — all generated only from your own saved material at the scope you pick, no exporting required.' }),
     notebookPanel(tree),
-    section('Past syntheses', null, null,
-      synthChats.length
-        ? h('div', { class: 'list' }, synthChats.map(c => chatRow('#ai/notebook/' + c.id, c.title || 'Synthesis', new Date(c.created_at).toLocaleString(), c.id, 'Synthesis')))
-        : h('p', { class: 'none', text: 'No syntheses yet.' })),
-    section('Past audio overviews', null, null,
-      audioChats.length
-        ? h('div', { class: 'list' }, audioChats.map(c => chatRow('#ai/notebook/' + c.id, c.title || 'Audio overview', new Date(c.created_at).toLocaleString(), c.id, 'Audio')))
-        : h('p', { class: 'none', text: 'No audio overviews yet.' }))
+    section('History', null, null,
+      chats.length
+        ? h('div', { class: 'list' }, chats.map(c => chatRow('#ai/notebook/' + c.id, c.title || NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]].label,
+            new Date(c.created_at).toLocaleString(), c.id, NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]] ? NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]].label : null)))
+        : h('p', { class: 'none', text: 'Nothing generated yet.' }))
   ] };
 }
 
@@ -5710,23 +5762,42 @@ async function notebookPast(chatId) {
   const ans = msgs.find(m => m.role === 'assistant');
   let scopeLabel = '';
   try { scopeLabel = JSON.parse(userMsg.content).scopeLabel || ''; } catch (e) {}
-  if (chatRes.data.tool === 'notebook_audio') {
-    let script = null;
-    try { script = ans && JSON.parse(ans.content); } catch (e) {}
-    return { title: chatRes.data.title || 'Audio overview', nodes: [
-      crumbs(crumb),
-      scopeLabel ? h('p', { class: 'hint-line', text: scopeLabel }) : null,
-      script ? audioResultBlock(script) : h('p', { class: 'none', text: 'No audio overview saved.' }),
-      editButton('Delete', () => confirmDeleteChat(chatId))
-    ] };
+  const tool = chatRes.data.tool;
+  const del = editButton('Delete', () => confirmDeleteChat(chatId));
+  const scopeLine = scopeLabel ? h('p', { class: 'hint-line', text: scopeLabel }) : null;
+
+  if (!ans) return { title: chatRes.data.title || 'Notebook Studio', nodes: [crumbs(crumb), scopeLine, h('p', { class: 'none', text: 'Nothing saved.' }), del] };
+
+  try {
+    if (tool === 'notebook_audio') {
+      return { title: chatRes.data.title || 'Audio overview', nodes: [crumbs(crumb), scopeLine, audioResultBlock(JSON.parse(ans.content)), del] };
+    }
+    if (tool === 'infographic') {
+      const data = JSON.parse(ans.content);
+      const style = data.style || 'process';
+      const canvas = await renderInfographic(data, style);
+      return { title: chatRes.data.title || data.title, nodes: [crumbs(crumb), infographicResultBlock(canvas, data, style, data.scope || null), del] };
+    }
+    if (tool === 'notebook_slides') {
+      return { title: chatRes.data.title || 'Slide deck', nodes: [crumbs(crumb), scopeLine, slideDeckResultBlock(JSON.parse(ans.content)), del] };
+    }
+    if (tool === 'notebook_mindmap') {
+      return { title: chatRes.data.title || 'Mind map', nodes: [crumbs(crumb), scopeLine, mindMapResultBlock(JSON.parse(ans.content)), del] };
+    }
+    if (tool === 'notebook_table') {
+      return { title: chatRes.data.title || 'Data table', nodes: [crumbs(crumb), scopeLine, dataTableResultBlock(JSON.parse(ans.content)), del] };
+    }
+  } catch (e) {
+    return { title: chatRes.data.title || 'Notebook Studio', nodes: [crumbs(crumb), errorCard(e)] };
   }
+
+  // default: synthesis (plain text, not JSON)
   return { title: chatRes.data.title || 'Synthesis', nodes: [
-    crumbs(crumb),
-    scopeLabel ? h('p', { class: 'hint-line', text: scopeLabel }) : null,
-    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No synthesis saved.' }),
-    ans ? listenButton(() => ans.content) : null,
-    ans ? h('button', { class: 'btn quiet small', type: 'button', text: 'Save as a note', onclick: () => openSaveNoteDialog(ans.content, chatRes.data.title || 'Synthesis') }) : null,
-    editButton('Delete', () => confirmDeleteChat(chatId))
+    crumbs(crumb), scopeLine,
+    h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })),
+    listenButton(() => ans.content),
+    h('button', { class: 'btn quiet small', type: 'button', text: 'Save as a note', onclick: () => openSaveNoteDialog(ans.content, chatRes.data.title || 'Synthesis') }),
+    del
   ] };
 }
 
