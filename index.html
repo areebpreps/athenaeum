@@ -552,6 +552,9 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<!-- Phase 3.3, Grounded Study Engine: pdf.js reads text out of vault PDFs, Fuse.js re-ranks search hits -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fuse.js/7.0.0/fuse.min.js"></script>
 <script>
 /* =====================================================================
    CONFIG: the only part you edit.
@@ -2230,6 +2233,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'summarizer') return summarizerHub(ids[1]);
   if (ids[0] === 'quiz')       return quizHub(ids[1]);
   if (ids[0] === 'translate')  return translatorHub(ids[1]);
+  if (ids[0] === 'study')      return studyHub(ids[1]);
   return buildAIRoot();
 }
 
@@ -2250,7 +2254,8 @@ function buildAIRoot() {
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
-        linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' })))
+        linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' }),
+        linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' })))
   ] };
 }
 
@@ -3351,6 +3356,324 @@ async function translatorPast(chatId) {
     crumbs(crumb),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
     ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' }),
+    editButton('Delete chat', () => confirmDeleteChat(chatId))
+  ] };
+}
+
+/* ---------- Grounded Study Engine (3.3) ----------
+   Answers, summaries and quizzes strictly from the student's own material —
+   never the model's outside knowledge. Source text lives in `source_chunks`:
+   Notes, Definitions, Formulas and Mnemonics are chunked automatically by a
+   database trigger the moment they're saved (schema-update-3.3-grounded.sql);
+   pasted text and PDF extracts are chunked here in the browser and inserted
+   directly. Scope (subject/chapter/topic) follows the same roll-up rule as
+   everywhere else in the app — see scopeFilter(). */
+const GROUNDED_SYSTEM =
+  'You are the Grounded Study Engine in a student\'s Athenaeum workspace app. You will be given a QUESTION and a numbered list of ' +
+  'SOURCE passages taken only from the student\'s own notes and materials. Answer using ONLY information in those passages — never ' +
+  'your own outside knowledge, even if you know more about the topic. Keep the answer concise and exam-focused, in plain text with ' +
+  'no markdown. If the passages do not contain enough information to answer, reply with exactly this sentence and nothing else: ' +
+  '"I can\'t find that in your sources."';
+
+// Splits long text into chunks of roughly maxLen characters, preferring to
+// break on blank lines or sentence ends so a chunk doesn't cut a thought in half.
+function splitIntoChunks(text, maxLen = 1200) {
+  const clean = (text || '').replace(/\r\n/g, '\n').trim();
+  if (!clean) return [];
+  const paras = clean.split(/\n{2,}/);
+  const chunks = [];
+  let cur = '';
+  for (const p of paras) {
+    if (cur && (cur + '\n\n' + p).length > maxLen) { chunks.push(cur.trim()); cur = p; }
+    else cur = cur ? cur + '\n\n' + p : p;
+    while (cur.length > maxLen) {
+      let cut = cur.lastIndexOf('. ', maxLen);
+      if (cut < maxLen * 0.4) cut = maxLen;
+      chunks.push(cur.slice(0, cut + 1).trim());
+      cur = cur.slice(cut + 1).trim();
+    }
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks;
+}
+
+// Saves pasted or PDF-extracted text as one or more source_chunks rows at the given scope.
+async function saveTextAsChunks(scope, originType, originId, label, text) {
+  const pieces = splitIntoChunks(text);
+  if (!pieces.length) throw new Error('There is no text to save.');
+  const rows = pieces.map((content, i) => ({
+    ...scopeCols(scope), origin_type: originType, origin_id: originId,
+    origin_label: pieces.length > 1 ? label + ' (part ' + (i + 1) + ' of ' + pieces.length + ')' : label,
+    content, chunk_index: i
+  }));
+  const res = await sb.from('source_chunks').insert(rows);
+  if (res.error) throw res.error;
+  return pieces.length;
+}
+
+/* ---------- Retrieval: Postgres full-text search, then a Fuse.js re-rank ---------- */
+async function fetchGroundedChunks(scope, question) {
+  const base = () => scopeFilter(sb.from('source_chunks').select('*'), scope);
+  let rows = [];
+  const words = (question.match(/[\p{L}\p{N}]+/gu) || []).slice(0, 12);
+  if (words.length) {
+    const res = await base().textSearch('tsv', words.join(' | '), { type: 'plain', config: 'english' }).limit(40);
+    if (!res.error) rows = res.data || [];
+  }
+  if (rows.length < 6) {
+    const res = await base().order('created_at', { ascending: false }).limit(80);
+    if (!res.error) {
+      const seen = new Set(rows.map(r => r.id));
+      rows = rows.concat((res.data || []).filter(r => !seen.has(r.id)));
+    }
+  }
+  if (!rows.length) return [];
+  if (typeof Fuse !== 'undefined' && rows.length > 6) {
+    const fuse = new Fuse(rows, { keys: ['content', 'origin_label'], includeScore: true, threshold: 0.6 });
+    const ranked = fuse.search(question).map(r => r.item);
+    if (ranked.length) rows = ranked;
+  }
+  // Cap at 2 chunks per origin so the citation list stays varied, 6 chunks total.
+  const perOrigin = new Map(), picked = [];
+  for (const r of rows) {
+    const key = r.origin_type + ':' + (r.origin_id || r.id);
+    const n = perOrigin.get(key) || 0;
+    if (n >= 2) continue;
+    perOrigin.set(key, n + 1);
+    picked.push(r);
+    if (picked.length >= 6) break;
+  }
+  return picked;
+}
+
+function buildGroundedPrompt(question, chunks) {
+  const list = chunks.map((c, i) => (i + 1) + '. [' + c.origin_label + '] ' + c.content).join('\n\n');
+  return 'SOURCES:\n' + list + '\n\nQUESTION: ' + question;
+}
+
+async function callGroundedStudy(scope, question) {
+  const chunks = await fetchGroundedChunks(scope, question);
+  if (!chunks.length) {
+    return { answer: "I can't find that in your sources. Add some notes or source material at this level first.", chunks: [] };
+  }
+  const answer = await callAI(GROUNDED_SYSTEM, [{ role: 'user', content: buildGroundedPrompt(question, chunks) }]);
+  return { answer, chunks };
+}
+
+/* ---------- Subject/Chapter/Topic scope picker (used only by the Study Engine so far) ---------- */
+async function loadScopeTree() {
+  const [s, c, t] = await Promise.all([
+    ordered(sb.from('subjects').select('id, name')),
+    ordered(sb.from('chapters').select('id, subject_id, title')),
+    ordered(sb.from('topics').select('id, chapter_id, title'))
+  ]);
+  return { subjects: must(s), chapters: must(c), topics: must(t) };
+}
+
+function scopePickerFields(tree) {
+  const subjSel  = h('select', { class: 'control' }, h('option', { value: '', text: 'Choose a subject…' }),
+    tree.subjects.map(s => h('option', { value: s.id, text: s.name })));
+  const chapSel  = h('select', { class: 'control' }, h('option', { value: '', text: 'Whole subject' }));
+  const topicSel = h('select', { class: 'control' }, h('option', { value: '', text: 'Whole chapter' }));
+
+  const fillTopics = chapterId => {
+    topicSel.replaceChildren(h('option', { value: '', text: 'Whole chapter' }),
+      ...tree.topics.filter(t => t.chapter_id === chapterId).map(t => h('option', { value: t.id, text: t.title })));
+  };
+  const fillChapters = subjectId => {
+    chapSel.replaceChildren(h('option', { value: '', text: 'Whole subject' }),
+      ...tree.chapters.filter(c => c.subject_id === subjectId).map(c => h('option', { value: c.id, text: c.title })));
+    fillTopics('');
+  };
+  subjSel.addEventListener('change', () => fillChapters(subjSel.value));
+  chapSel.addEventListener('change', () => fillTopics(chapSel.value));
+
+  const wrap = h('div', {},
+    h('div', { class: 'field' }, h('label', { text: 'Subject' }), subjSel),
+    h('div', { class: 'field' }, h('label', { text: 'Chapter (optional — narrows the search)' }), chapSel),
+    h('div', { class: 'field' }, h('label', { text: 'Topic (optional — narrows further)' }), topicSel));
+  return { wrap, getScope: () => ({ subjectId: subjSel.value || null, chapterId: chapSel.value || null, topicId: topicSel.value || null }) };
+}
+
+function studyAnswerBlock(answer, chunks) {
+  const notFound = /can.t find that in your sources/i.test(answer);
+  return h('div', { class: 'chat-log' },
+    h('div', { class: 'bubble assistant', text: answer }),
+    (!notFound && chunks.length) ? h('p', { class: 'hint-line', text: 'From: ' + chunks.map(c => c.origin_label).join('; ') }) : null);
+}
+
+function studyPanel(tree) {
+  const picker = scopePickerFields(tree);
+  const fQuestion = makeField('Your question', { multiline: true, rows: 2, placeholder: 'e.g. What is the difference between speed and velocity?' });
+  const askBtn = h('button', { class: 'btn small', type: 'button', text: 'Ask' });
+  const pasteBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Add source material', onclick: () => openAddSourceMaterial(picker.getScope) });
+  const pdfBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add text from a PDF', onclick: () => openPdfExtractDialog(picker.getScope) });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  askBtn.addEventListener('click', async () => {
+    const scope = picker.getScope();
+    const question = fQuestion.input.value.trim();
+    err.hidden = true; result.replaceChildren();
+    if (!scope.subjectId) { err.textContent = 'Choose a subject to search in.'; err.hidden = false; return; }
+    if (!question) { err.textContent = 'Type a question.'; err.hidden = false; return; }
+    askBtn.disabled = true; askBtn.textContent = 'Searching your notes…';
+    try {
+      const { answer, chunks } = await callGroundedStudy(scope, question);
+      result.replaceChildren(studyAnswerBlock(answer, chunks));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'study', title: question.slice(0, 60) }).select('id').single();
+      if (!chatIns.error) {
+        await sb.from('ai_messages').insert(
+          [{ chat_id: chatIns.data.id, role: 'user', content: JSON.stringify({ question, chunks: chunks.map(c => c.origin_label) }) },
+           { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
+      }
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not get an answer. Try again.';
+      err.hidden = false;
+    } finally {
+      askBtn.disabled = false; askBtn.textContent = 'Ask';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Ask a question' })),
+    picker.wrap, fQuestion.wrap,
+    h('div', { class: 'vault-actions' }, askBtn, pasteBtn, pdfBtn),
+    err, result);
+}
+
+function openAddSourceMaterial(getScope) {
+  showDialog({
+    title: 'Add source material',
+    text: 'Paste a transcript, extra reading, or any text for the Study Engine to search — saved at the scope chosen above.',
+    render(form) {
+      const fLabel = makeField('Label (optional)', { placeholder: 'e.g. Class transcript, Ch. 4 handout' });
+      const fText = makeField('Text', { multiline: true, rows: 8 });
+      form.append(fLabel.wrap, fText.wrap);
+      return () => {
+        const text = fText.input.value.trim();
+        if (!text) throw new Error('Paste some text first.');
+        return { label: fLabel.input.value.trim() || 'Pasted text', text };
+      };
+    },
+    async onSubmit({ label, text }) {
+      const scope = getScope();
+      if (!scope.subjectId) throw new Error('Choose a subject above first, then try again.');
+      await saveTextAsChunks(scope, 'pasted', null, label, text);
+      route();
+    }
+  });
+}
+
+async function loadPdfSourcesForScope(scope) {
+  const res = await scopeFilter(sb.from('sources').select('id, title, storage_path').eq('kind', 'pdf'), scope)
+    .order('created_at', { ascending: false });
+  if (res.error) throw res.error;
+  return res.data;
+}
+
+// Downloads a vault PDF via its signed URL and pulls out its selectable text with pdf.js.
+// Scanned PDFs with no text layer return an empty string, which the caller reports as an error.
+let pdfjsReady = false;
+async function extractPdfText(storagePath) {
+  if (!window.pdfjsLib) throw new Error('The PDF reading library did not load. Check your connection and try again.');
+  if (!pdfjsReady) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsReady = true;
+  }
+  const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(storagePath, 120);
+  if (signed.error) throw signed.error;
+  const resp = await fetch(signed.data.signedUrl);
+  if (!resp.ok) throw new Error('Could not download the PDF.');
+  const doc = await pdfjsLib.getDocument({ data: await resp.arrayBuffer() }).promise;
+  let text = '';
+  for (let i = 1; i <= doc.numPages; i++) {
+    const content = await (await doc.getPage(i)).getTextContent();
+    text += content.items.map(it => it.str).join(' ') + '\n\n';
+  }
+  return text.trim();
+}
+
+function openPdfExtractDialog(getScope) {
+  const scope = getScope();
+  if (!scope.subjectId) {
+    showDialog({ title: 'Choose a subject first', text: 'Pick a subject above (and optionally a chapter or topic), then try again.',
+      render: () => (() => null), submitLabel: 'OK', async onSubmit() {} });
+    return;
+  }
+  showDialog({
+    title: 'Add text from a PDF',
+    text: 'PDFs already saved to this scope\'s Reference Vault:',
+    render(form) {
+      const list = h('div', { class: 'list' }, h('p', { class: 'none', text: 'Loading…' }));
+      form.append(list);
+      loadPdfSourcesForScope(scope).then(rows => {
+        if (!rows.length) { list.replaceChildren(h('p', { class: 'none', text: 'No PDFs saved at this scope yet. Add one in the Reference Vault first.' })); return; }
+        list.replaceChildren(...rows.map(r => {
+          const status = h('small', {});
+          const btn = h('button', { class: 'btn quiet small', type: 'button', text: 'Extract & add' });
+          btn.addEventListener('click', async () => {
+            btn.disabled = true; btn.textContent = 'Reading…'; status.textContent = '';
+            try {
+              const text = await extractPdfText(r.storage_path);
+              if (!text) throw new Error('No selectable text found (it may be a scanned image).');
+              const n = await saveTextAsChunks(scope, 'pdf', r.id, r.title || 'PDF', text);
+              btn.textContent = 'Added'; status.textContent = n + (n === 1 ? ' chunk saved' : ' chunks saved');
+            } catch (e) {
+              btn.disabled = false; btn.textContent = 'Extract & add'; status.textContent = e.message;
+            }
+          });
+          return h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', { text: r.title || 'PDF' }), status), btn);
+        }));
+      }).catch(e => list.replaceChildren(errorCard(e)));
+      return () => null;
+    },
+    submitLabel: 'Done',
+    async onSubmit() { route(); }
+  });
+}
+
+function studyHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Grounded Study Engine');
+  return chatId ? studyPast(chatId) : studyList();
+}
+
+async function studyList() {
+  const [chatsRes, tree] = await Promise.all([
+    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'study').order('created_at', { ascending: false }),
+    loadScopeTree()
+  ]);
+  const chats = must(chatsRes);
+  return { title: 'Grounded Study Engine', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    h('p', { class: 'hint-line', text: 'Answers come only from your own notes, formulas, mnemonics and anything you add below — never the model\'s outside knowledge.' }),
+    studyPanel(tree),
+    ...(chats.length
+      ? [section('Past questions', null, null,
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/study/' + c.id, c.title || 'Question', new Date(c.created_at).toLocaleString(), c.id))))]
+      : [h('p', { class: 'none', text: 'No questions asked yet.' })])
+  ] };
+}
+
+async function studyPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Grounded Study Engine', href: '#ai/study' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Grounded Study Engine', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const userMsg = msgs.find(m => m.role === 'user');
+  const ans = msgs.find(m => m.role === 'assistant');
+  let question = userMsg ? userMsg.content : '', chunkLabels = [];
+  try { const parsed = JSON.parse(userMsg.content); question = parsed.question; chunkLabels = parsed.chunks || []; } catch (e) {}
+  return { title: chatRes.data.title || 'Question', nodes: [
+    crumbs(crumb),
+    h('p', { class: 'hint-line', text: question }),
+    ans
+      ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content }),
+          chunkLabels.length ? h('p', { class: 'hint-line', text: 'From: ' + chunkLabels.join('; ') }) : null)
+      : h('p', { class: 'none', text: 'No answer saved.' }),
     editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
