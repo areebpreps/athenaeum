@@ -241,6 +241,7 @@
   .item {
     display: grid; gap: 6px; width: 100%; text-align: left; padding: 14px 16px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 16px; color: var(--chalk);
+    cursor: pointer;
   }
   .item:active { background: var(--paper-hi); }
   .item strong { font-weight: 600; overflow-wrap: anywhere; }
@@ -248,9 +249,17 @@
     color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere;
     display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
   }
+  .item.expanded .body { -webkit-line-clamp: unset; overflow: visible; }
   .item .expr { display: block; padding: 8px 10px; background: var(--paper-hi); border-radius: 8px; overflow-x: auto; white-space: pre; font-size: 15px; }
   .item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
   .origin { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+  .item-edit {
+    margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; padding: 0; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--paper-hi); color: var(--dim);
+  }
+  .item-edit:active { color: var(--chalk); }
+  .item-edit svg { width: 16px; height: 16px; }
   .chip {
     justify-self: start; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
@@ -1014,16 +1023,42 @@ function confirmDeleteChat(chatId) {
   });
 }
 
+function pencilIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  return t.content.firstChild;
+}
+
+// Tapping the card expands/collapses its clamped body text (harmless if the
+// text was already short enough to show in full); the small pencil button is
+// the only way to open the edit dialog, and stops the tap from also toggling.
 function itemCard(scope, it) {
   const { type, row } = it;
   const detail = type === 'formula' ? row.description : row.body;
-  return h('button', { class: 'item', type: 'button', onclick: () => openItemDialog(scope, it) },
+  const editBtn = h('button', {
+    class: 'item-edit', type: 'button', 'aria-label': 'Edit',
+    onclick: e => { e.stopPropagation(); openItemDialog(scope, it); }
+  }, pencilIcon());
+
+  const card = h('div', { class: 'item', tabindex: '0', role: 'button', 'aria-expanded': 'false' },
     h('span', { class: 'item-head' },
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
-      it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
+      it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
+      editBtn),
     row.title ? h('strong', { text: row.title }) : null,
     type === 'formula' ? h('code', { class: 'expr', text: row.expression }) : null,
     detail ? h('span', { class: 'body', text: detail }) : null);
+
+  const toggle = () => {
+    const open = card.classList.toggle('expanded');
+    card.setAttribute('aria-expanded', String(open));
+  };
+  card.addEventListener('click', toggle);
+  card.addEventListener('keydown', e => {
+    if (e.target === editBtn) return;
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+  return card;
 }
 
 function folderIcon() {
@@ -2036,7 +2071,7 @@ function hubsSection() {
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
       linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Chorcha Question Bank' }),
       linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
-      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Watch videos in-app and save your favourites' })));
+      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Browse YouTube, save videos to watch in-app' })));
 }
 
 async function buildWorkspaceRoot() {
@@ -2086,10 +2121,10 @@ async function buildWorkspaceRoot() {
    Live under the AI tools tab: #ai/<tool>[/<chat id>]. Gemini only — the
    key and model name are set in #ai/settings. Every tool below calls
    through one of: callAI() (text), callAIVision() (photo + text), or
-   callGeminiGroundedRaw() (text/photo + Google Search grounding, used by
-   the Fact Checker). The key is stored with `store` (localStorage only):
-   never synced to Supabase, never included in the JSON/ZIP backup, per
-   the blueprint's security section. No schema changes were needed beyond
+   callAIVisionMulti() (several photos + text in one turn). The key is
+   stored with `store` (localStorage only): never synced to Supabase,
+   never included in the JSON/ZIP backup, per the blueprint's security
+   section. No schema changes were needed beyond
    schema-update-3.2-solver.sql (the ai_messages.image_path column) — the
    Quiz Generator saves its questions as a JSON string in ai_messages.content,
    and everything else is plain text.
@@ -2174,29 +2209,6 @@ async function callAIVisionMulti(system, textPrompt, images) {
   return callGeminiRaw(s.geminiModel, s.geminiKey, system, [{ role: 'user', parts }]);
 }
 
-// Grounded caller (Fact Checker): same shape as callGeminiRaw, but turns on
-// Gemini's google_search tool and pulls a source link out of the grounding
-// metadata Gemini returns alongside the answer.
-async function callGeminiGroundedRaw(model, key, system, contents) {
-  const modelId = normalizeGeminiModel(model);
-  if (!GEMINI_MODEL_RE.test(modelId)) {
-    throw new Error('That Gemini model name looks off. In Settings, use just the model id with no extra text — e.g. gemini-2.5-flash.');
-  }
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-              encodeURIComponent(modelId) + ':generateContent?key=' + encodeURIComponent(key);
-  const body = { contents, tools: [{ google_search: {} }] };
-  if (system) body.systemInstruction = { parts: [{ text: system }] };
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data.error && data.error.message) || ('Gemini error (' + res.status + ').'));
-  const cand = data.candidates && data.candidates[0];
-  const parts = cand && cand.content && cand.content.parts;
-  const text = parts ? parts.map(p => p.text || '').join('') : '';
-  if (!text) throw new Error('Gemini returned an empty response. It may have blocked the reply — try rephrasing.');
-  const chunks = (cand.groundingMetadata && cand.groundingMetadata.groundingChunks) || [];
-  const sources = chunks.map(c => c.web).filter(w => w && w.uri);
-  return { text, sources };
-}
 
 // FileReader -> raw base64 (strips the "data:...;base64," prefix).
 function blobToBase64(blob) {
@@ -2234,7 +2246,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/settings', title: 'Settings', meta: configured ? 'Gemini key added' : 'Add your Gemini key to begin' }),
         linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }),
         linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }),
-        linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, with a source link' }),
+        linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, from the model itself' }),
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
@@ -2589,29 +2601,11 @@ async function solverPast(chatId) {
 
 /* ---------- Fact Checker ----------
    Single-shot: a claim (text and/or a photo of one) in, a verdict out.
-   Uses callGeminiGroundedRaw so Gemini can search the web; the top source
-   it cites is appended to the saved answer as a plain "Source: <url>" line
-   (no new columns needed — same ai_chats/ai_messages tables as everything
-   else in 3.2). A photo, if added, is uploaded the same private way the
-   Question Solver does it. */
+   Answered from the model's own knowledge only — no live web search. */
 const FACTCHECK_SYSTEM =
-  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. ' +
-  'Use web search to verify it. Reply in plain text, no markdown. The very first line must be exactly one of these three ' +
-  'words: True, False, or Partially true. Then, on the next lines, a short explanation (2-4 sentences) of why, based on what you found.';
-
-// Fallback used when the search-grounding call is quota-limited (grounding has its own,
-// much stricter free-tier quota than plain generation). Same verdict format, just answered
-// from the model's own knowledge with no live source link, so the tool keeps working for free.
-const FACTCHECK_SYSTEM_NO_SEARCH =
-  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. ' +
-  'Web search is unavailable right now, so answer from your own knowledge and say so is not needed in the reply itself. ' +
-  'Reply in plain text, no markdown. The very first line must be exactly one of these three words: True, False, or Partially ' +
-  'true. Then, on the next lines, a short explanation (2-4 sentences) of why.';
-
-function isQuotaError(e) {
-  const msg = ((e && e.message) || '').toLowerCase();
-  return msg.includes('quota') || msg.includes('rate limit') || msg.includes('resource_exhausted') || msg.includes('429');
-}
+  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. Answer from ' +
+  'your own knowledge. Reply in plain text, no markdown. The very first line must be exactly one of these three words: True, ' +
+  'False, or Partially true. Then, on the next lines, a short explanation (2-4 sentences) of why.';
 
 async function callAIFactCheck(claimText, imageB64, mime) {
   const s = aiSettings();
@@ -2619,14 +2613,7 @@ async function callAIFactCheck(claimText, imageB64, mime) {
   const parts = [];
   if (claimText) parts.push({ text: claimText });
   if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
-  try {
-    return await callGeminiGroundedRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }]);
-  } catch (e) {
-    if (!isQuotaError(e)) throw e;
-    // Search-grounding quota hit: retry without it so the tool still works, just with no live source.
-    const text = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_NO_SEARCH, [{ role: 'user', parts }]);
-    return { text, sources: [], noSearch: true };
-  }
+  return callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }]);
 }
 
 // Renders the verdict word as a coloured status card (reuses the .status
@@ -2672,9 +2659,7 @@ function factcheckPanel() {
         mime = blob.type || 'image/jpeg';
         b64 = await blobToBase64(blob);
       }
-      const { text, sources, noSearch } = await callAIFactCheck(claim, b64, mime);
-      const answer = text + (sources.length ? ('\n\nSource: ' + sources[0].uri)
-                     : noSearch ? '\n\n(Live web search hit its quota — this answer is from the model\'s own knowledge, no source link.)' : '');
+      const answer = await callAIFactCheck(claim, b64, mime);
       result.replaceChildren(verdictBadge(answer));
 
       if (blob) { try { imagePath = await uploadToolImage('factcheck', blob); } catch (e) { /* non-fatal */ } }
@@ -2697,7 +2682,7 @@ function factcheckPanel() {
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New claim' })),
-    h('p', { class: 'hint-line', text: 'Paste a claim, or add a photo of one, and get a verdict with a source.' }),
+    h('p', { class: 'hint-line', text: 'Paste a claim, or add a photo of one, and get a verdict.' }),
     h('div', { class: 'field' }, ta),
     h('div', { class: 'vault-actions' }, photoBtn, fileInput),
     photoLabel, goBtn, err, result);
@@ -4284,13 +4269,18 @@ function openSimDialog(existing, presetCat) {
   });
 }
 
-/* ---------- YouTube hub: watch any video in-app, and save your favourites ----------
-   YouTube's own /embed/ endpoint sends permissive frame headers (unlike most other
-   sites — see section 14 of the blueprint), so unlike Portals/3D sim hub this plays
-   right inside the app instead of navigating away. */
+/* ---------- YouTube hub: browse YouTube itself, and save your favourites ----------
+   Only YouTube's single-video /embed/ endpoint sends permissive frame headers —
+   youtube.com itself blocks framing just like the other sites in the 3D sim hub
+   and Portals (see section 14 of the blueprint), so exploring/browsing YouTube
+   opens the real site with direct same-tab navigation, same as those hubs. A
+   saved video's own player still plays right inside the app, since that part
+   IS embeddable. */
 const YT_CRUMBS = [{ text: 'Workspace', href: '#workspace' }, { text: 'YouTube hub', href: '#workspace/youtube' }];
+const YOUTUBE_SITE_URL = 'https://www.youtube.com/';
 
 async function ytHub(itemKey) {
+  if (itemKey === 'browse') return youtubeSiteViewer();
   if (itemKey) {
     if (UUID.test(itemKey)) return savedVideoViewer(itemKey);
     return go('#workspace/youtube');
@@ -4300,37 +4290,25 @@ async function ytHub(itemKey) {
   try { saved = must(await sb.from('saved_videos').select('*').order('created_at', { ascending: false })); }
   catch (e) { savedError = e; }
 
-  const fUrl = makeField('YouTube link', { placeholder: 'https://www.youtube.com/watch?v=…' });
-  fUrl.input.type = 'url';
-  fUrl.input.setAttribute('autocapitalize', 'none');
-  const watchBtn = h('button', { class: 'btn small', type: 'button', text: 'Watch' });
-  const err = h('p', { class: 'msg err', hidden: true });
-  const playerBox = h('div');
-  const saveBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Save this video', hidden: true });
-  let currentUrl = '';
-
-  watchBtn.addEventListener('click', () => {
-    const url = fUrl.input.value.trim();
-    if (!url || !youtubeVideoId(url)) { err.textContent = 'Paste a valid YouTube link.'; err.hidden = false; return; }
-    err.hidden = true; currentUrl = url;
-    playerBox.replaceChildren(youtubePlayer(url));
-    saveBtn.hidden = false;
-  });
-  saveBtn.addEventListener('click', () => openSaveVideoDialog(null, currentUrl));
-
   const mineBox = saved.length
     ? h('div', { class: 'list' }, saved.map(r => linkRow({ href: '#workspace/youtube/' + r.id, title: r.title, meta: 'Saved video' })))
     : h('p', { class: 'none', text: 'Nothing saved yet.' });
 
   return { title: 'YouTube hub', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
-    section('Watch a video', null, null,
-      h('div', { class: 'field' }, fUrl.wrap), watchBtn, err, playerBox, saveBtn),
+    section('Explore', null, null,
+      h('div', { class: 'list' }, linkRow({ href: '#workspace/youtube/browse', title: 'Open YouTube', meta: 'Search and browse, then save a link below' }))),
     section('My videos', '+ Save a video', () => openSaveVideoDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
                      'Run the update SQL in Supabase (schema-update-3.2-youtube.sql), then reload.') : null,
       mineBox)
   ] };
+}
+
+function youtubeSiteViewer() {
+  const save = h('button', { class: 'btn small', type: 'button', text: '+ Save a video', onclick: () => openSaveVideoDialog(null) });
+  return launchPage('YouTube', YOUTUBE_SITE_URL, [{ text: 'Workspace', href: '#workspace' }], [save],
+    'Found a video you like? Copy its link from YouTube, come back and save it here to watch it in-app next time.');
 }
 
 async function savedVideoViewer(id) {
