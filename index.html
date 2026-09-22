@@ -240,6 +240,13 @@
     color: var(--dim); font-size: 22px; line-height: 1; display: grid; place-items: center;
   }
   .row-del:active { background: var(--paper-hi); color: var(--err); }
+  .arrange-row { padding: 10px 16px; }
+  .arrange-row .grow { font-weight: 600; overflow-wrap: anywhere; }
+  .arrange-row button.btn { min-width: 44px; }
+  .link-preview { display: grid; gap: 6px; margin: 4px 0 12px; padding: 10px 12px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+  .link-preview-img { width: 100%; max-height: 140px; object-fit: cover; border-radius: 8px; }
+  .link-preview p { color: var(--dim); font-size: 14px; margin: 0; }
+  .link-preview small { color: var(--dim); }
   .ai-status { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 14px; margin: 4px 0 0; padding: 0 4px; }
   .ai-status .dot-pulse {
     width: 8px; height: 8px; border-radius: 50%; background: var(--marker); animation: ai-pulse 1s ease-in-out infinite;
@@ -1005,6 +1012,71 @@ function linkRow({ href, color, title, meta }) {
     h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
 }
 
+/* ---------- Manual reordering (B5) ----------
+   Wraps a list of rows (already in display order) with an "Arrange" toggle.
+   While arranging, each row shows Up/Down buttons instead of its normal
+   click behavior; moving a row swaps its `position` with its neighbor and
+   writes both back immediately. `entries` can be either plain DB rows
+   (subjects/chapters/topics, which have `.id`/`.position` directly) or the
+   `{ row, ... }` wrapper used for items/sources — both shapes are handled
+   the same way. `opts.table(entry)` returns the table name to update for
+   that entry (a function, so a mixed list like the items list can route
+   each row to its own table). `opts.label(entry)` is the short text shown
+   next to the Up/Down buttons. `opts.render(entry)` is the normal-mode
+   renderer (e.g. linkRow, itemCard, sourceRow). */
+function arrangeSection(entries, opts) {
+  const rec = e => (e && e.row) ? e.row : e;
+  let arranging = false;
+  const list = entries.slice();
+  const wrap = h('div');
+
+  async function ensureNormalized() {
+    const stale = list.some((e, i) => rec(e).position !== i);
+    if (!stale) return;
+    await Promise.all(list.map((e, i) => {
+      if (rec(e).position === i) return null;
+      rec(e).position = i;
+      return sb.from(opts.table(e)).update({ position: i }).eq('id', rec(e).id);
+    }));
+  }
+
+  async function move(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    rec(list[i]).position = i; rec(list[j]).position = j;
+    try {
+      await Promise.all([
+        sb.from(opts.table(list[i])).update({ position: i }).eq('id', rec(list[i]).id),
+        sb.from(opts.table(list[j])).update({ position: j }).eq('id', rec(list[j]).id)
+      ]);
+    } catch (e) { /* keep the local order even if a write failed; next Arrange pass will retry */ }
+    paint();
+  }
+
+  function paint() {
+    wrap.replaceChildren();
+    if (list.length > 1) {
+      wrap.append(h('button', {
+        class: 'btn quiet small', type: 'button', text: arranging ? 'Done arranging' : 'Arrange',
+        onclick: async () => {
+          if (!arranging) await ensureNormalized();
+          arranging = !arranging;
+          paint();
+        }
+      }));
+    }
+    wrap.append(arranging
+      ? h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
+          h('span', { class: 'grow', text: opts.label(e) }),
+          h('button', { class: 'btn quiet small', type: 'button', text: '↑', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
+          h('button', { class: 'btn quiet small', type: 'button', text: '↓', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }))))
+      : h('div', { class: 'list' }, list.map(opts.render)));
+  }
+  paint();
+  return wrap;
+}
+
 // A history row for a saved AI chat: tap to open it, tap × to delete it (with confirmation).
 // chip (optional) shows a small type badge (e.g. quiz type) before the title.
 function chatRow(href, title, meta, chatId, chip) {
@@ -1165,10 +1237,16 @@ function itemsSection(scope, items, heading, hint) {
       }
     }));
 
+    const itemArrangeOpts = {
+      label: it => it.row.title || ('Untitled ' + ITEM_TYPES[it.type].label.toLowerCase()),
+      table: it => ITEM_TYPES[it.type].table,
+      render: it => itemCard(scope, it)
+    };
+
     if (!grouped) {
-      // ungrouped: every item, one type after another (notes, definitions, formulas, mnemonics)
-      box.append(h('div', { class: 'list' },
-        types.flatMap(k => items.filter(it => it.type === k)).map(it => itemCard(scope, it))));
+      // ungrouped: items in their saved order (drag order via Arrange below);
+      // falls back to newest-first, one type after another, until arranged
+      box.append(arrangeSection(items, itemArrangeOpts));
     } else if (itemsView.folder && countOf(itemsView.folder)) {
       // one folder open: only that type
       bar.append(h('button', {
@@ -1177,7 +1255,7 @@ function itemsSection(scope, items, heading, hint) {
       }));
       box.append(
         h('p', { class: 'hint-line', text: TYPE_PLURAL[itemsView.folder] + ' · ' + plural(countOf(itemsView.folder), 'item', 'items') }),
-        h('div', { class: 'list' }, items.filter(it => it.type === itemsView.folder).map(it => itemCard(scope, it))));
+        arrangeSection(items.filter(it => it.type === itemsView.folder), itemArrangeOpts));
     } else {
       // all folders, one per type that has items
       itemsView.folder = null;
@@ -1216,7 +1294,15 @@ async function loadItems(scope, names) {
     ...must(m).map(r => put('mnemonic', r)),
     ...must(fc).map(r => put('flashcard', r))
   ];
-  items.sort((a, b) => new Date(b.row.created_at) - new Date(a.row.created_at));
+  // B5: a manually set position wins; items without one (or all of them,
+  // before anyone has arranged this list) fall back to newest-first.
+  items.sort((a, b) => {
+    const pa = a.row.position, pb = b.row.position;
+    if (pa != null && pb != null && pa !== pb) return pa - pb;
+    if (pa != null && pb == null) return -1;
+    if (pa == null && pb != null) return 1;
+    return new Date(b.row.created_at) - new Date(a.row.created_at);
+  });
   return items;
 }
 
@@ -1441,7 +1527,9 @@ function openTrapDialog(scope, existing) {
 const REF_BUCKET = 'reference-files';
 
 async function loadSources(scope, names) {
-  const rows = must(await scopeFilter(sb.from('sources').select('*'), scope).order('created_at', { ascending: false }));
+  const rows = must(await scopeFilter(sb.from('sources').select('*'), scope)
+    .order('position', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: false }));
   return rows.map(r => ({ row: r, origin: originOf(r, scope, names) }));
 }
 
@@ -1570,7 +1658,7 @@ function linkIcon() { return mkIcon('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0
 
 function sourceLabel(row) {
   if (row.kind === 'pdf') return 'PDF';
-  if (row.kind === 'link') return parseExternalLink(row.external_url).label;
+  if (row.kind === 'link') return row.link_site || parseExternalLink(row.external_url).label;
   return 'Photo';
 }
 
@@ -1582,6 +1670,8 @@ function sourceRow(scope, src) {
     sb.storage.from(REF_BUCKET).createSignedUrl(row.storage_path, 3600).then(({ data, error }) => {
       if (!error && data) icon.src = data.signedUrl;
     });
+  } else if (row.kind === 'link' && row.link_image) {
+    icon = h('img', { class: 'source-thumb', alt: '', src: row.link_image });
   } else {
     icon = row.kind === 'pdf' ? docIcon() : row.kind === 'link' ? linkIcon() : fileIcon();
   }
@@ -1605,11 +1695,12 @@ function openSourceDialog(scope, src) {
 
   if (row.kind === 'link') {
     const info = parseExternalLink(row.external_url);
-    const title = row.title || info.label;
+    const title = row.title || row.link_site || info.label;
     const inTab = () => window.open(row.external_url, '_blank', 'noopener');
     showDialog({
       title,
-      text: info.label + ' link. ' + saved + (info.embed ? '' : ' This link opens in a browser tab.'),
+      text: (row.link_description ? row.link_description + '\n\n' : '') +
+        (row.link_site || info.label) + ' link. ' + saved + (info.embed ? '' : ' This link opens in a browser tab.'),
       submitLabel: info.embed ? 'Open in app' : 'Open link',
       async onSubmit() { if (info.embed) openViewer(title, info.embed, row.external_url); else inTab(); },
       extras: [
@@ -1689,17 +1780,106 @@ function openLinkDialog(scope) {
   });
 }
 
+/* ---------- Reference Vault: web article links (B6) ----------
+   Distinct from the Drive/OneDrive link above: this is for any ordinary
+   web page/article. We try to fetch a readable title/description/preview
+   image via microlink.io (a public, keyless link-unfurling API) so the
+   saved card looks like a proper reference rather than a bare URL. If the
+   fetch fails or times out, the link still saves fine with just its URL
+   and whatever title the user typed. */
+async function fetchLinkMetadata(url) {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch('https://api.microlink.io/?url=' + encodeURIComponent(url) + '&meta=false', { signal: ctrl.signal });
+    clearTimeout(timer);
+    const json = await res.json();
+    if (json.status !== 'success' || !json.data) return null;
+    const d = json.data;
+    let site = d.publisher || null;
+    if (!site) { try { site = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { site = null; } }
+    return {
+      title: d.title || null,
+      description: d.description || null,
+      image: (d.image && d.image.url) || (d.logo && d.logo.url) || null,
+      site
+    };
+  } catch (e) { return null; }
+}
+
+function openWebLinkDialog(scope) {
+  let meta = null;
+  showDialog({
+    title: 'Add a link',
+    text: 'Paste a link to an article or web page. We\u2019ll try to pull its title and preview automatically.',
+    submitLabel: 'Save link',
+    render(form) {
+      const fUrl = makeField('Link', { placeholder: 'Paste the link here' });
+      fUrl.input.type = 'url';
+      fUrl.input.setAttribute('autocapitalize', 'none');
+      const fTitle = makeField('Title (optional)', { maxlength: 120, placeholder: 'Fetched automatically if left blank' });
+      const status = h('p', { class: 'hint-line' });
+      const preview = h('div', { class: 'link-preview', hidden: true });
+      form.append(fUrl.wrap, fTitle.wrap, status, preview);
+
+      fUrl.input.addEventListener('change', async () => {
+        let url;
+        try { url = normalizeUrl(fUrl.input.value); } catch (e) { return; }
+        meta = null;
+        preview.hidden = true;
+        status.textContent = 'Fetching preview\u2026';
+        const fetched = await fetchLinkMetadata(url);
+        if (fetched) {
+          meta = fetched;
+          status.textContent = 'Preview fetched.';
+          if (!fTitle.input.value && fetched.title) fTitle.input.value = fetched.title;
+          preview.hidden = false;
+          preview.replaceChildren(
+            fetched.image ? h('img', { class: 'link-preview-img', alt: '', src: fetched.image }) : null,
+            h('strong', { text: fetched.title || fetched.site || url }),
+            fetched.description ? h('p', { text: fetched.description }) : null,
+            fetched.site ? h('small', { text: fetched.site }) : null);
+        } else {
+          status.textContent = 'Could not fetch a preview \u2014 it\u2019ll still be saved with the link.';
+        }
+      });
+
+      return () => {
+        const url = normalizeUrl(fUrl.input.value);
+        const title = fTitle.input.value.trim() || (meta && (meta.title || meta.site)) || 'Web link';
+        return { url, title };
+      };
+    },
+    async onSubmit({ url, title }) {
+      const payload = { ...scopeCols(scope), title, kind: 'link', external_url: url };
+      if (meta) {
+        if (meta.description) payload.link_description = meta.description;
+        if (meta.image) payload.link_image = meta.image;
+        if (meta.site) payload.link_site = meta.site;
+      }
+      const res = await sb.from('sources').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    }
+  });
+}
+
 function sourcesSection(scope, sources) {
   const box = h('div');
   const status = h('p', { class: 'msg err', hidden: true });
   const fileInput = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, hidden: true });
   const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add files', onclick: () => fileInput.click() });
+  const webLinkBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Add link', onclick: () => openWebLinkDialog(scope) });
   const linkBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Drive / OneDrive link', onclick: () => openLinkDialog(scope) });
 
   const paint = () => {
     box.replaceChildren();
     box.append(sources.length
-      ? h('div', { class: 'list' }, sources.map(s => sourceRow(scope, s)))
+      ? arrangeSection(sources, {
+          label: s => s.row.title || sourceLabel(s.row),
+          table: () => 'sources',
+          render: s => sourceRow(scope, s)
+        })
       : h('p', { class: 'none', text: 'Nothing saved here yet.' }));
   };
   paint();
@@ -1734,7 +1914,7 @@ function sourcesSection(scope, sources) {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' })),
     h('p', { class: 'hint-line', text: 'Photos are compressed automatically. PDFs up to ' + formatBytes(MAX_PDF_BYTES) + ' are stored privately in your account; for bigger files add a Google Drive or OneDrive link. Select up to ' + MAX_FILES_PER_BATCH + ' files at once.' }),
-    h('div', { class: 'vault-actions' }, addBtn, linkBtn, fileInput),
+    h('div', { class: 'vault-actions' }, addBtn, webLinkBtn, linkBtn, fileInput),
     status, box);
 }
 
@@ -5821,9 +6001,12 @@ async function subjectsRoot() {
   return { nodes: [
     section('Your subjects', '+ New subject', () => entityDialog('subject', null, { position: subjects.length }),
       subjects.length
-        ? h('div', { class: 'list' }, subjects.map(sub => linkRow({
-            href: '#subjects/' + sub.id, color: sub.color, title: sub.name,
-            meta: plural(counts[sub.id] || 0, 'chapter', 'chapters') })))
+        ? arrangeSection(subjects, {
+            label: sub => sub.name, table: () => 'subjects',
+            render: sub => linkRow({
+              href: '#subjects/' + sub.id, color: sub.color, title: sub.name,
+              meta: plural(counts[sub.id] || 0, 'chapter', 'chapters') })
+          })
         : emptyBlock('No subjects yet', 'Create a subject, then add chapters and topics inside it.'))
   ] };
 }
@@ -5853,9 +6036,12 @@ async function subjectPage(sid) {
     editButton('Edit subject', () => entityDialog('subject', subject, {})),
     section('Chapters', '+ Add chapter', () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
       chapters.length
-        ? h('div', { class: 'list' }, chapters.map(ch => linkRow({
-            href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
-            meta: plural(counts[ch.id] || 0, 'topic', 'topics') })))
+        ? arrangeSection(chapters, {
+            label: ch => ch.title, table: () => 'chapters',
+            render: ch => linkRow({
+              href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
+              meta: plural(counts[ch.id] || 0, 'topic', 'topics') })
+          })
         : h('p', { class: 'none', text: 'No chapters yet.' })),
     itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.'),
     flashcardsSection(scope, items),
@@ -5889,8 +6075,11 @@ async function chapterPage(sid, cid) {
     editButton('Edit chapter', () => entityDialog('chapter', chapter, { subjectId: sid })),
     section('Topics', '+ Add topic', () => entityDialog('topic', null, { chapterId: cid, position: topics.length }),
       topics.length
-        ? h('div', { class: 'list' }, topics.map(tp => linkRow({
-            href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })))
+        ? arrangeSection(topics, {
+            label: tp => tp.title, table: () => 'topics',
+            render: tp => linkRow({
+              href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })
+          })
         : h('p', { class: 'none', text: 'No topics yet.' })),
     itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.'),
     flashcardsSection(scope, items),
