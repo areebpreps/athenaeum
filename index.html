@@ -7,6 +7,12 @@
 <meta name="color-scheme" content="dark">
 <title>Athenaeum</title>
 
+<!-- Phase 5.1: PWA. Relative paths, so this also works unchanged when the
+     Android app bundles this same file locally under file:///android_asset/. -->
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
@@ -5864,6 +5870,40 @@ async function boot() {
 }
 
 boot();
+
+// Phase 5.1: register the service worker for offline app-shell caching.
+// Only meaningful in a browser (GitHub Pages) — service workers cannot
+// register under file:// at all, so this is a silent no-op inside the
+// Android app, which bundles this same index.html locally instead.
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+
+// Phase 5.2: inside the Android app, a WebView can't save a blob: URL to
+// disk the way a real browser does, so hand backup/export/infographic
+// downloads to the native bridge instead. No-op outside the app, since
+// window.AndroidDownloader only exists there.
+if (window.AndroidDownloader) {
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a[download]');
+    if (!a || !a.href || !a.href.startsWith('blob:')) return;
+    e.preventDefault();
+    fetch(a.href).then(r => r.blob()).then(blob => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = String(reader.result).split(',')[1] || '';
+        window.AndroidDownloader.saveFile(
+          a.download || 'athenaeum-download',
+          base64,
+          blob.type || 'application/octet-stream'
+        );
+      };
+      reader.readAsDataURL(blob);
+    }).catch(() => {});
+  }, true);
+}
 </script>
 </body>
 </html>
