@@ -259,6 +259,11 @@
   }
   .item.expanded .body { -webkit-line-clamp: unset; overflow: visible; }
   .item .expr { display: block; padding: 8px 10px; background: var(--paper-hi); border-radius: 8px; overflow-x: auto; white-space: pre; font-size: 15px; }
+  /* flashcards in a browse list stay flipped face-down (front only) until tapped */
+  .item.flashcard .body { display: none; }
+  .item.flashcard.expanded .body { display: -webkit-box; -webkit-line-clamp: unset; overflow: visible; }
+  .item.flashcard .fc-hint { display: block; margin-top: 2px; font-size: 13px; color: var(--dim); }
+  .item.flashcard.expanded .fc-hint { display: none; }
   .item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
   .origin { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
   .item-edit, .item-listen {
@@ -1072,14 +1077,18 @@ function itemCard(scope, it) {
     () => [row.title, type === 'formula' ? row.expression : null, detail].filter(Boolean).join('. '),
     { iconOnly: true, stopPropagation: true });
 
-  const card = h('div', { class: 'item', tabindex: '0', role: 'button', 'aria-expanded': 'false' },
+  // Flashcards behave like an actual flashcard even when just browsing: the
+  // back stays hidden until tapped, same tap that expands other item types.
+  const isFlashcard = type === 'flashcard';
+  const card = h('div', { class: 'item' + (isFlashcard ? ' flashcard' : ''), tabindex: '0', role: 'button', 'aria-expanded': 'false' },
     h('span', { class: 'item-head' },
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
       listenBtn, editBtn),
     row.title ? h('strong', { text: row.title }) : null,
     type === 'formula' ? h('code', { class: 'expr', text: row.expression }) : null,
-    detail ? h('span', { class: 'body', text: detail }) : null);
+    detail ? h('span', { class: 'body', text: detail }) : null,
+    isFlashcard ? h('span', { class: 'fc-hint', text: 'Tap to flip' }) : null);
 
   const toggle = () => {
     const open = card.classList.toggle('expanded');
@@ -4029,8 +4038,17 @@ async function quizPast(chatId) {
 const FLASHCARD_SYSTEM =
   'You are the Flashcard Generator in a student\'s Athenaeum workspace app. Reply with ONLY valid JSON, no markdown code ' +
   'fences, no commentary before or after it, in exactly this shape: {"cards":[{"front":"...","back":"..."}]}. front is a short ' +
-  'question, term, or prompt; back is its concise answer — a sentence or two at most, not an essay. Base every card only on ' +
-  'the material given. Write plain text inside the strings, no markdown.';
+  'question, term, or prompt; back is its concise answer — a sentence or two at most, not an essay.\n\n' +
+  'The material you are given is one of two kinds, and you must tell them apart:\n' +
+  '1. Substantive notes or pasted text (several sentences or more of actual content) — base every card strictly on facts ' +
+  'stated in it, so it stays a faithful study aid for what the student actually wrote or pasted.\n' +
+  '2. A bare topic, subject name, or short phrase (a word or a few words, not real notes) — in this case there is no "text" to ' +
+  'quote from, so write genuine subject-matter flashcards teaching that topic using your own general knowledge, the way a ' +
+  'textbook or teacher would. \n\n' +
+  'Never write a card whose front or back is ABOUT the material itself — no "what word/term is mentioned", "what topic is ' +
+  'discussed", "what is stated in the text/context", or anything referring to "the text", "the material", "the reference", ' +
+  'or "the context". Every card must test real knowledge of the subject, not awareness of the prompt. Write plain text ' +
+  'inside the strings, no markdown.';
 
 function flashcardPrompt(count, material) {
   return 'Make ' + count + ' flashcards from this material:\n\n' + material;
