@@ -307,6 +307,57 @@
   .search-row .control { flex: 1; min-width: 0; }
   .search-row .btn { width: auto; padding: 0 18px; }
   .embed-frame { width: 100%; height: min(70dvh, 640px); border: 0; border-radius: 16px; background: var(--paper-hi); margin-top: 10px; display: block; }
+  .day-head.today { color: var(--marker); font-size: 19px; }
+
+  /* subject filter chips (simulation hub) */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .chip-btn {
+    min-height: 40px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--paper); color: var(--dim); font-weight: 600; font-size: 14px;
+  }
+  .chip-btn[aria-pressed="true"] { background: var(--paper-hi); color: var(--chalk); border-color: var(--marker); }
+
+  /* projects with checklists */
+  .proj { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .proj-head {
+    display: flex; align-items: center; gap: 14px; width: 100%; min-height: 64px; padding: 12px 16px;
+    border: 0; background: transparent; color: var(--chalk); text-align: left;
+  }
+  .proj-head:active { background: var(--paper-hi); }
+  .proj-head .grow { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .proj-head strong { font-weight: 600; overflow-wrap: anywhere; }
+  .proj-head small { color: var(--dim); font-size: 14px; }
+  .proj-head .chev { color: var(--dim); font-size: 24px; line-height: 1; }
+  .progress { height: 6px; margin-top: 6px; background: var(--paper-hi); border-radius: 999px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--marker); border-radius: 999px; }
+  .check-body { border-top: 1px solid var(--line); padding: 8px 16px 14px; display: grid; gap: 4px; }
+  .check-list { display: grid; }
+  .check-row { display: flex; align-items: center; gap: 4px; min-height: 44px; }
+  .check-lab { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: pointer; overflow-wrap: anywhere; }
+  .check-row.done .check-lab span { text-decoration: line-through; opacity: .6; }
+  .check-del { min-width: 44px; min-height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--dim); font-size: 22px; line-height: 1; }
+  .check-del:active { background: var(--paper-hi); }
+  .check-add { display: flex; gap: 10px; margin-top: 6px; }
+  .check-add .control { min-height: 44px; flex: 1; min-width: 0; }
+  .check-add .btn { width: auto; padding: 0 18px; }
+  .check-body .msg { margin: 6px 0 0; }
+
+  /* Wikipedia article */
+  .article h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 24px 0 8px; }
+  .article h4 { font-size: 16px; font-weight: 700; margin: 18px 0 6px; color: var(--dim); }
+  .article p { margin: 0 0 14px; line-height: 1.65; overflow-wrap: anywhere; }
+
+  /* reference vault actions and full-screen file viewer */
+  .vault-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .viewer { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; background: var(--ink); }
+  .viewer-bar {
+    display: flex; align-items: center; gap: 8px; padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px;
+    background: var(--paper); border-bottom: 1px solid var(--line);
+  }
+  .viewer-bar strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .viewer-bar .picker-close { min-width: 56px; }
+  .viewer-bar .btn { width: auto; }
+  .viewer iframe { flex: 1; width: 100%; border: 0; background: #fff; }
 
   /* profile sheet */
   .scrim { position: fixed; inset: 0; background: rgba(4,7,14,.66); display: flex; align-items: flex-end; z-index: 10; }
@@ -437,6 +488,15 @@
   </div>
 </div>
 
+<div class="viewer" id="viewer" hidden>
+  <div class="viewer-bar">
+    <button type="button" class="picker-close" id="viewer-close">Close</button>
+    <strong id="viewer-title"></strong>
+    <a class="btn quiet small" id="viewer-open" target="_blank" rel="noopener">Open in tab ↗</a>
+  </div>
+  <iframe id="viewer-frame" title="Viewer" allow="fullscreen" referrerpolicy="no-referrer-when-downgrade"></iframe>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 /* =====================================================================
@@ -449,10 +509,8 @@ const CONFIG = {
   SUPABASE_ANON_KEY: 'sb_publishable_SQeATP_IzDUg46BmV2uZ0Q_eVAIL9Sr',
   // Usernames become internal emails like  areeb_2026@academic-workspace.app
   AUTH_EMAIL_DOMAIN: 'academic-workspace.app',
-  // Phase 3.1 portal embeds. Paste each portal's link here; leave blank to
-  // show "add its link" instead of trying to embed nothing.
-  PORTAL_PROTTAY_URL: '',
-  PORTAL_CHARCHA_URL: ''
+  // Phase 3.1 portal embed.
+  PORTAL_CHORCHA_URL: 'https://chorcha.net/question-bank'
 };
 
 const MAJORS = [
@@ -688,6 +746,7 @@ async function doLogin(username, password, major) {
 async function logout() {
   closeDialog();
   closeSheet();
+  closeViewer();
   lastHash = null;
   $('#view').replaceChildren();
   history.replaceState(null, '', location.pathname + location.search);
@@ -1118,33 +1177,117 @@ async function compressImage(file, maxDim = 1600, targetBytes = 320000) {
   return blob;
 }
 
-async function uploadSourceFile(scope, file) {
-  if (!file.type.startsWith('image/')) throw new Error('Only photos can be added here for now.');
-  const blob = await compressImage(file);
-  const path = currentUser.id + '/' + crypto.randomUUID() + '.jpg';
+const MAX_FILES_PER_BATCH = 20;
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
-  const up = await sb.storage.from(REF_BUCKET).upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+const isPdfFile = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+
+// Photos are compressed first; PDFs go up untouched (up to MAX_PDF_BYTES).
+async function uploadSourceFile(scope, file) {
+  const pdf = isPdfFile(file);
+  if (!pdf && !file.type.startsWith('image/')) throw new Error('Only photos and PDFs can be added here.');
+
+  let blob, ext, contentType, kind;
+  if (pdf) {
+    if (file.size > MAX_PDF_BYTES) {
+      throw new Error('over ' + formatBytes(MAX_PDF_BYTES) + '. Put big PDFs on Google Drive or OneDrive and add the link instead');
+    }
+    blob = file; ext = 'pdf'; contentType = 'application/pdf'; kind = 'pdf';
+  } else {
+    blob = await compressImage(file); ext = 'jpg'; contentType = 'image/jpeg'; kind = 'image';
+  }
+
+  const path = currentUser.id + '/' + crypto.randomUUID() + '.' + ext;
+  const up = await sb.storage.from(REF_BUCKET).upload(path, blob, { contentType, upsert: false });
   if (up.error) throw up.error;
 
-  const payload = { ...scopeCols(scope), title: (file.name || 'Scan').replace(/\.[^.]+$/, ''), kind: 'image', storage_path: path };
+  const payload = { ...scopeCols(scope), title: (file.name || (pdf ? 'PDF' : 'Scan')).replace(/\.[^.]+$/, ''), kind, storage_path: path };
   const ins = await sb.from('sources').insert(payload).select().single();
   if (ins.error) { await sb.storage.from(REF_BUCKET).remove([path]); throw ins.error; }
   return ins.data;
 }
 
-function fileIcon() {
+/* ---------- Drive / OneDrive links ---------- */
+function normalizeUrl(raw) {
+  let v = (raw || '').trim();
+  if (!v) throw new Error('Paste a link.');
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(v)) v = 'https://' + v;
+  let u;
+  try { u = new URL(v); } catch (e) { throw new Error('That does not look like a link.'); }
+  if (u.protocol !== 'https:') throw new Error('Use a secure link that starts with https://');
+  return u.href;
+}
+
+// Works out whether a pasted link can open inside the app. Anything we cannot
+// turn into an embed still works: it just opens in a browser tab.
+function parseExternalLink(raw) {
+  let u;
+  try { u = new URL(raw); } catch (e) { return { provider: 'other', label: 'Link', embed: null }; }
+  const host = u.hostname.toLowerCase();
+  const path = u.pathname;
+  const drive = embed => ({ provider: 'drive', label: 'Google Drive', embed });
+  const onedrive = embed => ({ provider: 'onedrive', label: 'OneDrive', embed });
+
+  if (host === 'docs.google.com') {
+    const m = path.match(/\/(document|presentation|spreadsheets)\/d\/([\w-]+)/);
+    return drive(m ? 'https://docs.google.com/' + m[1] + '/d/' + m[2] + '/preview' : null);
+  }
+  if (host === 'drive.google.com') {
+    const file = path.match(/\/file\/d\/([\w-]+)/);
+    const id = file ? file[1] : u.searchParams.get('id');
+    if (id && !/\/folders\//.test(path)) return drive('https://drive.google.com/file/d/' + id + '/preview');
+    const folder = path.match(/\/folders\/([\w-]+)/);
+    if (folder) return drive('https://drive.google.com/embeddedfolderview?id=' + folder[1] + '#list');
+    return drive(null);
+  }
+  if (host === 'onedrive.live.com') {
+    if (path.indexOf('/embed') === 0) return onedrive(u.href);
+    const resid = u.searchParams.get('resid') || u.searchParams.get('id');
+    const auth = u.searchParams.get('authkey');
+    if (resid) return onedrive('https://onedrive.live.com/embed?resid=' + encodeURIComponent(resid) +
+                               (auth ? '&authkey=' + encodeURIComponent(auth) : '') + '&em=2');
+    return onedrive(null);
+  }
+  if (host === '1drv.ms' || host.endsWith('.sharepoint.com') || host.endsWith('onedrive.com')) return onedrive(null);
+  return { provider: 'other', label: 'Link', embed: null };
+}
+
+function openViewer(title, embedUrl, openUrl) {
+  $('#viewer-title').textContent = title;
+  $('#viewer-open').href = openUrl;
+  $('#viewer-frame').src = embedUrl;
+  $('#viewer').hidden = false;
+}
+function closeViewer() {
+  const v = $('#viewer');
+  if (v.hidden) return;
+  v.hidden = true;
+  $('#viewer-frame').src = 'about:blank';
+}
+
+function mkIcon(inner) {
   const t = document.createElement('template');
-  t.innerHTML = '<svg class="folder-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4.5-5 3 3.5L17 11l3 5"/></svg>';
+  t.innerHTML = '<svg class="folder-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
   return t.content.firstChild;
+}
+function fileIcon() { return mkIcon('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4.5-5 3 3.5L17 11l3 5"/>'); }
+function docIcon()  { return mkIcon('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/>'); }
+function linkIcon() { return mkIcon('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'); }
+
+function sourceLabel(row) {
+  if (row.kind === 'pdf') return 'PDF';
+  if (row.kind === 'link') return parseExternalLink(row.external_url).label;
+  return 'Photo';
 }
 
 function sourceRow(scope, src) {
   const row = src.row;
+  const icon = row.kind === 'pdf' ? docIcon() : row.kind === 'link' ? linkIcon() : fileIcon();
   return h('button', { class: 'row', type: 'button', onclick: () => openSourceDialog(scope, src) },
-    fileIcon(),
+    icon,
     h('span', { class: 'grow' },
-      h('strong', { text: row.title || 'Photo' }),
-      h('small', { text: ['Photo', src.origin, new Date(row.created_at).toLocaleDateString()].filter(Boolean).join(' · ') })),
+      h('strong', { text: row.title || sourceLabel(row) }),
+      h('small', { text: [sourceLabel(row), src.origin, new Date(row.created_at).toLocaleDateString()].filter(Boolean).join(' · ') })),
     h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
 }
 
@@ -1155,22 +1298,42 @@ async function openSourceFile(row) {
 }
 
 function openSourceDialog(scope, src) {
+  const row = src.row;
+  const saved = 'Saved ' + new Date(row.created_at).toLocaleString() + '.';
+
+  if (row.kind === 'link') {
+    const info = parseExternalLink(row.external_url);
+    const title = row.title || info.label;
+    const inTab = () => window.open(row.external_url, '_blank', 'noopener');
+    showDialog({
+      title,
+      text: info.label + ' link. ' + saved + (info.embed ? '' : ' This link opens in a browser tab.'),
+      submitLabel: info.embed ? 'Open in app' : 'Open link',
+      async onSubmit() { if (info.embed) openViewer(title, info.embed, row.external_url); else inTab(); },
+      extras: [
+        ...(info.embed ? [{ label: 'Open in browser tab', danger: false, onClick: inTab }] : []),
+        { label: 'Delete link', onClick: () => confirmDeleteSource(src) }
+      ]
+    });
+    return;
+  }
+
   showDialog({
-    title: src.row.title || 'Photo',
-    text: 'Saved ' + new Date(src.row.created_at).toLocaleString() + '.',
+    title: row.title || sourceLabel(row),
+    text: saved,
     submitLabel: 'Open',
-    async onSubmit() { await openSourceFile(src.row); },
+    async onSubmit() { await openSourceFile(row); },
     extra: { label: 'Delete file', onClick: () => confirmDeleteSource(src) }
   });
 }
 
 function confirmDeleteSource(src) {
   showDialog({
-    title: 'Delete this file?',
-    text: (src.row.title ? '“' + src.row.title + '” ' : 'This file ') + 'will be removed. It cannot be undone.',
+    title: src.row.kind === 'link' ? 'Delete this link?' : 'Delete this file?',
+    text: (src.row.title ? '“' + src.row.title + '” ' : 'This item ') + 'will be removed. It cannot be undone.',
     submitLabel: 'Delete', danger: true,
     async onSubmit() {
-      await sb.storage.from(REF_BUCKET).remove([src.row.storage_path]);
+      if (src.row.storage_path) await sb.storage.from(REF_BUCKET).remove([src.row.storage_path]);
       const res = await sb.from('sources').delete().eq('id', src.row.id);
       if (res.error) throw res.error;
       route();
@@ -1178,19 +1341,43 @@ function confirmDeleteSource(src) {
   });
 }
 
-const MAX_PHOTOS_PER_BATCH = 20;
+function openLinkDialog(scope) {
+  showDialog({
+    title: 'Add a Drive or OneDrive link',
+    text: 'Set the file to “Anyone with the link can view”, then paste its link. For OneDrive, paste the link from Share › Embed so it opens inside the app.',
+    submitLabel: 'Save link',
+    render(form) {
+      const fTitle = makeField('Name', { maxlength: 120, placeholder: 'e.g. Physics textbook' });
+      const fUrl = makeField('Link', { placeholder: 'Paste the link here' });
+      fUrl.input.type = 'url';
+      fUrl.input.setAttribute('autocapitalize', 'none');
+      form.append(fTitle.wrap, fUrl.wrap);
+      return () => {
+        const url = normalizeUrl(fUrl.input.value);
+        const title = fTitle.input.value.trim() || (parseExternalLink(url).label + ' file');
+        return { title, url };
+      };
+    },
+    async onSubmit({ title, url }) {
+      const res = await sb.from('sources').insert({ ...scopeCols(scope), title, kind: 'link', external_url: url });
+      if (res.error) throw res.error;
+      route();
+    }
+  });
+}
 
 function sourcesSection(scope, sources) {
   const box = h('div');
   const status = h('p', { class: 'msg err', hidden: true });
-  const fileInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
-  const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add photos', onclick: () => fileInput.click() });
+  const fileInput = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, hidden: true });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add files', onclick: () => fileInput.click() });
+  const linkBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Drive / OneDrive link', onclick: () => openLinkDialog(scope) });
 
   const paint = () => {
     box.replaceChildren();
     box.append(sources.length
       ? h('div', { class: 'list' }, sources.map(s => sourceRow(scope, s)))
-      : h('p', { class: 'none', text: 'No photos saved here yet.' }));
+      : h('p', { class: 'none', text: 'Nothing saved here yet.' }));
   };
   paint();
 
@@ -1198,32 +1385,33 @@ function sourcesSection(scope, sources) {
     let files = Array.from(fileInput.files || []);
     fileInput.value = '';
     if (!files.length) return;
-    const truncated = files.length > MAX_PHOTOS_PER_BATCH;
-    if (truncated) files = files.slice(0, MAX_PHOTOS_PER_BATCH);
+    const truncated = files.length > MAX_FILES_PER_BATCH;
+    if (truncated) files = files.slice(0, MAX_FILES_PER_BATCH);
 
-    addBtn.disabled = true;
+    addBtn.disabled = true; linkBtn.disabled = true;
     status.hidden = true;
     const failed = [];
     for (let i = 0; i < files.length; i++) {
       addBtn.textContent = 'Uploading ' + (i + 1) + ' of ' + files.length + '…';
       try { await uploadSourceFile(scope, files[i]); }
-      catch (err) { failed.push((files[i].name || 'Photo ' + (i + 1)) + ': ' + (err && err.message ? err.message : 'upload failed')); }
+      catch (err) { failed.push((files[i].name || 'File ' + (i + 1)) + ': ' + (err && err.message ? err.message : 'upload failed')); }
     }
-    addBtn.disabled = false; addBtn.textContent = '+ Add photos';
+    addBtn.disabled = false; linkBtn.disabled = false; addBtn.textContent = '+ Add files';
 
     if (truncated || failed.length) {
       status.hidden = false;
       const parts = [];
-      if (truncated) parts.push('Only the first ' + MAX_PHOTOS_PER_BATCH + ' photos were uploaded — select the rest separately.');
-      if (failed.length) parts.push(plural(failed.length, 'photo', 'photos') + ' failed: ' + failed.join('; '));
+      if (truncated) parts.push('Only the first ' + MAX_FILES_PER_BATCH + ' files were uploaded. Select the rest separately.');
+      if (failed.length) parts.push(plural(failed.length, 'file', 'files') + ' failed: ' + failed.join('; '));
       status.textContent = parts.join(' ');
     }
     route();
   });
 
   return h('section', { class: 'sec' },
-    h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' }), addBtn, fileInput),
-    h('p', { class: 'hint-line', text: 'Camera scans and photos are compressed automatically, then saved privately to your account. Select up to ' + MAX_PHOTOS_PER_BATCH + ' at once.' }),
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' })),
+    h('p', { class: 'hint-line', text: 'Photos are compressed automatically. PDFs up to ' + formatBytes(MAX_PDF_BYTES) + ' are stored privately in your account; for bigger files add a Google Drive or OneDrive link. Select up to ' + MAX_FILES_PER_BATCH + ' files at once.' }),
+    h('div', { class: 'vault-actions' }, addBtn, linkBtn, fileInput),
     status, box);
 }
 
@@ -1441,13 +1629,17 @@ async function loadAllSources() {
 }
 
 function dlLabel(info) {
+  if (info.type === 'trap') return (info.row.warning || 'Trap').slice(0, 60);
   if (info.row.title) return info.row.title;
   if (info.type === 'note') return (info.row.body || 'Note').slice(0, 60);
-  return info.type === 'image' ? 'Photo' : (ITEM_TYPES[info.type] ? ITEM_TYPES[info.type].label : 'Item');
+  if (info.type === 'image') return 'Photo';
+  if (info.type === 'pdf') return 'PDF';
+  return ITEM_TYPES[info.type] ? ITEM_TYPES[info.type].label : 'Item';
 }
 
-const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'image'];
-const DL_LABEL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics', image: 'Photos' };
+const DL_ORDER = ['note', 'definition', 'formula', 'mnemonic', 'infobox', 'trap', 'image', 'pdf'];
+const DL_LABEL = { note: 'Notes', definition: 'Definitions', formula: 'Formulas', mnemonic: 'Mnemonics',
+                   infobox: 'Info boxes', trap: 'Traps', image: 'Photos', pdf: 'PDFs' };
 
 /* ---------- entry point ---------- */
 async function buildDownloads() {
@@ -1467,16 +1659,22 @@ async function buildDownloads() {
     must(cRes).forEach(c => { chaptersById[c.id] = c; });
     must(tRes).forEach(t => { topicsById[t.id] = t; });
 
-    const [items, sources] = await Promise.all([loadAllItems(), loadAllSources()]);
+    const [items, sources, boxRes, trapRes] = await Promise.all([
+      loadAllItems(), loadAllSources(),
+      sb.from('info_boxes').select('*').order('created_at', { ascending: false }),
+      sb.from('traps').select('*').order('created_at', { ascending: false })
+    ]);
     const rows = [];
-    items.forEach(it => rows.push({
-      key: it.type + ':' + it.row.id, type: it.type, row: it.row,
-      origin: fullOrigin(it.row, subjectsById, chaptersById, topicsById)
-    }));
-    sources.forEach(s => rows.push({
-      key: 'image:' + s.row.id, type: 'image', row: s.row,
-      origin: fullOrigin(s.row, subjectsById, chaptersById, topicsById)
-    }));
+    const originOfRow = row => fullOrigin(row, subjectsById, chaptersById, topicsById);
+    items.forEach(it => rows.push({ key: it.type + ':' + it.row.id, type: it.type, row: it.row, origin: originOfRow(it.row) }));
+    must(boxRes).forEach(r => rows.push({ key: 'infobox:' + r.id, type: 'infobox', row: r, origin: originOfRow(r) }));
+    must(trapRes).forEach(r => rows.push({ key: 'trap:' + r.id, type: 'trap', row: r, origin: originOfRow(r) }));
+    sources.forEach(s => {
+      // Drive / OneDrive links live in the cloud, so there is nothing to keep offline.
+      if (s.row.kind === 'link' || !s.row.storage_path) return;
+      const type = s.row.kind === 'pdf' ? 'pdf' : 'image';
+      rows.push({ key: type + ':' + s.row.id, type, row: s.row, origin: originOfRow(s.row) });
+    });
 
     return renderOnlineDownloads(rows, offlineKeys, offlineRecords);
   } catch (err) {
@@ -1516,7 +1714,8 @@ function dlRow(info, offlineKeys, selected, onToggle) {
   const cb = h('input', { type: 'checkbox', id: cbId, class: 'dl-check' });
   cb.checked = selected.has(info.key);
   cb.addEventListener('change', () => onToggle(info.key, cb.checked));
-  const thumb = info.type === 'image' && info.row.storage_path ? dlThumb(info.row.storage_path) : null;
+  const thumb = info.type === 'image' && info.row.storage_path ? dlThumb(info.row.storage_path)
+              : info.type === 'pdf' ? docIcon() : null;
   return h('label', { for: cbId, class: 'dl-row' + (saved ? ' saved' : '') },
     cb,
     thumb,
@@ -1555,13 +1754,14 @@ function renderOnlineDownloads(rows, offlineKeys, offlineRecords) {
       const info = rowsByKey.get(keys[i]);
       dlBtn.textContent = 'Saving ' + (i + 1) + ' of ' + keys.length + '…';
       try {
-        if (info.type === 'image') {
-          const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(info.row.storage_path, 120);
+        if (info.type === 'image' || info.type === 'pdf') {
+          const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(info.row.storage_path, 300);
           if (signed.error) throw signed.error;
           const resp = await fetch(signed.data.signedUrl);
           if (!resp.ok) throw new Error('download failed');
-          const blob = await resp.blob();
-          await offlinePut({ key: info.key, type: 'image', id: info.row.id,
+          let blob = await resp.blob();
+          if (info.type === 'pdf' && blob.type !== 'application/pdf') blob = new Blob([blob], { type: 'application/pdf' });
+          await offlinePut({ key: info.key, type: info.type, id: info.row.id,
             row: { title: info.row.title, created_at: info.row.created_at }, origin: info.origin, blob, savedAt: Date.now() });
         } else {
           await offlinePut({ key: info.key, type: info.type, id: info.row.id, row: info.row, origin: info.origin, savedAt: Date.now() });
@@ -1610,7 +1810,7 @@ function renderOnlineDownloads(rows, offlineKeys, offlineRecords) {
   const sections = DL_ORDER.filter(t => grouped[t].length).map(groupSection);
 
   const nodes = [
-    h('p', { class: 'hint-line', text: 'Select notes, definitions, formulas, mnemonics and photos to keep them readable without internet.' }),
+    h('p', { class: 'hint-line', text: 'Select notes, formulas, info boxes, traps, photos and PDFs to keep them readable without internet. Drive and OneDrive links need internet, so they are not listed.' }),
     offlineRecords.length ? h('p', { class: 'hint-line',
       text: plural(offlineRecords.length, 'item', 'items') + ' already saved for offline (~' +
             formatBytes(offlineRecords.reduce((s, r) => s + recordBytes(r), 0)) + ').' }) : null,
@@ -1618,7 +1818,7 @@ function renderOnlineDownloads(rows, offlineKeys, offlineRecords) {
     h('div', { class: 'dl-actions' }, dlBtn, rmBtn)
   ];
   if (rows.length) nodes.push(...sections);
-  else nodes.push(emptyBlock('Nothing to download yet', 'Add notes, formulas, mnemonics or photos in Subjects, then come back here.'));
+  else nodes.push(emptyBlock('Nothing to download yet', 'Add notes, formulas, photos or PDFs in Subjects, then come back here.'));
   if (offlineKeys.size) nodes.push(h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Clear all downloads', onclick: confirmClearAllDownloads }));
 
   return { nodes };
@@ -1645,6 +1845,10 @@ function confirmClearAllDownloads() {
 
 /* ---------- offline: read-only vault ---------- */
 function offlineItemCard(r) {
+  const head = label => h('span', { class: 'item-head' },
+    h('span', { class: 'chip', text: label }),
+    r.origin ? h('span', { class: 'origin', text: r.origin }) : null);
+
   if (r.type === 'image') {
     const url = URL.createObjectURL(r.blob);
     return h('div', { class: 'item' },
@@ -1653,11 +1857,26 @@ function offlineItemCard(r) {
       h('img', { class: 'offline-thumb', src: url, alt: '' }),
       h('button', { class: 'btn quiet small', type: 'button', text: 'Open full size', onclick: () => window.open(url, '_blank', 'noopener') }));
   }
+  if (r.type === 'pdf') {
+    const url = URL.createObjectURL(r.blob);
+    return h('div', { class: 'item' },
+      head('PDF'),
+      r.row.title ? h('strong', { text: r.row.title }) : null,
+      h('button', { class: 'btn quiet small', type: 'button', text: 'Open PDF', onclick: () => window.open(url, '_blank', 'noopener') }));
+  }
+  if (r.type === 'infobox') {
+    const bullets = Array.isArray(r.row.bullets) ? r.row.bullets : [];
+    return h('div', { class: 'item' },
+      head('Info box'),
+      h('strong', { text: r.row.title }),
+      bullets.length ? h('ul', { class: 'bullets' }, bullets.map(b => h('li', { text: b }))) : null);
+  }
+  if (r.type === 'trap') {
+    return h('div', { class: 'item' }, head('Trap'), h('span', { class: 'body', text: r.row.warning }));
+  }
   const detail = r.type === 'formula' ? r.row.description : r.row.body;
   return h('div', { class: 'item' },
-    h('span', { class: 'item-head' },
-      h('span', { class: 'chip', text: ITEM_TYPES[r.type] ? ITEM_TYPES[r.type].label : r.type }),
-      r.origin ? h('span', { class: 'origin', text: r.origin }) : null),
+    head(ITEM_TYPES[r.type] ? ITEM_TYPES[r.type].label : r.type),
     r.row.title ? h('strong', { text: r.row.title }) : null,
     r.type === 'formula' ? h('code', { class: 'expr', text: r.row.expression }) : null,
     detail ? h('span', { class: 'body', text: detail }) : null);
@@ -1694,8 +1913,8 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'planner')  return plannerHub();
   if (ids[0] === 'projects') return projectsHub();
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
-  if (ids[0] === 'portals')  return embedHubPage('portals', ids[1]);
-  if (ids[0] === 'threed')   return embedHubPage('threed', ids[1]);
+  if (ids[0] === 'portals')  return portalsPage(ids[1]);
+  if (ids[0] === 'threed')   return simHub(ids[1]);
   return buildWorkspaceRoot();
 }
 
@@ -1705,8 +1924,8 @@ function hubsSection() {
       linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
       linkRow({ href: '#workspace/projects', title: 'Projects & ECA',     meta: 'Track projects and extracurriculars' }),
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
-      linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Prottay, Charcha' }),
-      linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'PhET, GeoGebra' })));
+      linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Chorcha Question Bank' }),
+      linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' })));
 }
 
 async function buildWorkspaceRoot() {
@@ -1921,9 +2140,10 @@ function showDialog(cfg) {
   const submit = h('button', { class: 'btn' + (cfg.danger ? ' danger' : ''), type: 'submit', text: cfg.submitLabel || 'Save' });
   const actions = h('div', { class: 'actions' }, submit,
     h('button', { class: 'btn quiet', type: 'button', text: 'Cancel', onclick: closeDialog }));
-  if (cfg.extra) {
-    actions.append(h('button', { class: 'btn quiet danger-text', type: 'button', text: cfg.extra.label, onclick: cfg.extra.onClick }));
-  }
+  const extras = cfg.extras || (cfg.extra ? [cfg.extra] : []);
+  extras.forEach(x => actions.append(h('button', {
+    class: 'btn quiet' + (x.danger === false ? '' : ' danger-text'), type: 'button', text: x.label, onclick: x.onClick
+  })));
   form.append(msg, actions);
 
   const fail = text => { msg.textContent = text; msg.hidden = false; };
@@ -2089,6 +2309,8 @@ function confirmDeleteItem(existing) {
 
 /* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const WEEKDAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const plannerOpenDays = new Set();   // which collapsed days the person has opened (kept across refreshes)
 
 async function plannerHub() {
   const rows = must(await sb.from('planner_items').select('*').order('created_at', { ascending: true }));
@@ -2099,16 +2321,33 @@ async function plannerHub() {
 
   const byDay = {};
   slots.forEach(r => (byDay[r.weekday] = byDay[r.weekday] || []).push(r));
-  const dayBlocks = WEEKDAYS.map((name, i) => {
-    const items = byDay[i] || [];
-    return h('div', { class: 'day-block' },
-      h('h4', { class: 'day-head', text: name }),
-      items.length ? h('div', { class: 'list' }, items.map(r => slotRow(r))) : h('p', { class: 'none', text: 'No slots.' }));
+
+  // Today first (always open), then the next six days as collapsible menus.
+  const today = new Date().getDay();
+  const dayList = i => (byDay[i] || []).length
+    ? h('div', { class: 'list' }, byDay[i].map(r => slotRow(r)))
+    : h('p', { class: 'none', text: 'No slots.' });
+
+  const todayBlock = h('div', { class: 'day-block' },
+    h('h4', { class: 'day-head today', text: 'Today · ' + WEEKDAYS_FULL[today] }),
+    (byDay[today] || []).length ? dayList(today) : h('p', { class: 'none', text: 'Nothing planned for today.' }));
+
+  const otherDays = [1, 2, 3, 4, 5, 6].map(step => {
+    const i = (today + step) % 7;
+    const n = (byDay[i] || []).length;
+    return h('details', {
+        class: 'ws', open: plannerOpenDays.has(i),
+        ontoggle: e => { if (e.target.open) plannerOpenDays.add(i); else plannerOpenDays.delete(i); }
+      },
+      h('summary', null,
+        h('strong', { text: step === 1 ? 'Tomorrow · ' + WEEKDAYS_FULL[i] : WEEKDAYS_FULL[i] }),
+        h('small', { text: plural(n, 'slot', 'slots') })),
+      h('div', { class: 'inner' }, dayList(i)));
   });
 
   return { title: 'Planner', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
-    section('Weekly routine', '+ Add slot', () => openPlannerDialog('slot', null), ...dayBlocks),
+    section('Weekly routine', '+ Add slot', () => openPlannerDialog('slot', null), todayBlock, otherDays),
     section('Milestones', '+ Add milestone', () => openPlannerDialog('milestone', null),
       milestones.length ? h('div', { class: 'list' }, milestones.map(r => milestoneRow(r)))
                          : h('p', { class: 'none', text: 'No milestones yet.' }))
@@ -2124,6 +2363,38 @@ function slotRow(r) {
     h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
 }
 
+/* milestone dates: a start date plus an optional number of days it runs */
+function parseLocalDate(str) {
+  const [y, m, d] = String(str).split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+const fmtDate = d => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+const daysBetween = (a, b) => Math.round((a - b) / 86400000);   // whole days, DST-safe
+
+function milestoneStatus(r, now = new Date()) {
+  if (!r.milestone_date) return { line: 'No date set', range: '' };
+  const start = parseLocalDate(r.milestone_date);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const count = Number(r.day_count) > 0 ? Number(r.day_count) : 0;
+  const untilStart = daysBetween(start, today);          // > 0: still to come
+
+  if (!count) {
+    const line = untilStart > 0 ? 'Starts in ' + plural(untilStart, 'day', 'days')
+               : untilStart === 0 ? 'Today'
+               : plural(-untilStart, 'day', 'days') + ' ago';
+    return { line, range: fmtDate(start) };
+  }
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + count - 1);
+  const range = fmtDate(start) + (count > 1 ? ' to ' + fmtDate(end) : '') + ' · ' + plural(count, 'day', 'days');
+  if (untilStart > 0) return { line: 'Starts in ' + plural(untilStart, 'day', 'days'), range };
+  const dayNo = -untilStart + 1;
+  if (dayNo <= count) {
+    const left = count - dayNo;
+    return { line: 'Day ' + dayNo + ' of ' + count + (left ? ' · ' + plural(left, 'day', 'days') + ' left' : ' · last day'), range };
+  }
+  return { line: 'Ended ' + plural(dayNo - count, 'day', 'days') + ' ago', range };
+}
+
 function milestoneRow(r) {
   const cb = h('input', { type: 'checkbox', class: 'dl-check', 'aria-label': 'Mark ' + r.title + ' done' });
   cb.checked = !!r.done;
@@ -2132,13 +2403,15 @@ function milestoneRow(r) {
     const res = await sb.from('planner_items').update({ done: cb.checked }).eq('id', r.id);
     if (!res.error) route();
   });
+  const st = milestoneStatus(r);
   return h('div', { class: 'row', role: 'button', tabindex: '0',
                      onclick: () => openPlannerDialog('milestone', r),
                      onkeydown: e => { if (e.key === 'Enter') openPlannerDialog('milestone', r); } },
     cb,
     h('span', { class: 'grow' },
       h('strong', { text: r.title, style: r.done ? 'text-decoration:line-through;opacity:.6' : '' }),
-      h('small', { text: r.milestone_date || 'No date set' })),
+      h('small', { text: st.line }),
+      st.range ? h('small', { text: st.range }) : null),
     h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
 }
 
@@ -2146,7 +2419,7 @@ function openPlannerDialog(kind, existing) {
   const row = existing || {};
   const activeKind = existing ? (existing.kind === 'milestone' ? 'milestone' : 'slot') : kind;
   let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
-  let weekday = existing && existing.weekday != null ? existing.weekday : 0;
+  let weekday = existing && existing.weekday != null ? existing.weekday : new Date().getDay();
 
   showDialog({
     title: existing ? ('Edit ' + (activeKind === 'milestone' ? 'milestone' : 'slot'))
@@ -2177,24 +2450,37 @@ function openPlannerDialog(kind, existing) {
       syncColor();
       const colorWrap = h('div', { class: 'field' }, h('label', { text: 'Colour' }), swGroup);
 
-      const fDate = makeField('Date', { value: row.milestone_date || '' }); fDate.input.type = 'date';
+      const fDate  = makeField('Start date', { value: row.milestone_date || '' }); fDate.input.type = 'date';
+      const fCount = makeField('Number of days', { value: row.day_count ? String(row.day_count) : '', placeholder: 'e.g. 30' });
+      fCount.input.type = 'number'; fCount.input.min = '1'; fCount.input.step = '1';
+      fCount.input.setAttribute('inputmode', 'numeric');
+      const dateRow = h('div', { class: 'two-col' }, fDate.wrap, fCount.wrap);
 
       wdWrap.hidden = timeRow.hidden = colorWrap.hidden = activeKind !== 'slot';
-      fDate.wrap.hidden = activeKind !== 'milestone';
+      dateRow.hidden = activeKind !== 'milestone';
 
-      form.append(wdWrap, timeRow, colorWrap, fDate.wrap);
+      form.append(wdWrap, timeRow, colorWrap, dateRow);
 
       return () => {
         const title = fTitle.input.value.trim();
         if (!title) throw new Error('Enter a title.');
-        if (activeKind === 'milestone' && !fDate.input.value) throw new Error('Pick a date.');
-        return { title, start_time: fStart.input.value || null, end_time: fEnd.input.value || null, milestone_date: fDate.input.value || null };
+        let dayCount = null;
+        if (activeKind === 'milestone') {
+          if (!fDate.input.value) throw new Error('Pick a start date.');
+          const c = fCount.input.value.trim();
+          if (c) {
+            dayCount = Number(c);
+            if (!Number.isInteger(dayCount) || dayCount < 1 || dayCount > 3650) throw new Error('Days must be a whole number from 1 to 3650.');
+          }
+        }
+        return { title, start_time: fStart.input.value || null, end_time: fEnd.input.value || null,
+                 milestone_date: fDate.input.value || null, day_count: dayCount };
       };
     },
     async onSubmit(v) {
       const payload = { kind: activeKind, title: v.title };
       if (activeKind === 'slot') { payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time; payload.color = color; }
-      else { payload.milestone_date = v.milestone_date; }
+      else { payload.milestone_date = v.milestone_date; payload.day_count = v.day_count; }
       const res = existing
         ? await sb.from('planner_items').update(payload).eq('id', row.id)
         : await sb.from('planner_items').insert(payload);
@@ -2217,20 +2503,79 @@ async function projectsHub() {
   return { title: 'Projects & ECA', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     section('Projects', '+ Add project', () => openProjectDialog('project', null),
-      projects.length ? h('div', { class: 'list' }, projects.map(p => projectRow(p)))
+      projects.length ? h('div', { class: 'list' }, projects.map(p => projectCard(p)))
                        : h('p', { class: 'none', text: 'No projects yet.' })),
     section('Extracurriculars', '+ Add ECA', () => openProjectDialog('eca', null),
-      ecas.length ? h('div', { class: 'list' }, ecas.map(p => projectRow(p)))
+      ecas.length ? h('div', { class: 'list' }, ecas.map(p => projectCard(p)))
                   : h('p', { class: 'none', text: 'Nothing tracked yet.' }))
   ] };
 }
 
-function projectRow(p) {
-  return h('button', { class: 'row', type: 'button', onclick: () => openProjectDialog(p.kind, p) },
-    h('span', { class: 'grow' },
-      h('strong', { text: p.title }),
-      h('small', { text: STATUS_LABEL[p.status] + (p.due_date ? ' · due ' + p.due_date : '') })),
-    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+// One card per project or ECA: tap the top to edit it, tick items off underneath.
+// The checklist lives in projects.checklist (a JSON list) and saves as you go.
+function projectCard(p) {
+  let list = Array.isArray(p.checklist) ? p.checklist.slice() : [];
+  let chain = Promise.resolve();
+
+  const sub = h('small');
+  const count = h('small');
+  const bar = h('i');
+  const track = h('div', { class: 'progress', 'aria-hidden': 'true' }, bar);
+  const listBox = h('div', { class: 'check-list' });
+  const msg = h('p', { class: 'msg err', hidden: true });
+
+  const paint = () => {
+    const done = list.filter(x => x.done).length;
+    sub.textContent = (STATUS_LABEL[p.status] || p.status || '') + (p.due_date ? ' · due ' + p.due_date : '');
+    count.textContent = list.length ? done + ' of ' + list.length + ' done' : 'No checklist items yet';
+    bar.style.width = (list.length ? Math.round(done / list.length * 100) : 0) + '%';
+    track.hidden = !list.length;
+
+    listBox.replaceChildren(...list.map(item => {
+      const cb = h('input', { type: 'checkbox', class: 'dl-check' });
+      cb.checked = !!item.done;
+      cb.addEventListener('change', () => save(list.map(x => x.id === item.id ? { ...x, done: cb.checked } : x)));
+      return h('div', { class: 'check-row' + (item.done ? ' done' : '') },
+        h('label', { class: 'check-lab' }, cb, h('span', { text: item.text })),
+        h('button', { class: 'check-del', type: 'button', 'aria-label': 'Remove ' + item.text, text: '×',
+                      onclick: () => save(list.filter(x => x.id !== item.id)) }));
+    }));
+  };
+
+  // Every save writes the latest list, one after another, so quick taps cannot overwrite each other.
+  function save(next) {
+    list = next;
+    paint();
+    chain = chain.then(async () => {
+      const res = await sb.from('projects').update({ checklist: list }).eq('id', p.id);
+      if (res.error) {
+        msg.textContent = 'Could not save the checklist: ' + res.error.message;
+        msg.hidden = false;
+      } else {
+        p.checklist = list;
+        msg.hidden = true;
+      }
+    });
+  }
+
+  const input = h('input', { class: 'control', type: 'text', maxlength: 200, placeholder: 'Add a checklist item', 'aria-label': 'New checklist item', enterkeyhint: 'done' });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
+  const add = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    save([...list, { id: crypto.randomUUID(), text, done: false }]);
+    input.focus({ preventScroll: true });
+  };
+  addBtn.addEventListener('click', add);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+
+  paint();
+  return h('div', { class: 'proj' },
+    h('button', { class: 'proj-head', type: 'button', onclick: () => openProjectDialog(p.kind, p) },
+      h('span', { class: 'grow' }, h('strong', { text: p.title }), sub, count, track),
+      h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    h('div', { class: 'check-body' }, listBox, msg, h('div', { class: 'check-add' }, input, addBtn)));
 }
 
 function openProjectDialog(kind, existing) {
@@ -2269,15 +2614,23 @@ function openProjectDialog(kind, existing) {
   });
 }
 
-/* ---------- Wikipedia reader (no DB — Wikipedia's public REST/search API) ---------- */
+/* ---------- Wikipedia reader (no DB: Wikipedia's public API) ---------- */
 let wikiState = { query: '', results: [] };
+const WIKI_API = 'https://en.wikipedia.org/w/api.php';
 
-function stripHtml(s) { const t = document.createElement('div'); t.innerHTML = s || ''; return t.textContent || ''; }
+// Wikipedia search snippets carry <span> markup; read them as plain text without running anything.
+function stripHtml(html) {
+  return new DOMParser().parseFromString(html || '', 'text/html').body.textContent || '';
+}
 
 async function wikiHub(articleId) {
-  if (articleId) return wikiArticle(decodeURIComponent(articleId));
+  if (articleId) {
+    let title = articleId;
+    try { title = decodeURIComponent(articleId); } catch (e) {}
+    return wikiArticle(title);
+  }
 
-  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search Wikipedia', 'aria-label': 'Search Wikipedia' });
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search Wikipedia', 'aria-label': 'Search Wikipedia', enterkeyhint: 'search' });
   input.value = wikiState.query;
   const btn = h('button', { class: 'btn small', type: 'button', text: 'Search' });
   const status = h('p', { class: 'none' });
@@ -2287,7 +2640,7 @@ async function wikiHub(articleId) {
     list.replaceChildren();
     if (wikiState.results.length) {
       status.hidden = true;
-      list.append(wikiState.results.map(r => linkRow({
+      wikiState.results.forEach(r => list.append(linkRow({
         href: '#workspace/wiki/' + encodeURIComponent(r.title), title: r.title, meta: stripHtml(r.snippet)
       })));
     } else {
@@ -2300,19 +2653,21 @@ async function wikiHub(articleId) {
     const q = input.value.trim();
     wikiState.query = q;
     if (!q) { wikiState.results = []; paintResults(); return; }
+    btn.disabled = true;
     status.hidden = false; status.textContent = 'Searching…';
     try {
-      const url = 'https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srlimit=15&srsearch=' + encodeURIComponent(q);
-      const resp = await fetch(url);
+      const resp = await fetch(WIKI_API + '?action=query&list=search&format=json&origin=*&srlimit=15&srsearch=' + encodeURIComponent(q));
       if (!resp.ok) throw new Error('search failed');
       const data = await resp.json();
       wikiState.results = (data.query && data.query.search) || [];
+      paintResults();
     } catch (e) {
       wikiState.results = [];
-      status.hidden = false; status.textContent = 'Could not reach Wikipedia. Check your connection.';
-      return;
+      list.replaceChildren();
+      status.hidden = false; status.textContent = 'Could not reach Wikipedia. Check your connection and try again.';
+    } finally {
+      btn.disabled = false;
     }
-    paintResults();
   }
 
   btn.addEventListener('click', doSearch);
@@ -2322,72 +2677,220 @@ async function wikiHub(articleId) {
   return { title: 'Wikipedia reader', nodes: [crumbs([{ text: 'Workspace', href: '#workspace' }]), h('div', { class: 'search-row' }, input, btn), status, list] };
 }
 
+// Reads the whole article as plain text and lays it out as headings and paragraphs.
 async function wikiArticle(title) {
-  const status = h('p', { class: 'none', text: 'Loading…' });
-  const box = h('div');
+  const crumbList = [{ text: 'Workspace', href: '#workspace' }, { text: 'Wikipedia', href: '#workspace/wiki' }];
   try {
-    const url = 'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title);
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('not found');
+    const resp = await fetch(WIKI_API + '?action=query&format=json&origin=*&redirects=1&prop=extracts%7Cpageimages%7Cinfo' +
+      '&explaintext=1&exsectionformat=wiki&piprop=thumbnail&pithumbsize=640&inprop=url&titles=' + encodeURIComponent(title));
+    if (!resp.ok) throw new Error('request failed');
     const data = await resp.json();
-    status.hidden = true;
-    box.append(
-      data.thumbnail ? h('img', { class: 'offline-thumb', src: data.thumbnail.source, alt: '' }) : null,
-      h('p', { text: data.extract || 'No summary available.' }),
-      h('a', { class: 'btn quiet small', target: '_blank', rel: 'noopener', text: 'Open full article ↗',
-              href: (data.content_urls && data.content_urls.desktop && data.content_urls.desktop.page) || ('https://en.wikipedia.org/wiki/' + encodeURIComponent(title)) }));
+    const page = data.query && data.query.pages ? Object.values(data.query.pages)[0] : null;
+    if (!page || page.missing !== undefined || !page.extract) throw new Error('not found');
+
+    const box = h('div', { class: 'article' });
+    if (page.thumbnail) box.append(h('img', { class: 'offline-thumb', src: page.thumbnail.source, alt: '' }));
+    const endMatter = /^(see also|references|notes|footnotes|further reading|external links|bibliography|sources|citations)$/i;
+    for (const line of page.extract.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      const m = t.match(/^(={2,6})\s*(.*?)\s*\1$/);
+      if (m) {
+        if (endMatter.test(m[2])) break;
+        box.append(h(m[1].length === 2 ? 'h3' : 'h4', { text: m[2] }));
+      } else {
+        box.append(h('p', { text: t }));
+      }
+    }
+    const pageUrl = page.fullurl || ('https://en.wikipedia.org/wiki/' + encodeURIComponent(title.replace(/ /g, '_')));
+    return { title: page.title || title, nodes: [
+      crumbs(crumbList),
+      h('a', { class: 'btn quiet small', target: '_blank', rel: 'noopener', href: pageUrl, text: 'Open on Wikipedia ↗' }),
+      box,
+      h('p', { class: 'hint-line', text: 'Text from Wikipedia, available under CC BY-SA 4.0.' })
+    ] };
   } catch (e) {
-    status.textContent = 'Could not load this article. Check your connection.';
+    return { title, nodes: [crumbs(crumbList),
+      h('div', { class: 'status bad' }, h('strong', { text: 'Could not load this article' }),
+        'Check your connection, then ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
   }
-  return { title, nodes: [crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Wikipedia', href: '#workspace/wiki' }]), status, box] };
 }
 
-/* ---------- Portals and 3D simulation hub: iframe embeds with an always-visible fallback ---------- */
-const EMBED_HUBS = {
-  portals: { title: 'Portals', items: [
-    { key: 'prottay', name: 'Prottay', url: CONFIG.PORTAL_PROTTAY_URL, note: 'Question bank portal' },
-    { key: 'charcha', name: 'Charcha', url: CONFIG.PORTAL_CHARCHA_URL, note: 'Question bank portal' }
-  ] },
-  threed: { title: '3D simulation hub', items: [
-    { key: 'phet-forces',     name: 'Forces and Motion Basics', url: 'https://phet.colorado.edu/sims/html/forces-and-motion-basics/latest/forces-and-motion-basics_en.html', note: 'PhET' },
-    { key: 'phet-projectile', name: 'Projectile Motion',        url: 'https://phet.colorado.edu/sims/html/projectile-motion/latest/projectile-motion_en.html', note: 'PhET' },
-    { key: 'geogebra-3d',     name: '3D Calculator',            url: 'https://www.geogebra.org/3d?embed', note: 'GeoGebra' },
-    { key: 'geogebra-graph',  name: 'Graphing Calculator',      url: 'https://www.geogebra.org/graphing?embed', note: 'GeoGebra' }
-  ] }
-};
+/* ---------- Embeds: iframe with an always-visible "open in a browser tab" fallback ---------- */
+// Some sites cannot be embedded: their own pages, or PhET / GeoGebra "share" pages, need a
+// different address to work inside a frame. Everything else is used as pasted.
+function embedUrlFor(raw) {
+  let u;
+  try { u = new URL(raw); } catch (e) { return raw; }
+  const host = u.hostname.replace(/^www\./, '');
+  if (host === 'phet.colorado.edu') {
+    const m = u.pathname.match(/^\/(?:[a-z]{2}(?:_[A-Za-z]{2})?\/)?simulations?\/([a-z0-9-]+)\/?$/i);
+    if (m && !/^(filter|browse|translated|category|keyword|index|search|legacy)$/i.test(m[1])) {
+      return 'https://phet.colorado.edu/sims/html/' + m[1] + '/latest/' + m[1] + '_en.html';
+    }
+  }
+  if (host === 'geogebra.org') {
+    const m = u.pathname.match(/^\/m\/([A-Za-z0-9]+)\/?$/);
+    if (m) return 'https://www.geogebra.org/material/iframe/id/' + m[1];
+  }
+  return raw;
+}
 
-function embedHubPage(hubKey, itemKey) {
-  const hub = EMBED_HUBS[hubKey];
-  if (itemKey) return embedViewer(hubKey, hub, itemKey);
-
-  return { title: hub.title, nodes: [
-    crumbs([{ text: 'Workspace', href: '#workspace' }]),
-    h('div', { class: 'list' }, hub.items.map(it => linkRow({
-      href: '#workspace/' + hubKey + '/' + it.key, title: it.name, meta: it.url ? it.note : 'Add its link in the CONFIG block'
-    })))
+function embedPage(title, url, crumbList, actions = [], tip = '') {
+  const openBtn = h('a', { class: 'btn quiet small', href: url, target: '_blank', rel: 'noopener', text: 'Open in a browser tab ↗' });
+  const frame = h('iframe', { class: 'embed-frame', src: embedUrlFor(url), title, loading: 'lazy',
+                              allow: 'fullscreen', referrerpolicy: 'no-referrer-when-downgrade' });
+  return { title, nodes: [
+    crumbs(crumbList),
+    h('div', { class: 'dl-actions' }, openBtn, actions),
+    tip ? h('p', { class: 'hint-line', text: tip }) : null,
+    h('p', { class: 'hint-line', text: 'Blank page or “refused to connect”? That site does not allow embedding. Use “Open in a browser tab”.' }),
+    frame
   ] };
 }
 
-function embedViewer(hubKey, hub, itemKey) {
-  const item = hub.items.find(i => i.key === itemKey);
-  if (!item) return go('#workspace/' + hubKey);
-  const back = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: hub.title, href: '#workspace/' + hubKey }]);
+/* ---------- Portals ---------- */
+const PORTALS = [
+  { key: 'chorcha', name: 'Chorcha Question Bank', url: CONFIG.PORTAL_CHORCHA_URL, note: 'Question bank' }
+];
 
-  if (!item.url) {
-    return { title: item.name, nodes: [back,
-      h('div', { class: 'status bad' }, h('strong', { text: 'No link set' }),
-        'Add its URL to the CONFIG block near the top of the script (PORTAL_PROTTAY_URL / PORTAL_CHARCHA_URL), then reload.')
-    ] };
+function portalsPage(itemKey) {
+  const crumbList = [{ text: 'Workspace', href: '#workspace' }];
+  if (itemKey) {
+    const item = PORTALS.find(i => i.key === itemKey);
+    if (!item || !item.url) return go('#workspace/portals');
+    return embedPage(item.name, item.url, [...crumbList, { text: 'Portals', href: '#workspace/portals' }]);
+  }
+  return { title: 'Portals', nodes: [
+    crumbs(crumbList),
+    h('div', { class: 'list' }, PORTALS.filter(i => i.url).map(it => linkRow({
+      href: '#workspace/portals/' + it.key, title: it.name, meta: it.note })))
+  ] };
+}
+
+/* ---------- 3D simulation hub: main sites by subject + each person's saved simulations ---------- */
+const SIM_CATS = [
+  { key: 'math', label: 'Math' }, { key: 'physics', label: 'Physics' }, { key: 'chemistry', label: 'Chemistry' },
+  { key: 'biology', label: 'Biology' }, { key: 'other', label: 'Other' }
+];
+const simCatLabel = k => (SIM_CATS.find(c => c.key === k) || { label: 'Other' }).label;
+const phetFor = subject => 'https://phet.colorado.edu/en/simulations/filter?subjects=' + subject + '&type=html,prototype';
+
+const SIM_SITES = [
+  { key: 'geogebra',       cat: 'math',      name: 'GeoGebra',         url: 'https://www.geogebra.org/',           note: 'Graphing, geometry and 3D' },
+  { key: 'desmos',         cat: 'math',      name: 'Desmos',           url: 'https://www.desmos.com/calculator',   note: 'Graphing calculator' },
+  { key: 'phet-math',      cat: 'math',      name: 'PhET Math',        url: phetFor('math'),                       note: 'Interactive simulations' },
+  { key: 'wolfram-alpha',  cat: 'math',      name: 'Wolfram Alpha',    url: 'https://www.wolframalpha.com/',       note: 'Computation and graphing engine' },
+  { key: 'phet-physics',   cat: 'physics',   name: 'PhET Physics',     url: phetFor('physics'),                    note: 'Interactive simulations' },
+  { key: 'falstad',        cat: 'physics',   name: 'Falstad',          url: 'https://www.falstad.com/mathphysics.html', note: 'Circuits, waves and fields' },
+  { key: 'myphysicslab',   cat: 'physics',   name: 'myPhysicsLab',     url: 'https://www.myphysicslab.com/',       note: 'Mechanics and collision simulations' },
+  { key: 'phet-chemistry', cat: 'chemistry', name: 'PhET Chemistry',   url: phetFor('chemistry'),                  note: 'Interactive simulations' },
+  { key: 'molview',        cat: 'chemistry', name: 'MolView',          url: 'https://molview.org/',                note: 'Molecules and 3D structures' },
+  { key: 'chemcollective',  cat: 'chemistry', name: 'ChemCollective',  url: 'https://chemcollective.org/',         note: 'Virtual chemistry labs' },
+  { key: 'ptable',         cat: 'chemistry', name: 'PTable',           url: 'https://ptable.com/',                 note: 'Interactive periodic table' },
+  { key: 'phet-biology',   cat: 'biology',   name: 'PhET Biology',     url: phetFor('biology'),                    note: 'Interactive simulations' },
+  { key: 'learn-genetics', cat: 'biology',   name: 'Learn.Genetics',   url: 'https://learn.genetics.utah.edu/',    note: 'Interactive biology labs' },
+  { key: 'biointeractive', cat: 'biology',   name: 'HHMI BioInteractive', url: 'https://www.biointeractive.org/', note: 'Virtual bio and medical labs' },
+  { key: 'sketchfab',      cat: 'other',     name: 'Sketchfab',        url: 'https://sketchfab.com/',              note: '3D models to explore' },
+  { key: 'wolfram-demos',  cat: 'other',     name: 'Wolfram Demonstrations', url: 'https://demonstrations.wolfram.com/', note: 'Interactive demos' },
+  { key: 'nasa-eyes',      cat: 'other',     name: 'NASA Eyes on the Solar System', url: 'https://eyes.nasa.gov/apps/solar-system/', note: '3D space visualization' }
+];
+
+let simFilter = 'all';
+const SIM_CRUMBS = [{ text: 'Workspace', href: '#workspace' }, { text: '3D simulation hub', href: '#workspace/threed' }];
+
+async function simHub(itemKey) {
+  if (itemKey) {
+    const site = SIM_SITES.find(s => s.key === itemKey);
+    if (site) return simSiteViewer(site);
+    if (UUID.test(itemKey)) return savedSimViewer(itemKey);
+    return go('#workspace/threed');
   }
 
-  const openBtn = h('a', { class: 'btn quiet small', href: item.url, target: '_blank', rel: 'noopener', text: 'Open in a browser tab ↗' });
-  const hint = h('p', { class: 'hint-line', text: 'Loading ' + item.name + '…' });
-  const frame = h('iframe', { class: 'embed-frame', src: item.url, title: item.name, loading: 'lazy',
-                              allow: 'fullscreen', referrerpolicy: 'no-referrer-when-downgrade' });
-  frame.addEventListener('load', () => { hint.hidden = true; });
-  setTimeout(() => { if (!hint.hidden) hint.textContent = 'Still blank? Some sites block embedding — use “Open in a browser tab” above.'; }, 4000);
+  let saved = [], savedError = null;
+  try { saved = must(await sb.from('saved_simulations').select('*').order('created_at', { ascending: false })); }
+  catch (e) { savedError = e; }
 
-  return { title: item.name, nodes: [back, openBtn, hint, frame] };
+  const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by subject' });
+  const sitesBox = h('div'), mineBox = h('div');
+  const show = cat => simFilter === 'all' || simFilter === cat;
+
+  const paint = () => {
+    chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === simFilter)));
+    const sites = SIM_SITES.filter(x => show(x.cat));
+    sitesBox.replaceChildren(sites.length
+      ? h('div', { class: 'list' }, sites.map(x => linkRow({ href: '#workspace/threed/' + x.key, title: x.name, meta: simCatLabel(x.cat) + ' · ' + x.note })))
+      : h('p', { class: 'none', text: 'No sites for this subject yet.' }));
+    const mine = saved.filter(r => show(r.category));
+    mineBox.replaceChildren(mine.length
+      ? h('div', { class: 'list' }, mine.map(r => linkRow({ href: '#workspace/threed/' + r.id, title: r.title, meta: simCatLabel(r.category) })))
+      : h('p', { class: 'none', text: saved.length ? 'Nothing saved for this subject yet.' : 'Nothing saved yet.' }));
+  };
+  [{ key: 'all', label: 'All' }, ...SIM_CATS].forEach(c => chips.append(h('button', {
+    type: 'button', class: 'chip-btn', 'data-cat': c.key, text: c.label, onclick: () => { simFilter = c.key; paint(); }
+  })));
+  paint();
+
+  return { title: '3D simulation hub', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    chips,
+    section('Main sites', null, null,
+      h('p', { class: 'hint-line', text: 'Open a site, find a simulation, then save its link below.' }),
+      sitesBox),
+    section('My simulations', '+ Save simulation', () => openSimDialog(null),
+      savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
+                     'Run the update SQL in Supabase (schema-update-3.1.sql), then reload.') : null,
+      mineBox)
+  ] };
+}
+
+function simSiteViewer(site) {
+  const save = h('button', { class: 'btn small', type: 'button', text: '+ Save a simulation', onclick: () => openSimDialog(null, site.cat) });
+  return embedPage(site.name, site.url, SIM_CRUMBS, [save],
+    'Found one you like? Tap “Open in a browser tab”, copy its link, come back and save it.');
+}
+
+async function savedSimViewer(id) {
+  const row = must(await sb.from('saved_simulations').select('*').eq('id', id).maybeSingle());
+  if (!row) return go('#workspace/threed');
+  const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSimDialog(row) });
+  return embedPage(row.title, row.url, SIM_CRUMBS, [edit], simCatLabel(row.category) + ' · saved simulation');
+}
+
+function openSimDialog(existing, presetCat) {
+  const row = existing || {};
+  let cat = row.category || presetCat || (simFilter !== 'all' ? simFilter : 'other');
+
+  showDialog({
+    title: existing ? 'Edit simulation' : 'Save a simulation',
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField('Name', { value: row.title || '', maxlength: 120, placeholder: 'e.g. Projectile motion' });
+      const fUrl = makeField('Link', { value: row.url || '', placeholder: 'Paste the simulation link' });
+      fUrl.input.type = 'url';
+      fUrl.input.setAttribute('autocapitalize', 'none');
+      const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Subject' },
+        SIM_CATS.map(c => h('button', { type: 'button', 'data-cat': c.key, text: c.label, onclick: () => { cat = c.key; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === cat)));
+      sync();
+      form.append(fTitle.wrap, fUrl.wrap, h('div', { class: 'field' }, h('label', { text: 'Subject' }), seg));
+      return () => {
+        const title = fTitle.input.value.trim();
+        if (!title) throw new Error('Enter a name.');
+        return { title, url: normalizeUrl(fUrl.input.value) };
+      };
+    },
+    async onSubmit({ title, url }) {
+      const payload = { title, url, category: cat };
+      const res = existing
+        ? await sb.from('saved_simulations').update(payload).eq('id', row.id)
+        : await sb.from('saved_simulations').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete simulation', onClick: () => confirmDeleteRow('saved_simulations', row, 'simulation', { after: () => go('#workspace/threed') }) } : null
+  });
 }
 
 function openSheet()  { $('#sheet').hidden = false; $('#logout-btn').focus(); }
@@ -2417,7 +2920,8 @@ async function boot() {
   $('#who-btn').addEventListener('click', openSheet);
   $('#sheet-close').addEventListener('click', closeSheet);
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDialog(); closePicker(); closeSheet(); } });
+  $('#viewer-close').addEventListener('click', closeViewer);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closePicker(); closeSheet(); } });
   $('#back-btn').addEventListener('click', () => { if (backTarget) location.hash = backTarget; });
   $('#dialog').addEventListener('click', e => { if (e.target.id === 'dialog') closeDialog(); });
   $('#logout-btn').addEventListener('click', logout);
