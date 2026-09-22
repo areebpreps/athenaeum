@@ -2817,6 +2817,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'translate')  return translatorHub(ids.slice(1));
   if (ids[0] === 'study')      return studyHub(ids[1]);
   if (ids[0] === 'infographic') return infographicHub(ids[1]);
+  if (ids[0] === 'notebook')    return notebookHub(ids[1]);
   if (ids[0] === 'export')      return exportHub();
   return buildAIRoot();
 }
@@ -2844,6 +2845,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation, plus grammar & citation checking' }),
         linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
         linkRow({ href: '#ai/infographic', title: 'Infographic Generator', meta: 'Notes drawn as styled cards, saved as an image' }),
+        linkRow({ href: '#ai/notebook', title: 'Notebook Studio', meta: 'Deep synthesis and two-host audio overviews of your own material' }),
         linkRow({ href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' })))
   ] };
 }
@@ -5471,8 +5473,260 @@ async function exportHub() {
   const tree = await loadScopeTree();
   return { title: 'Export to NotebookLM', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    h('p', { class: 'hint-line', text: 'Package a subject, chapter or topic into Markdown files ready to upload to NotebookLM for its own infographics and audio overviews. This app stays the master copy — the export is one-way.' }),
+    h('p', { class: 'hint-line', text: 'Package a subject, chapter or topic into Markdown files ready to upload to NotebookLM. For a quicker in-app alternative to NotebookLM\'s audio overviews and deeper synthesis, see Notebook Studio — this export is still useful for NotebookLM\'s own extras (mind maps, video overviews) or sharing material outside the app. This app stays the master copy — the export is one-way.' }),
     exportPanel(tree)
+  ] };
+}
+
+/* ---------- Notebook Studio (B4) ----------
+   NotebookLM-equivalent tools brought in-app, so "Export to NotebookLM" is
+   optional rather than required for these use cases. Both outputs are
+   grounded only in the student's own saved material at a chosen scope
+   (roll-up, same as everywhere else) — items (notes/definitions/formulas/
+   mnemonics) plus anything added as source material for the Grounded Study
+   Engine (source_chunks: pasted text, PDF extracts).
+   - Deep synthesis: a structured study-guide-style writeup (themes,
+     cross-source connections, gaps/contradictions, review questions).
+   - Audio overview: a short two-host discussion script, played back with
+     the same on-device speech engine as Read-Aloud, alternating voices. */
+const SYNTH_SYSTEM =
+  'You are the Notebook Studio\'s synthesis tool in a student\'s Athenaeum workspace app. You are given SOURCE passages taken only ' +
+  'from the student\'s own saved material (notes, definitions, formulas, mnemonics and any added source text) for one subject, ' +
+  'chapter or topic. Write a deeper synthesis of it, grounded only in what\'s given — never add outside facts. Reply in plain text, ' +
+  'no markdown symbols, using exactly these five labeled sections, each starting on its own line: "OVERVIEW:" a short 2-4 sentence ' +
+  'overview of what the material covers. "KEY THEMES:" the main recurring ideas, each its own line starting with a dash. ' +
+  '"CONNECTIONS:" how the different sources relate to or build on each other, naming them by the bracketed label they were given. ' +
+  '"GAPS & CONTRADICTIONS:" anything missing, unclear, or inconsistent across the sources, or the single line "None noticed." if ' +
+  'there isn\'t any. "REVIEW QUESTIONS:" 3 to 5 study questions the material lets a student check themselves with, each its own ' +
+  'dash line. If given no usable material, reply with only this sentence: "There is nothing saved at this scope yet to synthesize."';
+
+const AUDIO_SYSTEM =
+  'You are the Notebook Studio\'s audio overview tool in a student\'s Athenaeum workspace app, in the style of a short two-host ' +
+  'discussion podcast. You are given SOURCE passages from a student\'s own saved material only — never add outside facts, stay ' +
+  'grounded in what\'s given. Reply with ONLY valid JSON, no markdown code fences, no commentary before or after it, in exactly ' +
+  'this shape: {"title":"...","script":[{"speaker":"Mira","line":"..."},{"speaker":"Sam","line":"..."}]}. Write 10 to 16 short ' +
+  'turns alternating between two speakers named Mira and Sam, natural and conversational — Mira introduces topics and asks the ' +
+  'questions a curious listener would, Sam explains and connects ideas from the sources, occasionally naming which part of the ' +
+  'material a point comes from. Keep each line under 40 words, and end with a short wrap-up line from either speaker. If given no ' +
+  'usable material, reply with exactly: {"title":"Nothing to discuss yet","script":[{"speaker":"Mira","line":"There\'s nothing ' +
+  'saved at this scope yet, so there\'s nothing for us to go over."}]}';
+
+function parseAudioJSON(text) {
+  const cleaned = text.trim().replace(/^```json\s*|^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const data = JSON.parse(cleaned);
+  if (!data || !Array.isArray(data.script) || !data.script.length) throw new Error('The audio overview came back in an unexpected shape.');
+  return data;
+}
+
+// Gathers everything saved at (and below) a scope into one bounded block of
+// labeled text: roll-up items, plus any source_chunks (pasted text / PDF
+// extracts) added for the Grounded Study Engine, merged back together per
+// origin so a multi-chunk PDF reads as one block again.
+const NOTEBOOK_MAX_CHARS = 16000;
+async function gatherNotebookMaterial(scope) {
+  const q = t => scopeFilter(sb.from(t).select('*'), scope);
+  const [n, f, m, chunksRes] = await Promise.all([
+    q('notes'), q('formulas'), q('mnemonics'),
+    scopeFilter(sb.from('source_chunks').select('origin_label, content, chunk_index'), scope).order('chunk_index', { ascending: true })
+  ]);
+  const items = [
+    ...must(n).map(r => ({ label: (r.kind === 'definition' ? 'Definition: ' : 'Note: ') + (r.title || 'untitled'), text: r.body || '' })),
+    ...must(f).map(r => ({ label: 'Formula: ' + (r.title || 'untitled'), text: (r.expression || '') + (r.description ? ' — ' + r.description : '') })),
+    ...must(m).map(r => ({ label: 'Mnemonic: ' + (r.title || 'untitled'), text: r.body || '' }))
+  ].filter(it => it.text.trim());
+
+  const chunkMap = new Map();
+  must(chunksRes).forEach(r => {
+    const key = r.origin_label || 'Source';
+    chunkMap.set(key, (chunkMap.get(key) ? chunkMap.get(key) + '\n' : '') + r.content);
+  });
+  const chunkBlocks = Array.from(chunkMap.entries()).map(([label, text]) => ({ label, text }));
+
+  const all = [...items, ...chunkBlocks];
+  let used = 0, out = [], truncated = false;
+  for (const block of all) {
+    const piece = '[' + block.label + ']\n' + block.text.trim();
+    if (used + piece.length > NOTEBOOK_MAX_CHARS) { truncated = true; break; }
+    out.push(piece); used += piece.length;
+  }
+  return { text: out.join('\n\n'), count: all.length, truncated };
+}
+
+// Plays a two-host script end to end with the phone's own speech engine,
+// alternating a distinct voice (or, failing that, a distinct pitch) per
+// speaker so the two hosts are easy to tell apart.
+function scriptPlayButton(script) {
+  if (!window.speechSynthesis) return null;
+  const btn = h('button', { class: 'btn small', type: 'button', text: 'Play audio overview' });
+  let playing = false, stopped = true;
+  const speakers = [...new Set(script.script.map(t => t.speaker))];
+  const speakerVoice = new Map();
+  function assignVoices() {
+    const voices = (window.speechSynthesis.getVoices() || []).filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+    speakers.forEach((sp, i) => speakerVoice.set(sp, voices.length ? voices[i % voices.length] : null));
+  }
+  function stop() { window.speechSynthesis.cancel(); playing = false; stopped = true; btn.textContent = 'Play audio overview'; }
+  function playLine(i) {
+    if (stopped || i >= script.script.length) { playing = false; stopped = true; btn.textContent = 'Play audio overview'; return; }
+    const turn = script.script[i];
+    const utter = new SpeechSynthesisUtterance(turn.line);
+    const voice = speakerVoice.get(turn.speaker);
+    if (voice) utter.voice = voice;
+    utter.pitch = speakers.indexOf(turn.speaker) % 2 === 0 ? 1 : 0.85;
+    utter.lang = 'en-US';
+    utter.onend = () => playLine(i + 1);
+    utter.onerror = () => playLine(i + 1);
+    window.speechSynthesis.speak(utter);
+  }
+  btn.addEventListener('click', () => {
+    if (playing) { stop(); return; }
+    window.speechSynthesis.cancel();
+    stopped = false; playing = true; btn.textContent = 'Stop';
+    assignVoices();
+    playLine(0);
+  });
+  return btn;
+}
+
+function audioResultBlock(script) {
+  const speakers = [...new Set(script.script.map(t => t.speaker))];
+  return h('div', {},
+    h('h4', { text: script.title || 'Audio overview' }),
+    h('div', { class: 'chat-log' }, script.script.map(turn =>
+      h('div', { class: 'bubble ' + (speakers.indexOf(turn.speaker) % 2 === 0 ? 'assistant' : 'user') },
+        h('strong', { text: turn.speaker + ': ' }), turn.line))),
+    h('div', { class: 'vault-actions' }, scriptPlayButton(script)));
+}
+
+function synthResultBlock(answer, material) {
+  return h('div', {},
+    h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })),
+    listenButton(() => answer),
+    h('p', { class: 'hint-line', text: 'Drawn from ' + plural(material.count, 'saved source', 'saved sources') +
+        (material.truncated ? ' (only the first part fit in one pass — narrow the scope for full coverage).' : '.') }),
+    h('button', { class: 'btn quiet small', type: 'button', text: 'Save as a note', onclick: () => openSaveNoteDialog(answer, 'Synthesis') }));
+}
+
+function notebookPanel(tree) {
+  const picker = scopePickerFields(tree);
+  const synthBtn = h('button', { class: 'btn small', type: 'button', text: 'Generate synthesis' });
+  const audioBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Generate audio overview' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const status = h('p', { class: 'hint-line', hidden: true });
+  const result = h('div');
+
+  async function run(kind) {
+    const scope = picker.getScope();
+    err.hidden = true; status.hidden = true; result.replaceChildren();
+    if (!scope.subjectId) { err.textContent = 'Choose at least a subject.'; err.hidden = false; return; }
+    const btn = kind === 'synth' ? synthBtn : audioBtn, otherBtn = kind === 'synth' ? audioBtn : synthBtn;
+    btn.disabled = otherBtn.disabled = true;
+    btn.textContent = kind === 'synth' ? 'Reading your notes…' : 'Scripting the discussion…';
+    status.hidden = false; status.textContent = 'Gathering your saved material…';
+    try {
+      const material = await gatherNotebookMaterial(scope);
+      if (!material.text) throw new Error('Nothing saved at this scope yet — add some notes, formulas, mnemonics or source material first.');
+      const scopeNames = picker.getScopeNames();
+      const scopeLabel = [scopeNames.subject, scopeNames.chapter, scopeNames.topic].filter(Boolean).join(' › ');
+      const userPrompt = 'SOURCES FOR: ' + scopeLabel + '\n\n' + material.text;
+      status.textContent = kind === 'synth' ? 'Synthesizing…' : 'Writing the script…';
+      if (kind === 'synth') {
+        const answer = await callAI(SYNTH_SYSTEM, [{ role: 'user', content: userPrompt }]);
+        result.replaceChildren(synthResultBlock(answer, material));
+        const chatIns = await sb.from('ai_chats').insert({ tool: 'notebook_synth', title: scopeLabel || 'Synthesis' }).select('id').single();
+        if (chatIns.error) throw chatIns.error;
+        await sb.from('ai_messages').insert([
+          { chat_id: chatIns.data.id, role: 'user', content: JSON.stringify({ scopeLabel, sourceCount: material.count }) },
+          { chat_id: chatIns.data.id, role: 'assistant', content: answer }
+        ]);
+      } else {
+        const raw = await callAI(AUDIO_SYSTEM, [{ role: 'user', content: userPrompt }]);
+        const script = parseAudioJSON(raw);
+        result.replaceChildren(audioResultBlock(script));
+        const chatIns = await sb.from('ai_chats').insert({ tool: 'notebook_audio', title: script.title || scopeLabel || 'Audio overview' }).select('id').single();
+        if (chatIns.error) throw chatIns.error;
+        await sb.from('ai_messages').insert([
+          { chat_id: chatIns.data.id, role: 'user', content: JSON.stringify({ scopeLabel, sourceCount: material.count }) },
+          { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(script) }
+        ]);
+      }
+      status.hidden = true;
+    } catch (e) {
+      status.hidden = true;
+      err.textContent = (e && e.message) ? e.message : 'Could not do that. Try again.';
+      err.hidden = false;
+    } finally {
+      synthBtn.disabled = false; audioBtn.disabled = false;
+      synthBtn.textContent = 'Generate synthesis'; audioBtn.textContent = 'Generate audio overview';
+    }
+  }
+  synthBtn.addEventListener('click', () => run('synth'));
+  audioBtn.addEventListener('click', () => run('audio'));
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New from your saved material' })),
+    picker.wrap,
+    h('p', { class: 'hint-line', text: 'Uses everything saved at that scope and below it — notes, definitions, formulas, mnemonics, and anything added as source material in the Grounded Study Engine.' }),
+    h('div', { class: 'vault-actions' }, synthBtn, audioBtn),
+    err, status, result);
+}
+
+function notebookHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('Notebook Studio');
+  return chatId ? notebookPast(chatId) : notebookList();
+}
+
+async function notebookList() {
+  const [synthRes, audioRes, tree] = await Promise.all([
+    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'notebook_synth').order('created_at', { ascending: false }),
+    sb.from('ai_chats').select('id, title, created_at').eq('tool', 'notebook_audio').order('created_at', { ascending: false }),
+    loadScopeTree()
+  ]);
+  const synthChats = must(synthRes), audioChats = must(audioRes);
+  return { title: 'Notebook Studio', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    h('p', { class: 'hint-line', text: 'Deeper synthesis and two-host audio overviews of your own saved material — grounded only in what\'s saved at the scope you pick, no exporting required.' }),
+    notebookPanel(tree),
+    section('Past syntheses', null, null,
+      synthChats.length
+        ? h('div', { class: 'list' }, synthChats.map(c => chatRow('#ai/notebook/' + c.id, c.title || 'Synthesis', new Date(c.created_at).toLocaleString(), c.id, 'Synthesis')))
+        : h('p', { class: 'none', text: 'No syntheses yet.' })),
+    section('Past audio overviews', null, null,
+      audioChats.length
+        ? h('div', { class: 'list' }, audioChats.map(c => chatRow('#ai/notebook/' + c.id, c.title || 'Audio overview', new Date(c.created_at).toLocaleString(), c.id, 'Audio')))
+        : h('p', { class: 'none', text: 'No audio overviews yet.' }))
+  ] };
+}
+
+async function notebookPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Notebook Studio', href: '#ai/notebook' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title, tool').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'Notebook Studio', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const userMsg = msgs.find(m => m.role === 'user');
+  const ans = msgs.find(m => m.role === 'assistant');
+  let scopeLabel = '';
+  try { scopeLabel = JSON.parse(userMsg.content).scopeLabel || ''; } catch (e) {}
+  if (chatRes.data.tool === 'notebook_audio') {
+    let script = null;
+    try { script = ans && JSON.parse(ans.content); } catch (e) {}
+    return { title: chatRes.data.title || 'Audio overview', nodes: [
+      crumbs(crumb),
+      scopeLabel ? h('p', { class: 'hint-line', text: scopeLabel }) : null,
+      script ? audioResultBlock(script) : h('p', { class: 'none', text: 'No audio overview saved.' }),
+      editButton('Delete', () => confirmDeleteChat(chatId))
+    ] };
+  }
+  return { title: chatRes.data.title || 'Synthesis', nodes: [
+    crumbs(crumb),
+    scopeLabel ? h('p', { class: 'hint-line', text: scopeLabel }) : null,
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No synthesis saved.' }),
+    ans ? listenButton(() => ans.content) : null,
+    ans ? h('button', { class: 'btn quiet small', type: 'button', text: 'Save as a note', onclick: () => openSaveNoteDialog(ans.content, chatRes.data.title || 'Synthesis') }) : null,
+    editButton('Delete', () => confirmDeleteChat(chatId))
   ] };
 }
 
