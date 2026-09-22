@@ -16,6 +16,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+<!-- Phase B3, OCR tool: KaTeX renders LaTeX math the OCR transcribes out of handwriting/equations -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
 
 <style>
   :root {
@@ -376,6 +378,17 @@
   .issue-card p { margin: 0; font-size: 14px; color: var(--dim); }
   .issue-card .snippet { font-size: 15px; color: var(--chalk); }
 
+  /* ---------- Phase B3: OCR (image to text) ---------- */
+  .ocr-render { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; line-height: 1.6; overflow-x: auto; }
+  .ocr-render .katex-display { margin: 10px 0; overflow-x: auto; overflow-y: hidden; }
+  .ocr-pages { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 14px; }
+  .ocr-page-thumb { position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .ocr-page-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ocr-page-thumb button {
+    position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0;
+    background: rgba(13,18,32,.78); color: var(--chalk); line-height: 1; font-size: 14px;
+  }
+
   /* ---------- Phase 3.1: hubs (planner, projects, wiki, portals, 3D) ---------- */
   .bullets { margin: 6px 0 0; padding-left: 20px; color: var(--dim); font-size: 15px; }
   .bullets li { margin-bottom: 2px; }
@@ -610,6 +623,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fuse.js/7.0.0/fuse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <script>
 /* =====================================================================
    CONFIG: the only part you edit.
@@ -2790,6 +2804,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'ask')        return askAIHub(ids[1]);
   if (ids[0] === 'solver')     return solverHub(ids[1]);
   if (ids[0] === 'factcheck')  return factcheckHub(ids[1]);
+  if (ids[0] === 'ocr')        return ocrHub(ids[1]);
   if (ids[0] === 'youtube')    return youtubeHub(ids[1]);
   if (ids[0] === 'summarizer') return summarizerHub(ids[1]);
   if (ids[0] === 'quiz')       return quizHub(ids[1]);
@@ -2816,6 +2831,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }),
         linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }),
         linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, checked against live info' }),
+        linkRow({ href: '#ai/ocr', title: 'OCR (image to text)', meta: 'Photos of handwriting and equations, turned into editable text' }),
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
@@ -4475,6 +4491,181 @@ async function checkWritingPast(chatId) {
     data ? checkWritingResultBlock(data, src && src.content)
          : h('p', { class: 'none', text: 'No result saved.' }),
     editButton('Delete check', () => confirmDeleteChat(chatId))
+  ] };
+}
+
+/* ---------- OCR: image to text (B3) ----------
+   A new AI tool tab (not folded into an existing one, unlike B2 in
+   Translator) — same photo-handling pattern as the Summarizer's page
+   photos (camera + gallery, several pages combined into one transcript),
+   run through callAIVisionMulti. Math the model finds is asked back as
+   LaTeX wrapped in $...$/$$...$$, which renderMathText() renders with
+   KaTeX (loaded via CDN in <head>) alongside the plain editable textarea,
+   so the user always has both an editable copy and a readable render.
+   Saves under tool: 'ocr' in the shared ai_chats/ai_messages tables. */
+const OCR_MAX_PAGES = 10;
+const OCR_SYSTEM =
+  'You are the OCR tool in a student\'s Athenaeum workspace app. Transcribe every photo given, in the order given, as one combined ' +
+  'block of plain text — printed text, handwriting and math equations alike. Reproduce the text exactly as written, keeping line ' +
+  'breaks and paragraph structure, but plain text only: no markdown headers, bullet characters, or bold/italic markup. For every ' +
+  'mathematical expression, write it as LaTeX: wrap it in single dollar signs for something inline in a sentence (e.g. $x^2+1$), or ' +
+  'in double dollar signs on its own line for a standalone/display equation (e.g. $$\\frac{a}{b}=c$$). Everything that is not math ' +
+  'stays as normal text with no dollar signs. If a word or symbol is genuinely illegible, write [illegible] in its place instead of ' +
+  'guessing. Output only the transcription itself — no title, no commentary, nothing that was not actually written in the photo(s).';
+
+// Splits text on $$...$$ (display) and $...$ (inline) math and renders each
+// piece with KaTeX; falls back to plain text if KaTeX failed to load or a
+// piece doesn't actually parse as valid LaTeX.
+const MATH_SPLIT_RE = /(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g;
+function renderMathText(text) {
+  const wrap = h('div', { class: 'ocr-render' });
+  String(text || '').split(MATH_SPLIT_RE).forEach(part => {
+    if (!part) return;
+    const isDisplay = /^\$\$[\s\S]+\$\$$/.test(part);
+    const isInline = !isDisplay && /^\$[^$]+\$$/.test(part);
+    if ((isDisplay || isInline) && window.katex) {
+      const expr = part.slice(isDisplay ? 2 : 1, part.length - (isDisplay ? 2 : 1));
+      const el = document.createElement(isDisplay ? 'div' : 'span');
+      try { window.katex.render(expr, el, { throwOnError: false, displayMode: isDisplay }); }
+      catch (e) { el.textContent = part; }
+      wrap.append(el);
+    } else {
+      part.split('\n').forEach((line, i) => {
+        if (i > 0) wrap.append(document.createElement('br'));
+        if (line) wrap.append(document.createTextNode(line));
+      });
+    }
+  });
+  return wrap;
+}
+
+async function uploadOCRImage(blob) { return uploadToolImage('ocr', blob); }
+
+function ocrResultBlock(initialText, scope) {
+  const ta = h('textarea', { class: 'control area', rows: 10, text: initialText });
+  ta.value = initialText;
+  const preview = renderMathText(initialText);
+  const saveBtn = h('button', { class: 'btn small', type: 'button', text: 'Save to Notes' });
+  const status = h('small', {});
+  let debounce;
+  ta.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => preview.replaceWith(renderMathText(ta.value)), 250);
+  });
+  saveBtn.addEventListener('click', () => {
+    const text = ta.value.trim();
+    if (!text) { status.textContent = 'Nothing to save.'; return; }
+    openSaveNoteDialog(text, 'Scanned text');
+  });
+  return h('div', {},
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Extracted text (editable)' })),
+    h('div', { class: 'field' }, ta),
+    h('div', { class: 'sec-head' }, h('h3', { text: 'Rendered preview' })),
+    preview,
+    h('div', { class: 'vault-actions' }, saveBtn, listenButton(() => ta.value)),
+    status);
+}
+
+function ocrPanel() {
+  const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
+  const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Snap a photo', onclick: () => cameraInput.click() });
+  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose from gallery', onclick: () => galleryInput.click() });
+  const pages = h('div', { class: 'ocr-pages' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Extract text', disabled: true });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+
+  let pendingPhotos = []; // [{ blob, b64, mime, url }, …] up to OCR_MAX_PAGES
+
+  function syncUI() {
+    pages.replaceChildren(...pendingPhotos.map((p, i) => h('div', { class: 'ocr-page-thumb' },
+      h('img', { src: p.url, alt: 'Page ' + (i + 1) }),
+      h('button', { type: 'button', 'aria-label': 'Remove page ' + (i + 1), text: '×', onclick: () => { pendingPhotos.splice(i, 1); syncUI(); } }))));
+    goBtn.disabled = !pendingPhotos.length;
+  }
+
+  async function addPhotos(files) {
+    if (!files || !files.length) return;
+    err.hidden = true;
+    const room = OCR_MAX_PAGES - pendingPhotos.length;
+    if (room <= 0) { err.textContent = 'You already have ' + OCR_MAX_PAGES + ' photos — remove one first.'; err.hidden = false; return; }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > picked.length) { err.textContent = 'Only the first ' + picked.length + ' fit — the cap is ' + OCR_MAX_PAGES + ' photos.'; err.hidden = false; }
+    for (const file of picked) {
+      if (!file.type || !file.type.startsWith('image/')) continue;
+      const blob = await compressImage(file);
+      pendingPhotos.push({ blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg', url: URL.createObjectURL(blob) });
+    }
+    syncUI();
+  }
+  cameraInput.addEventListener('change', () => { const f = cameraInput.files; addPhotos(f); cameraInput.value = ''; });
+  galleryInput.addEventListener('change', () => { const f = galleryInput.files; addPhotos(f); galleryInput.value = ''; });
+
+  goBtn.addEventListener('click', async () => {
+    if (!pendingPhotos.length) return;
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; goBtn.textContent = 'Reading…';
+    try {
+      const text = await callAIVisionMulti(OCR_SYSTEM, null, pendingPhotos);
+      result.replaceChildren(ocrResultBlock(text));
+
+      let imagePath = null;
+      try { imagePath = await uploadOCRImage(pendingPhotos[0].blob); } catch (e) { /* non-fatal */ }
+      const label = plural(pendingPhotos.length, 'photo', 'photos');
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'ocr', title: text.slice(0, 60) || label }).select('id').single();
+      if (chatIns.error) throw chatIns.error;
+      const msgIns = await sb.from('ai_messages').insert(
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + label + ' scanned]', image_path: imagePath },
+         { chat_id: chatIns.data.id, role: 'assistant', content: text }]);
+      if (msgIns.error) throw msgIns.error;
+      pendingPhotos = []; syncUI();
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not read that. Try again.';
+      err.hidden = false;
+    } finally {
+      goBtn.disabled = !pendingPhotos.length; goBtn.textContent = 'Extract text';
+    }
+  });
+
+  return h('section', { class: 'sec' },
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New scan' })),
+    h('p', { class: 'hint-line', text: 'Snap or upload up to ' + OCR_MAX_PAGES + ' photos — printed text, handwriting and math equations all work. Math comes back rendered, and the text is editable before you save it into Notes.' }),
+    h('div', { class: 'vault-actions' }, photoBtn, galleryBtn, cameraInput, galleryInput),
+    pages, goBtn, err, result);
+}
+
+function ocrHub(chatId) {
+  if (!aiConfigured()) return aiNeedsSetup('OCR (image to text)');
+  return chatId ? ocrPast(chatId) : ocrList();
+}
+
+async function ocrList() {
+  const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'ocr').order('created_at', { ascending: false });
+  const chats = must(res);
+  return { title: 'OCR (image to text)', nodes: [
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
+    ocrPanel(),
+    ...(chats.length
+      ? [section('Past scans', null, null,
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/ocr/' + c.id, c.title || 'Scan', new Date(c.created_at).toLocaleString(), c.id))))]
+      : [h('p', { class: 'none', text: 'No scans yet.' })])
+  ] };
+}
+
+async function ocrPast(chatId) {
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'OCR (image to text)', href: '#ai/ocr' }];
+  const [chatRes, msgRes] = await Promise.all([
+    sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
+    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+  ]);
+  if (chatRes.error) return { title: 'OCR (image to text)', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  const msgs = must(msgRes);
+  const ans = msgs.find(m => m.role === 'assistant');
+  return { title: chatRes.data.title || 'Scan', nodes: [
+    crumbs(crumb),
+    ans ? ocrResultBlock(ans.content) : h('p', { class: 'none', text: 'No text saved.' }),
+    editButton('Delete scan', () => confirmDeleteChat(chatId))
   ] };
 }
 
