@@ -5905,5 +5905,35 @@ if (window.AndroidDownloader) {
   }, true);
 }
 </script>
+<!-- Floating APK download button (web only) -->
+<a id="apk-download-btn"
+   href="https://github.com/areebpreps/athenaeum/releases/latest/download/athenaeum.apk"
+   target="_blank" rel="noopener" title="Download Android app"
+   style="position:fixed;top:16px;right:16px;z-index:9999;width:44px;height:44px;
+   border-radius:50%;background:rgba(13,18,32,0.85);border:1px solid rgba(242,201,76,0.35);
+   display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);
+   box-shadow:0 2px 10px rgba(0,0,0,0.4);transition:transform .15s ease, box-shadow .15s ease;
+   text-decoration:none;">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F2C94C" stroke-width="2"
+       stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3v12"/>
+    <path d="M7 10l5 5 5-5"/>
+    <path d="M5 21h14"/>
+  </svg>
+</a>
+<style>
+  #apk-download-btn:hover, #apk-download-btn:active {
+    transform: scale(1.08);
+    box-shadow: 0 4px 16px rgba(242,201,76,0.25);
+  }
+</style>
+<script>
+  // Hide the button when running inside the installed app itself —
+  // window.AndroidDownloader only exists there (see the bridge hook above).
+  if (window.AndroidDownloader) {
+    var btn = document.getElementById('apk-download-btn');
+    if (btn) btn.style.display = 'none';
+  }
+</script>     
 </body>
 </html>
