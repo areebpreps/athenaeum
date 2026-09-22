@@ -203,6 +203,7 @@
   .crumbs a:active { color: var(--chalk); }
   .crumbs .sep { opacity: .55; }
   .edit-row { margin-bottom: 4px; }
+  .edit-row .btn { min-height: 34px; padding: 0 14px; font-size: 13px; border-radius: 10px; }
 
   .sec { margin-top: 28px; }
   .sec:first-child { margin-top: 0; }
@@ -222,6 +223,20 @@
   .row strong { font-weight: 600; overflow-wrap: anywhere; }
   .row small { color: var(--dim); font-size: 14px; }
   .row .chev { color: var(--dim); font-size: 24px; line-height: 1; }
+  .hist-row { padding-right: 8px; }
+  .row-link { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; color: inherit; text-decoration: none; }
+  .row-del {
+    flex: none; width: 36px; height: 36px; border-radius: 50%; border: 0; background: transparent;
+    color: var(--dim); font-size: 22px; line-height: 1; display: grid; place-items: center;
+  }
+  .row-del:active { background: var(--paper-hi); color: var(--err); }
+  .ai-status { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 14px; margin: 4px 0 0; padding: 0 4px; }
+  .ai-status .dot-pulse {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--marker); animation: ai-pulse 1s ease-in-out infinite;
+  }
+  @keyframes ai-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+  .yt-embed { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; margin: 10px 0; background: #000; }
+  .yt-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 
   .item {
     display: grid; gap: 6px; width: 100%; text-align: left; padding: 14px 16px;
@@ -265,6 +280,10 @@
   .group-bar:empty { display: none; }
   button.row { width: 100%; text-align: left; }
   .folder-ico { width: 26px; height: 26px; flex: none; color: var(--marker); }
+  .source-thumb {
+    width: 44px; height: 44px; flex: none; border-radius: 10px; object-fit: cover;
+    background: var(--paper-hi); border: 1px solid var(--line);
+  }
 
   /* workspace shortcuts */
   .ws { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; margin-bottom: 12px; overflow: hidden; }
@@ -967,6 +986,34 @@ function linkRow({ href, color, title, meta }) {
     h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
 }
 
+// A history row for a saved AI chat: tap to open it, tap × to delete it (with confirmation).
+function chatRow(href, title, meta, chatId) {
+  return h('div', { class: 'row hist-row' },
+    h('a', { class: 'row-link grow', href },
+      h('span', { class: 'grow' }, h('strong', { text: title }), h('small', { text: meta })),
+      h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    h('button', {
+      class: 'row-del', type: 'button', 'aria-label': 'Delete chat',
+      onclick: e => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(chatId); }
+    }, '×'));
+}
+
+function confirmDeleteChat(chatId) {
+  showDialog({
+    title: 'Delete this chat?',
+    text: 'It and everything in it will be removed. It cannot be undone.',
+    submitLabel: 'Delete', danger: true,
+    async onSubmit() {
+      const delMsgs = await sb.from('ai_messages').delete().eq('chat_id', chatId);
+      if (delMsgs.error) throw delMsgs.error;
+      const delChat = await sb.from('ai_chats').delete().eq('id', chatId);
+      if (delChat.error) throw delChat.error;
+      const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+      if (parts[2] === chatId) go('#ai/' + parts[1]); else route();
+    }
+  });
+}
+
 function itemCard(scope, it) {
   const { type, row } = it;
   const detail = type === 'formula' ? row.description : row.body;
@@ -1315,7 +1362,15 @@ function sourceLabel(row) {
 
 function sourceRow(scope, src) {
   const row = src.row;
-  const icon = row.kind === 'pdf' ? docIcon() : row.kind === 'link' ? linkIcon() : fileIcon();
+  let icon;
+  if (row.kind === 'image') {
+    icon = h('img', { class: 'source-thumb', alt: '' });
+    sb.storage.from(REF_BUCKET).createSignedUrl(row.storage_path, 3600).then(({ data, error }) => {
+      if (!error && data) icon.src = data.signedUrl;
+    });
+  } else {
+    icon = row.kind === 'pdf' ? docIcon() : row.kind === 'link' ? linkIcon() : fileIcon();
+  }
   return h('button', { class: 'row', type: 'button', onclick: () => openSourceDialog(scope, src) },
     icon,
     h('span', { class: 'grow' },
@@ -1356,7 +1411,28 @@ function openSourceDialog(scope, src) {
     text: saved,
     submitLabel: 'Open',
     async onSubmit() { await openSourceFile(row); },
-    extra: { label: 'Delete file', onClick: () => confirmDeleteSource(src) }
+    extras: [
+      { label: 'Rename', danger: false, onClick: () => renameSourceDialog(src) },
+      { label: 'Delete file', onClick: () => confirmDeleteSource(src) }
+    ]
+  });
+}
+
+function renameSourceDialog(src) {
+  const row = src.row;
+  showDialog({
+    title: 'Rename',
+    submitLabel: 'Save',
+    render(form) {
+      const f = makeField('Name', { value: row.title || sourceLabel(row), maxlength: 120, placeholder: sourceLabel(row) });
+      form.append(f.wrap);
+      return () => ({ title: f.input.value.trim() });
+    },
+    async onSubmit({ title }) {
+      const res = await sb.from('sources').update({ title: title || null }).eq('id', row.id);
+      if (res.error) throw res.error;
+      route();
+    }
   });
 }
 
@@ -1955,7 +2031,7 @@ function hubsSection() {
   return section('Hubs', null, null,
     h('div', { class: 'list' },
       linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
-      linkRow({ href: '#workspace/projects', title: 'Projects & ECA',     meta: 'Track projects and extracurriculars' }),
+      linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
       linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Chorcha Question Bank' }),
       linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' })));
@@ -2232,11 +2308,7 @@ async function askAIList() {
   return { title: 'Ask AI', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
     newBtn,
-    h('div', { class: 'list' }, chats.map(c => linkRow({
-      href: '#ai/ask/' + c.id,
-      title: c.title || 'New chat',
-      meta: new Date(c.created_at).toLocaleString()
-    })))
+    h('div', { class: 'list' }, chats.map(c => chatRow('#ai/ask/' + c.id, c.title || 'New chat', new Date(c.created_at).toLocaleString(), c.id)))
   ] };
 }
 
@@ -2262,6 +2334,7 @@ async function askAIChat(chatId) {
   ta.style.minHeight = '52px';
   const sendBtn = h('button', { class: 'btn small', type: 'button', text: 'Send' });
   const err = h('p', { class: 'msg err', hidden: true });
+  const status = h('p', { class: 'ai-status', hidden: true }, h('span', { class: 'dot-pulse', 'aria-hidden': 'true' }), h('span', { text: 'AI is replying…' }));
 
   async function send() {
     const text = ta.value.trim();
@@ -2281,6 +2354,7 @@ async function askAIChat(chatId) {
         sb.from('ai_chats').update({ title: chat.title }).eq('id', chatId).then(() => {});
       }
 
+      status.hidden = false;
       const answer = await callAI(
         'You are Ask AI, a concise, encouraging study assistant inside a student\'s Athenaeum workspace app. ' +
         'Answer in plain text (no markdown headers or tables). Keep answers focused and exam-relevant.',
@@ -2295,6 +2369,7 @@ async function askAIChat(chatId) {
       err.textContent = (e && e.message) ? e.message : 'Something went wrong. Try again.';
       err.hidden = false;
     } finally {
+      status.hidden = true;
       sendBtn.disabled = false; ta.disabled = false; ta.focus();
     }
   }
@@ -2303,8 +2378,9 @@ async function askAIChat(chatId) {
 
   return { title: chat.title || 'New chat', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }, { text: 'Ask AI', href: '#ai/ask' }]),
-    log, err,
-    h('div', { class: 'chat-input' }, ta, sendBtn)
+    log, status, err,
+    h('div', { class: 'chat-input' }, ta, sendBtn),
+    editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
 
@@ -2339,6 +2415,7 @@ async function uploadToolImage(prefix, blob) {
   return path;
 }
 async function uploadSolverImage(blob) { return uploadToolImage('solver', blob); }
+async function uploadSummarizerImage(blob) { return uploadToolImage('summarizer', blob); }
 
 // Re-derives base64 image data from a saved storage path, for Explain when
 // the photo isn't in this session's in-memory cache (reload, other device).
@@ -2362,11 +2439,7 @@ async function solverList() {
 
   const history = chats.length
     ? [section('Past questions', null, null,
-        h('div', { class: 'list' }, chats.map(c => linkRow({
-          href: '#ai/solver/' + c.id,
-          title: c.title || 'Solved question',
-          meta: new Date(c.created_at).toLocaleString()
-        }))))]
+        h('div', { class: 'list' }, chats.map(c => chatRow('#ai/solver/' + c.id, c.title || 'Solved question', new Date(c.created_at).toLocaleString(), c.id))))]
     : [h('p', { class: 'none', text: 'No questions solved yet.' })];
 
   return { title: 'Question Solver', nodes: [
@@ -2378,19 +2451,21 @@ async function solverList() {
 
 // The "take/choose a photo -> answer -> Explain" panel on the list page.
 function solverPanel() {
-  const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
-  const snapBtn = h('button', { class: 'btn small', type: 'button', text: 'Take or choose a photo', onclick: () => fileInput.click() });
+  const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
+  const galleryInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const snapBtn = h('button', { class: 'btn small', type: 'button', text: 'Take a photo', onclick: () => cameraInput.click() });
+  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose from gallery', onclick: () => galleryInput.click() });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files && fileInput.files[0];
-    fileInput.value = '';
+  async function handleFile(file) {
     if (!file) return;
     if (!file.type.startsWith('image/')) { err.textContent = 'Choose a photo.'; err.hidden = false; return; }
 
     err.hidden = true; result.replaceChildren();
-    snapBtn.disabled = true; snapBtn.textContent = 'Reading photo…';
+    snapBtn.disabled = true; galleryBtn.disabled = true;
+    const restoreLabel = snapBtn.textContent;
+    snapBtn.textContent = 'Reading photo…';
     try {
       const blob = await compressImage(file);
       const mime = blob.type || 'image/jpeg';
@@ -2416,14 +2491,17 @@ function solverPanel() {
       err.textContent = (e && e.message) ? e.message : 'Could not solve that photo. Try again.';
       err.hidden = false;
     } finally {
-      snapBtn.disabled = false; snapBtn.textContent = 'Take or choose a photo';
+      snapBtn.disabled = false; galleryBtn.disabled = false; snapBtn.textContent = restoreLabel;
     }
-  });
+  }
+
+  cameraInput.addEventListener('change', () => { const f = cameraInput.files && cameraInput.files[0]; cameraInput.value = ''; handleFile(f); });
+  galleryInput.addEventListener('change', () => { const f = galleryInput.files && galleryInput.files[0]; galleryInput.value = ''; handleFile(f); });
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New question' })),
     h('p', { class: 'hint-line', text: 'Snap a photo of a question for a direct answer first, then tap Explain for the steps.' }),
-    h('div', { class: 'vault-actions' }, snapBtn, fileInput),
+    h('div', { class: 'vault-actions' }, snapBtn, galleryBtn, cameraInput, galleryInput),
     err, result);
 }
 
@@ -2493,7 +2571,7 @@ async function solverPast(chatId) {
     }
   }
 
-  return { title: chatRes.data.title || 'Solved question', nodes: [crumbs(crumb), log, explainNode] };
+  return { title: chatRes.data.title || 'Solved question', nodes: [crumbs(crumb), log, explainNode, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
 }
 
 /* ---------- Fact Checker ----------
@@ -2598,9 +2676,7 @@ async function factcheckList() {
     factcheckPanel(),
     ...(chats.length
       ? [section('Past checks', null, null,
-          h('div', { class: 'list' }, chats.map(c => linkRow({
-            href: '#ai/factcheck/' + c.id, title: c.title || 'Checked claim', meta: new Date(c.created_at).toLocaleString()
-          }))))]
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/factcheck/' + c.id, c.title || 'Checked claim', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No claims checked yet.' })])
   ] };
 }
@@ -2619,7 +2695,8 @@ async function factcheckPast(chatId) {
     crumbs(crumb),
     (claimRow && claimRow.content !== '[Photo claim]') ? h('p', { class: 'hint-line', text: claimRow.content }) : null,
     (claimRow && claimRow.image_path) ? dlThumb(claimRow.image_path) : null,
-    answerRow ? verdictBadge(answerRow.content) : h('p', { class: 'none', text: 'No result saved.' })
+    answerRow ? verdictBadge(answerRow.content) : h('p', { class: 'none', text: 'No result saved.' }),
+    editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
 
@@ -2638,6 +2715,24 @@ async function callAIYoutube(url, transcript) {
     ? [{ role: 'user', parts: [{ file_data: { file_uri: url } }, { text: 'Summarize this video for studying.' }] }]
     : [{ role: 'user', parts: [{ text: 'Summarize this transcript for studying:\n\n' + transcript }] }];
   return callGeminiRaw(s.geminiModel, s.geminiKey, YOUTUBE_SYSTEM, contents);
+}
+
+// Extracts the 11-char video id from watch/youtu.be/embed/shorts links, for the in-app player.
+// (YouTube's own /embed/ endpoint sends permissive frame headers, unlike most other sites — see section 14 of the blueprint.)
+function youtubeVideoId(url) {
+  if (!url) return null;
+  const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+function youtubePlayer(url) {
+  const id = youtubeVideoId(url);
+  if (!id) return null;
+  return h('div', { class: 'yt-embed' },
+    h('iframe', {
+      src: 'https://www.youtube.com/embed/' + id, title: 'YouTube video player', frameborder: '0',
+      allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share',
+      allowfullscreen: true
+    }));
 }
 
 function youtubeHub(chatId) {
@@ -2660,7 +2755,7 @@ function youtubePanel() {
     goBtn.disabled = true; goBtn.textContent = 'Summarizing…';
     try {
       const summary = await callAIYoutube(url, transcript);
-      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: summary })));
+      result.replaceChildren(youtubePlayer(url), h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: summary })));
       const chatIns = await sb.from('ai_chats').insert({ tool: 'youtube', title: (url || transcript).slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
       const msgIns = await sb.from('ai_messages').insert(
@@ -2690,9 +2785,7 @@ async function youtubeList() {
     youtubePanel(),
     ...(chats.length
       ? [section('Past summaries', null, null,
-          h('div', { class: 'list' }, chats.map(c => linkRow({
-            href: '#ai/youtube/' + c.id, title: c.title || 'Video summary', meta: new Date(c.created_at).toLocaleString()
-          }))))]
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/youtube/' + c.id, c.title || 'Video summary', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No summaries yet.' })])
   ] };
 }
@@ -2710,7 +2803,9 @@ async function youtubePast(chatId) {
   return { title: chatRes.data.title || 'Video summary', nodes: [
     crumbs(crumb),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
-    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' })
+    src ? youtubePlayer(src.content.replace(/^\[YouTube\]\s*/, '')) : null,
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' }),
+    editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
 
@@ -2728,25 +2823,56 @@ function summarizerHub(chatId) {
 
 function summarizerPanel() {
   const ta = h('textarea', { class: 'control area', rows: 6, placeholder: 'Paste your notes here…' });
+  const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
+  const galleryInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Take a photo of notes', onclick: () => cameraInput.click() });
+  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose from gallery', onclick: () => galleryInput.click() });
+  const photoLabel = h('p', { class: 'hint-line', hidden: true });
+  const clearPhotoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo', hidden: true });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Summarize' });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
+  let pendingPhoto = null; // { blob, b64, mime }
+  async function setPhoto(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { err.textContent = 'Choose a photo.'; err.hidden = false; return; }
+    err.hidden = true;
+    const blob = await compressImage(file);
+    pendingPhoto = { blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg' };
+    photoLabel.textContent = 'Photo attached: ' + (file.name || 'photo');
+    photoLabel.hidden = false;
+    clearPhotoBtn.hidden = false;
+  }
+  cameraInput.addEventListener('change', () => { const f = cameraInput.files && cameraInput.files[0]; cameraInput.value = ''; setPhoto(f); });
+  galleryInput.addEventListener('change', () => { const f = galleryInput.files && galleryInput.files[0]; galleryInput.value = ''; setPhoto(f); });
+  clearPhotoBtn.addEventListener('click', () => { pendingPhoto = null; photoLabel.hidden = true; clearPhotoBtn.hidden = true; });
+
   goBtn.addEventListener('click', async () => {
     const notes = ta.value.trim();
-    if (!notes) { err.textContent = 'Paste some notes first.'; err.hidden = false; return; }
+    if (!notes && !pendingPhoto) { err.textContent = 'Paste some notes or add a photo first.'; err.hidden = false; return; }
     err.hidden = true; result.replaceChildren();
     goBtn.disabled = true; goBtn.textContent = 'Summarizing…';
     try {
-      const answer = await callAI(SUMMARIZER_SYSTEM, [{ role: 'user', content: notes }]);
+      let answer, imagePath = null;
+      if (pendingPhoto) {
+        const prompt = notes
+          ? 'Read the notes in this photo together with this typed text, then summarize both:\n\n' + notes
+          : 'Read the notes in this photo and summarize them.';
+        answer = await callAIVision(SUMMARIZER_SYSTEM, prompt, pendingPhoto.b64, pendingPhoto.mime);
+        try { imagePath = await uploadSummarizerImage(pendingPhoto.blob); } catch (e) { /* non-fatal */ }
+      } else {
+        answer = await callAI(SUMMARIZER_SYSTEM, [{ role: 'user', content: notes }]);
+      }
       result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })));
-      const chatIns = await sb.from('ai_chats').insert({ tool: 'summarizer', title: notes.slice(0, 60) }).select('id').single();
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'summarizer', title: (notes || 'Photo of notes').slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
       const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: notes.slice(0, 2000) },
+        [{ chat_id: chatIns.data.id, role: 'user', content: notes ? notes.slice(0, 2000) : '[Photo of notes]', image_path: imagePath },
          { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
       if (msgIns.error) throw msgIns.error;
       ta.value = '';
+      pendingPhoto = null; photoLabel.hidden = true; clearPhotoBtn.hidden = true;
     } catch (e) {
       err.textContent = (e && e.message) ? e.message : 'Could not summarize that. Try again.';
       err.hidden = false;
@@ -2757,8 +2883,10 @@ function summarizerPanel() {
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
-    h('p', { class: 'hint-line', text: 'Paste notes to get a summary plus any formulas pulled out as a cheat sheet.' }),
-    h('div', { class: 'field' }, ta), goBtn, err, result);
+    h('p', { class: 'hint-line', text: 'Paste notes, or add a photo of them, to get a summary plus any formulas pulled out as a cheat sheet.' }),
+    h('div', { class: 'field' }, ta),
+    h('div', { class: 'vault-actions' }, photoBtn, galleryBtn, cameraInput, galleryInput),
+    photoLabel, clearPhotoBtn, goBtn, err, result);
 }
 
 async function summarizerList() {
@@ -2769,9 +2897,7 @@ async function summarizerList() {
     summarizerPanel(),
     ...(chats.length
       ? [section('Past summaries', null, null,
-          h('div', { class: 'list' }, chats.map(c => linkRow({
-            href: '#ai/summarizer/' + c.id, title: c.title || 'Summary', meta: new Date(c.created_at).toLocaleString()
-          }))))]
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/summarizer/' + c.id, c.title || 'Summary', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No summaries yet.' })])
   ] };
 }
@@ -2780,14 +2906,17 @@ async function summarizerPast(chatId) {
   const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Summarizer & Formula Excerptor', href: '#ai/summarizer' }];
   const [chatRes, msgRes] = await Promise.all([
     sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
-    sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
+    sb.from('ai_messages').select('id, role, content, image_path, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
   ]);
   if (chatRes.error) return { title: 'Summarizer & Formula Excerptor', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
   const msgs = must(msgRes);
+  const src = msgs.find(m => m.role === 'user');
   const ans = msgs.find(m => m.role === 'assistant');
   return { title: chatRes.data.title || 'Summary', nodes: [
     crumbs(crumb),
-    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' })
+    src && src.image_path ? dlThumb(src.image_path) : null,
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' }),
+    editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
 
@@ -2799,13 +2928,26 @@ async function summarizerPast(chatId) {
 const QUIZ_SYSTEM =
   'You are the Quiz Generator in a student\'s Athenaeum workspace app. Reply with ONLY valid JSON, no markdown code fences, no ' +
   'commentary before or after it. For "mcq" quizzes return exactly this shape: {"type":"mcq","questions":[{"question":"...",' +
-  '"options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. For "essay" quizzes return exactly this shape: ' +
-  '{"type":"essay","questions":[{"question":"...","modelAnswer":"..."}]}. Base every question only on the material given. ' +
-  'Write plain text inside the strings, no markdown.';
+  '"options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}. For "true_false" quizzes return exactly this shape: ' +
+  '{"type":"true_false","questions":[{"statement":"...","answer":true,"explanation":"..."}]} (answer is a JSON boolean). For "short" ' +
+  '(one-mark short answer) quizzes return exactly this shape: {"type":"short","questions":[{"question":"...","answer":"..."}]}, ' +
+  'each answer being a brief one-line fact, term, or number — not an essay. For "math" quizzes return exactly this shape: ' +
+  '{"type":"math","questions":[{"question":"...","answer":"...","solution":"..."}]}, where question is a worked mathematical ' +
+  'problem, answer is the final numeric/algebraic result, and solution is the short step-by-step working. For "essay" quizzes ' +
+  'return exactly this shape: {"type":"essay","questions":[{"question":"...","modelAnswer":"..."}]}. Base every question only on ' +
+  'the material given. Write plain text inside the strings, no markdown.';
+
+const QUIZ_KINDS = {
+  mcq:         { label: 'MCQ',         desc: 'multiple choice (4 options each, exactly one correct)' },
+  true_false:  { label: 'True/False',  desc: 'true/false statements, each with a short explanation' },
+  short:       { label: 'Short',       desc: 'one-mark short answer questions, each with a brief answer' },
+  math:        { label: 'Math',        desc: 'mathematical problems to solve, each with the final answer and a short worked solution' },
+  essay:       { label: 'Essay',       desc: 'short essay prompts, each with a model answer' }
+};
 
 function quizPrompt(kind, count, material) {
-  return 'Make a ' + count + '-question ' + (kind === 'mcq' ? 'multiple choice' : 'essay') + ' quiz (' +
-    (kind === 'mcq' ? '4 options each, exactly one correct' : 'short essay prompts, each with a model answer') +
+  return 'Make a ' + count + '-question ' + (QUIZ_KINDS[kind] ? QUIZ_KINDS[kind].label : kind) + ' quiz (' +
+    (QUIZ_KINDS[kind] ? QUIZ_KINDS[kind].desc : '') +
     ') from this material:\n\n' + material;
 }
 
@@ -2816,8 +2958,8 @@ function parseQuizJSON(text) {
   return data;
 }
 
-// Interactive player: tapping an MCQ option locks that question in and
-// shows right/wrong plus the explanation; essay questions reveal a model
+// Interactive player: tapping an MCQ/true-false option locks that question in and
+// shows right/wrong plus the explanation; essay/short/math questions reveal an
 // answer on tap. Used both for a freshly generated quiz and a saved one.
 function quizPlayer(quiz) {
   if (quiz.type === 'essay') {
@@ -2829,6 +2971,51 @@ function quizPlayer(quiz) {
         reveal.textContent = answerP.hidden ? 'Show model answer' : 'Hide model answer';
       });
       return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), reveal, answerP);
+    }));
+  }
+  if (quiz.type === 'short') {
+    return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
+      const answerP = h('p', { class: 'hint-line', hidden: true, text: 'Answer: ' + q.answer });
+      const reveal = h('button', { class: 'btn quiet small', type: 'button', text: 'Show answer' });
+      reveal.addEventListener('click', () => {
+        answerP.hidden = !answerP.hidden;
+        reveal.textContent = answerP.hidden ? 'Show answer' : 'Hide answer';
+      });
+      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question + ' (1 mark)' }), reveal, answerP);
+    }));
+  }
+  if (quiz.type === 'math') {
+    return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
+      const answerP = h('p', { class: 'hint-line', hidden: true, text: 'Answer: ' + q.answer + (q.solution ? '\n' + q.solution : '') });
+      const reveal = h('button', { class: 'btn quiet small', type: 'button', text: 'Show answer & steps' });
+      reveal.addEventListener('click', () => {
+        answerP.hidden = !answerP.hidden;
+        reveal.textContent = answerP.hidden ? 'Show answer & steps' : 'Hide answer & steps';
+      });
+      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.question }), reveal, answerP);
+    }));
+  }
+  if (quiz.type === 'true_false') {
+    return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
+      const opts = h('div', { class: 'list' });
+      let answered = false;
+      [['True', true], ['False', false]].forEach(([label, val]) => {
+        const btn = h('button', { class: 'qopt', type: 'button', text: label });
+        btn.addEventListener('click', () => {
+          if (answered) return;
+          answered = true;
+          const correctVal = !!q.answer;
+          opts.querySelectorAll('.qopt').forEach((b, bi) => {
+            b.disabled = true;
+            const bVal = bi === 0; // 'True' button is always first
+            if (bVal === correctVal) b.classList.add('correct');
+            else if (b === btn) b.classList.add('wrong');
+          });
+          if (q.explanation) opts.append(h('p', { class: 'hint-line', text: q.explanation }));
+        });
+        opts.append(btn);
+      });
+      return h('div', { class: 'sec' }, h('p', { text: (i + 1) + '. ' + q.statement }), opts);
     }));
   }
   return h('div', { class: 'list' }, quiz.questions.map((q, i) => {
@@ -2861,7 +3048,7 @@ function quizPanel() {
   const fMaterial = makeField('Notes or topic', { multiline: true, rows: 4, placeholder: 'Paste notes, or type a topic' });
   let kind = 'mcq';
   const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Quiz type' },
-    [['mcq', 'MCQ'], ['essay', 'Essay']].map(([k, l]) => h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { kind = k; syncSeg(); } })));
+    Object.keys(QUIZ_KINDS).map(k => h('button', { type: 'button', 'data-k': k, text: QUIZ_KINDS[k].label, onclick: () => { kind = k; syncSeg(); } })));
   const syncSeg = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === kind)));
   syncSeg();
   const fCount = makeField('Number of questions', { value: '5' });
@@ -2883,7 +3070,7 @@ function quizPanel() {
       const chatIns = await sb.from('ai_chats').insert({ tool: 'quiz', title: material.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
       const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + kind.toUpperCase() + ' · ' + count + ' questions] ' + material.slice(0, 300) },
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + QUIZ_KINDS[kind].label + ' · ' + count + ' questions] ' + material.slice(0, 300) },
          { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(quiz) }]);
       if (msgIns.error) throw msgIns.error;
     } catch (e) {
@@ -2909,9 +3096,7 @@ async function quizList() {
     quizPanel(),
     ...(chats.length
       ? [section('Past quizzes', null, null,
-          h('div', { class: 'list' }, chats.map(c => linkRow({
-            href: '#ai/quiz/' + c.id, title: c.title || 'Quiz', meta: new Date(c.created_at).toLocaleString()
-          }))))]
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/quiz/' + c.id, c.title || 'Quiz', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No quizzes yet.' })])
   ] };
 }
@@ -2928,27 +3113,34 @@ async function quizPast(chatId) {
   let node;
   try { node = ans ? quizPlayer(JSON.parse(ans.content)) : h('p', { class: 'none', text: 'No quiz saved.' }); }
   catch (e) { node = h('p', { class: 'none', text: 'Could not read this saved quiz.' }); }
-  return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), node] };
+  return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), node, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
 }
 
 /* ---------- Translator & Dictionary ---------- */
-const TRANSLATE_SYSTEM =
-  'You are the Translator and Dictionary in a student\'s Athenaeum workspace app, working between English and Bangla. Reply in ' +
-  'plain text, no markdown.';
+// Uses Google Translate's own public web endpoint directly — the same one translate.google.com
+// calls — rather than Gemini (see https://share.google/IFudsH7n65R4shBqQ). No Gemini key needed.
+// This is an unofficial, undocumented endpoint: it can rate-limit or change shape without notice,
+// so a failed call surfaces a plain error instead of crashing the tool.
+const BANGLA_RE = /[\u0980-\u09FF]/;
 
-function translatePrompt(mode, direction, text) {
-  if (mode === 'dictionary') {
-    return 'Give a dictionary entry for "' + text + '": part of speech, a clear definition, one example sentence, 2-3 synonyms, ' +
-      'and its Bangla equivalent. Label each line plainly, e.g. "Definition: …".';
+async function callGoogleTranslate(text, sl, tl) {
+  const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=' + encodeURIComponent(sl) +
+    '&tl=' + encodeURIComponent(tl) + '&dt=t&dt=bd&q=' + encodeURIComponent(text);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('Google Translate could not be reached (HTTP ' + resp.status + ').');
+  const data = await resp.json();
+  const translated = (data[0] || []).map(seg => seg[0]).filter(Boolean).join('');
+  let dictionary = [];
+  if (Array.isArray(data[1])) {
+    dictionary = data[1]
+      .map(entry => ({ pos: entry[0], terms: Array.isArray(entry[1]) ? entry[1].slice(0, 6) : [] }))
+      .filter(e => e.terms.length);
   }
-  const dirLine = direction === 'en2bn' ? 'Translate this English text into Bangla'
-                : direction === 'bn2en' ? 'Translate this Bangla text into English'
-                : 'Detect the language and translate it into the other of English/Bangla';
-  return dirLine + ':\n\n' + text;
+  if (!translated) throw new Error('Google Translate returned nothing for that text.');
+  return { translated, dictionary };
 }
 
 function translatorHub(chatId) {
-  if (!aiConfigured()) return aiNeedsSetup('Translator & Dictionary');
   return chatId ? translatorPast(chatId) : translatorList();
 }
 
@@ -2961,7 +3153,7 @@ function translatorPanel() {
     [['auto', 'Auto'], ['en2bn', 'En → Bn'], ['bn2en', 'Bn → En']].map(([k, l]) =>
       h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { direction = k; syncDir(); } })));
   const dirWrap = h('div', { class: 'field' }, h('label', { text: 'Direction' }), dirSeg);
-  const syncMode = () => { modeSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === mode))); dirWrap.hidden = mode !== 'translate'; };
+  const syncMode = () => modeSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === mode)));
   const syncDir = () => dirSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === direction)));
   syncMode(); syncDir();
 
@@ -2970,23 +3162,37 @@ function translatorPanel() {
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
+  function langsFor(text) {
+    if (direction === 'en2bn') return { sl: 'en', tl: 'bn' };
+    if (direction === 'bn2en') return { sl: 'bn', tl: 'en' };
+    return BANGLA_RE.test(text) ? { sl: 'bn', tl: 'en' } : { sl: 'en', tl: 'bn' };
+  }
+
   goBtn.addEventListener('click', async () => {
     const text = fText.input.value.trim();
     if (!text) { err.textContent = 'Type something first.'; err.hidden = false; return; }
     err.hidden = true; result.replaceChildren();
     goBtn.disabled = true; goBtn.textContent = 'Working…';
     try {
-      const answer = await callAI(TRANSLATE_SYSTEM, [{ role: 'user', content: translatePrompt(mode, direction, text) }]);
-      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })));
+      const { sl, tl } = langsFor(text);
+      const { translated, dictionary } = await callGoogleTranslate(text, sl, tl);
+      const nodes = [h('div', { class: 'bubble assistant', text: translated })];
+      if (mode === 'dictionary' && dictionary.length) {
+        dictionary.forEach(e => nodes.push(h('p', { class: 'hint-line', text: (e.pos ? e.pos + ': ' : '') + e.terms.join(', ') })));
+      }
+      result.replaceChildren(h('div', { class: 'chat-log' }, nodes), h('p', { class: 'hint-line', text: 'Source: Google Translate' }));
+
+      const savedContent = translated + (dictionary.length
+        ? '\n\n' + dictionary.map(e => (e.pos ? e.pos + ': ' : '') + e.terms.join(', ')).join('\n') : '');
       const chatIns = await sb.from('ai_chats').insert({ tool: 'translate', title: text.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
       const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + mode + (mode === 'translate' ? ' · ' + direction : '') + '] ' + text },
-         { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + mode + ' · ' + sl + '→' + tl + '] ' + text },
+         { chat_id: chatIns.data.id, role: 'assistant', content: savedContent }]);
       if (msgIns.error) throw msgIns.error;
       fText.input.value = '';
     } catch (e) {
-      err.textContent = (e && e.message) ? e.message : 'Could not do that. Try again.';
+      err.textContent = (e && e.message) ? e.message : 'Could not reach Google Translate. Try again.';
       err.hidden = false;
     } finally {
       goBtn.disabled = false; goBtn.textContent = 'Go';
@@ -2996,7 +3202,8 @@ function translatorPanel() {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New lookup' })),
     h('div', { class: 'field' }, h('label', { text: 'Mode' }), modeSeg),
-    dirWrap, fText.wrap, goBtn, err, result);
+    dirWrap, fText.wrap, goBtn, err, result,
+    h('p', { class: 'hint-line', text: 'Powered by Google Translate.' }));
 }
 
 async function translatorList() {
@@ -3007,9 +3214,7 @@ async function translatorList() {
     translatorPanel(),
     ...(chats.length
       ? [section('Past lookups', null, null,
-          h('div', { class: 'list' }, chats.map(c => linkRow({
-            href: '#ai/translate/' + c.id, title: c.title || 'Lookup', meta: new Date(c.created_at).toLocaleString()
-          }))))]
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/translate/' + c.id, c.title || 'Lookup', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No lookups yet.' })])
   ] };
 }
@@ -3027,7 +3232,8 @@ async function translatorPast(chatId) {
   return { title: chatRes.data.title || 'Lookup', nodes: [
     crumbs(crumb),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
-    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' })
+    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' }),
+    editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
 }
 
@@ -3552,27 +3758,34 @@ function openPlannerDialog(kind, existing) {
   });
 }
 
-/* ---------- Project / ECA tracker (global, not scoped) ---------- */
+/* ---------- Project / Assignment / Learning tracker (global, not scoped) ---------- */
 const PROJECT_STATUSES = ['active', 'in_progress', 'done'];
 const STATUS_LABEL = { active: 'Active', in_progress: 'In progress', done: 'Done' };
+// 'eca' is kept as the stored value (no schema change needed) but is shown everywhere as "Assignment".
+const KIND_LABEL = { project: 'project', eca: 'assignment', learning: 'learning goal' };
+const KIND_LABEL_CAP = { project: 'Project', eca: 'Assignment', learning: 'Learning goal' };
 
 async function projectsHub() {
   const rows = must(await sb.from('projects').select('*').order('created_at', { ascending: false }));
-  const projects = rows.filter(r => r.kind !== 'eca');
-  const ecas = rows.filter(r => r.kind === 'eca');
+  const projects = rows.filter(r => r.kind !== 'eca' && r.kind !== 'learning');
+  const assignments = rows.filter(r => r.kind === 'eca');
+  const learning = rows.filter(r => r.kind === 'learning');
 
-  return { title: 'Projects & ECA', nodes: [
+  return { title: 'Projects, Assignments & Learning', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     section('Projects', '+ Add project', () => openProjectDialog('project', null),
       projects.length ? h('div', { class: 'list' }, projects.map(p => projectCard(p)))
                        : h('p', { class: 'none', text: 'No projects yet.' })),
-    section('Extracurriculars', '+ Add ECA', () => openProjectDialog('eca', null),
-      ecas.length ? h('div', { class: 'list' }, ecas.map(p => projectCard(p)))
-                  : h('p', { class: 'none', text: 'Nothing tracked yet.' }))
+    section('Assignments', '+ Add assignment', () => openProjectDialog('eca', null),
+      assignments.length ? h('div', { class: 'list' }, assignments.map(p => projectCard(p)))
+                  : h('p', { class: 'none', text: 'Nothing tracked yet.' })),
+    section('Learning tracker', '+ Add learning goal', () => openProjectDialog('learning', null),
+      learning.length ? h('div', { class: 'list' }, learning.map(p => projectCard(p)))
+                  : h('p', { class: 'none', text: 'Nothing being tracked yet. Add a skill or topic you’re learning and check off milestones as you go.' }))
   ] };
 }
 
-// One card per project or ECA: tap the top to edit it, tick items off underneath.
+// One card per project, assignment or learning goal: tap the top to edit it, tick items off underneath.
 // The checklist lives in projects.checklist (a JSON list) and saves as you go.
 function projectCard(p) {
   let list = Array.isArray(p.checklist) ? p.checklist.slice() : [];
@@ -3644,7 +3857,7 @@ function openProjectDialog(kind, existing) {
   let status = row.status && PROJECT_STATUSES.includes(row.status) ? row.status : 'active';
 
   showDialog({
-    title: existing ? ('Edit ' + (kind === 'eca' ? 'ECA' : 'project')) : ('Add ' + (kind === 'eca' ? 'ECA' : 'project')),
+    title: existing ? ('Edit ' + KIND_LABEL[kind]) : ('Add ' + KIND_LABEL[kind]),
     submitLabel: 'Save',
     render(form) {
       const fTitle = makeField('Title', { value: row.title || '', maxlength: 120 });
@@ -3671,7 +3884,7 @@ function openProjectDialog(kind, existing) {
       if (res.error) throw res.error;
       route();
     },
-    extra: existing ? { label: 'Delete', onClick: () => confirmDeleteRow('projects', row, kind === 'eca' ? 'ECA item' : 'project') } : null
+    extra: existing ? { label: 'Delete', onClick: () => confirmDeleteRow('projects', row, KIND_LABEL[kind]) } : null
   });
 }
 
