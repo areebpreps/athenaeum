@@ -2024,6 +2024,7 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
   if (ids[0] === 'portals')  return portalsPage(ids[1]);
   if (ids[0] === 'threed')   return simHub(ids[1]);
+  if (ids[0] === 'youtube')  return ytHub(ids[1]);
   return buildWorkspaceRoot();
 }
 
@@ -2034,7 +2035,8 @@ function hubsSection() {
       linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
       linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Chorcha Question Bank' }),
-      linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' })));
+      linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
+      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Watch videos in-app and save your favourites' })));
 }
 
 async function buildWorkspaceRoot() {
@@ -2161,6 +2163,17 @@ async function callAIVision(system, textPrompt, imageBase64, mimeType) {
   return callGeminiRaw(s.geminiModel, s.geminiKey, system, [{ role: 'user', parts }]);
 }
 
+// Same as callAIVision but with several photos in one turn (e.g. up to 20 pages
+// of notes), so Gemini reads them together as one document instead of one at a time.
+async function callAIVisionMulti(system, textPrompt, images) {
+  const s = aiSettings();
+  if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
+  const parts = [];
+  if (textPrompt) parts.push({ text: textPrompt });
+  images.forEach(img => parts.push({ inline_data: { mime_type: img.mime || 'image/jpeg', data: img.b64 } }));
+  return callGeminiRaw(s.geminiModel, s.geminiKey, system, [{ role: 'user', parts }]);
+}
+
 // Grounded caller (Fact Checker): same shape as callGeminiRaw, but turns on
 // Gemini's google_search tool and pulls a source link out of the grounding
 // metadata Gemini returns alongside the answer.
@@ -2225,7 +2238,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
-        linkRow({ href: '#ai/translate', title: 'Translator & Dictionary', meta: 'English / Bangla translation and vocabulary lookup' })))
+        linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' })))
   ] };
 }
 
@@ -2833,10 +2846,21 @@ async function youtubePast(chatId) {
 
 /* ---------- Summarizer & Formula Excerptor ---------- */
 const SUMMARIZER_SYSTEM =
-  'You are the Summarizer and Formula Excerptor in a student\'s Athenaeum workspace app. You are given a block of notes. Reply in ' +
-  'plain text, no markdown. First write a line "SUMMARY:" followed by a tight study summary. Then a blank line, then a line ' +
-  '"FORMULAS:" followed by every formula found, one per line, each with a short label — or, if none are in the notes, the single ' +
-  'line "None found in these notes."';
+  'You are the Summarizer and Formula Excerptor in a student\'s Athenaeum workspace app. You are given a block of notes, possibly ' +
+  'spread across several photographed pages. Reply in plain text, no markdown. First write a line "SUMMARY:" followed by a tight ' +
+  'study summary covering material from every page given. Then a blank line, then a line "FORMULAS:" followed by every formula ' +
+  'found across all pages, one per line, each with a short label — or, if none are in the notes, the single line "None found in ' +
+  'these notes."';
+
+// Used by "Create detailed note": keeps everything, rather than condensing it,
+// so the result can be saved as a standalone note under a subject/chapter/topic.
+const DETAILED_NOTE_SYSTEM =
+  'You are the note-writer in a student\'s Athenaeum workspace app. You are given a block of notes, possibly spread across up to 20 ' +
+  'photographed pages. Write ONE detailed, well-organized note in plain text (no markdown symbols) that keeps every important ' +
+  'fact, figure, term, name, date and formula from ALL pages given — do not compress it into a short summary, this is meant to ' +
+  'stand in for the original pages. Use clear short paragraphs or line breaks between topics so it stays easy to read on a phone.';
+
+const SUMMARIZER_MAX_PAGES = 20;
 
 function summarizerHub(chatId) {
   if (!aiConfigured()) return aiNeedsSetup('Summarizer & Formula Excerptor');
@@ -2846,69 +2870,109 @@ function summarizerHub(chatId) {
 function summarizerPanel() {
   const ta = h('textarea', { class: 'control area', rows: 6, placeholder: 'Paste your notes here…' });
   const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
-  const galleryInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
-  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Take a photo of notes', onclick: () => cameraInput.click() });
-  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose from gallery', onclick: () => galleryInput.click() });
-  const photoLabel = h('p', { class: 'hint-line', hidden: true });
-  const clearPhotoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo', hidden: true });
+  const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add a page photo', onclick: () => cameraInput.click() });
+  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose pages from gallery', onclick: () => galleryInput.click() });
+  const pagesLabel = h('p', { class: 'hint-line', hidden: true });
+  const clearPhotoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove all pages', hidden: true });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Summarize' });
+  const noteBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Create detailed note' });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
-  let pendingPhoto = null; // { blob, b64, mime }
-  async function setPhoto(file) {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) { err.textContent = 'Choose a photo.'; err.hidden = false; return; }
-    err.hidden = true;
-    const blob = await compressImage(file);
-    pendingPhoto = { blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg' };
-    photoLabel.textContent = 'Photo attached: ' + (file.name || 'photo');
-    photoLabel.hidden = false;
-    clearPhotoBtn.hidden = false;
-  }
-  cameraInput.addEventListener('change', () => { const f = cameraInput.files && cameraInput.files[0]; cameraInput.value = ''; setPhoto(f); });
-  galleryInput.addEventListener('change', () => { const f = galleryInput.files && galleryInput.files[0]; galleryInput.value = ''; setPhoto(f); });
-  clearPhotoBtn.addEventListener('click', () => { pendingPhoto = null; photoLabel.hidden = true; clearPhotoBtn.hidden = true; });
+  let pendingPhotos = []; // [{ blob, b64, mime }, …] up to SUMMARIZER_MAX_PAGES
 
-  goBtn.addEventListener('click', async () => {
+  function syncPagesUI() {
+    if (pendingPhotos.length) {
+      pagesLabel.textContent = plural(pendingPhotos.length, 'page', 'pages') + ' attached (max ' + SUMMARIZER_MAX_PAGES + ').';
+      pagesLabel.hidden = false;
+      clearPhotoBtn.hidden = false;
+    } else {
+      pagesLabel.hidden = true;
+      clearPhotoBtn.hidden = true;
+    }
+  }
+
+  async function addPhotos(files) {
+    if (!files || !files.length) return;
+    err.hidden = true;
+    const room = SUMMARIZER_MAX_PAGES - pendingPhotos.length;
+    if (room <= 0) { err.textContent = 'You already have ' + SUMMARIZER_MAX_PAGES + ' pages attached — remove some first.'; err.hidden = false; return; }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > picked.length) { err.textContent = 'Only the first ' + picked.length + ' fit — the cap is ' + SUMMARIZER_MAX_PAGES + ' pages.'; err.hidden = false; }
+    for (const file of picked) {
+      if (!file.type || !file.type.startsWith('image/')) continue;
+      const blob = await compressImage(file);
+      pendingPhotos.push({ blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg' });
+    }
+    syncPagesUI();
+  }
+  cameraInput.addEventListener('change', () => { const f = cameraInput.files; addPhotos(f); cameraInput.value = ''; });
+  galleryInput.addEventListener('change', () => { const f = galleryInput.files; addPhotos(f); galleryInput.value = ''; });
+  clearPhotoBtn.addEventListener('click', () => { pendingPhotos = []; syncPagesUI(); });
+
+  async function run(kind) {
     const notes = ta.value.trim();
-    if (!notes && !pendingPhoto) { err.textContent = 'Paste some notes or add a photo first.'; err.hidden = false; return; }
+    if (!notes && !pendingPhotos.length) { err.textContent = 'Paste some notes or add page photos first.'; err.hidden = false; return; }
     err.hidden = true; result.replaceChildren();
-    goBtn.disabled = true; goBtn.textContent = 'Summarizing…';
+    const btn = kind === 'note' ? noteBtn : goBtn;
+    const otherBtn = kind === 'note' ? goBtn : noteBtn;
+    btn.disabled = otherBtn.disabled = true;
+    btn.textContent = kind === 'note' ? 'Writing note…' : 'Summarizing…';
     try {
+      const system = kind === 'note' ? DETAILED_NOTE_SYSTEM : SUMMARIZER_SYSTEM;
       let answer, imagePath = null;
-      if (pendingPhoto) {
+      if (pendingPhotos.length) {
+        const pageWord = plural(pendingPhotos.length, 'page', 'pages');
         const prompt = notes
-          ? 'Read the notes in this photo together with this typed text, then summarize both:\n\n' + notes
-          : 'Read the notes in this photo and summarize them.';
-        answer = await callAIVision(SUMMARIZER_SYSTEM, prompt, pendingPhoto.b64, pendingPhoto.mime);
-        try { imagePath = await uploadSummarizerImage(pendingPhoto.blob); } catch (e) { /* non-fatal */ }
+          ? 'Here are ' + pageWord + ' of notes as photos, together with this typed text — treat it all as one document:\n\n' + notes
+          : 'Here are ' + pageWord + ' of notes as photos — treat them all as one document.';
+        answer = await callAIVisionMulti(system, prompt, pendingPhotos);
+        try { imagePath = await uploadSummarizerImage(pendingPhotos[0].blob); } catch (e) { /* non-fatal */ }
       } else {
-        answer = await callAI(SUMMARIZER_SYSTEM, [{ role: 'user', content: notes }]);
+        answer = await callAI(system, [{ role: 'user', content: notes }]);
       }
-      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer })));
-      const chatIns = await sb.from('ai_chats').insert({ tool: 'summarizer', title: (notes || 'Photo of notes').slice(0, 60) }).select('id').single();
+
+      const resultNodes = [h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer }))];
+      if (kind === 'note') {
+        resultNodes.push(h('button', {
+          class: 'btn small', type: 'button', text: 'Save to a subject, chapter or topic',
+          onclick: () => openSaveNoteDialog(answer, (notes || 'Detailed note').slice(0, 60))
+        }));
+      }
+      result.replaceChildren(...resultNodes);
+
+      const label = pendingPhotos.length ? plural(pendingPhotos.length, 'page photo', 'page photos') : null;
+      const titleSrc = notes || (label ? label : 'Note');
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'summarizer', title: titleSrc.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
+      const userContent = (notes ? notes.slice(0, 2000) : '') + (label ? (notes ? '\n\n' : '') + '[' + label + ' attached]' : '');
       const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: notes ? notes.slice(0, 2000) : '[Photo of notes]', image_path: imagePath },
+        [{ chat_id: chatIns.data.id, role: 'user', content: userContent || '[Photo of notes]', image_path: imagePath },
          { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
       if (msgIns.error) throw msgIns.error;
       ta.value = '';
-      pendingPhoto = null; photoLabel.hidden = true; clearPhotoBtn.hidden = true;
+      pendingPhotos = []; syncPagesUI();
     } catch (e) {
-      err.textContent = (e && e.message) ? e.message : 'Could not summarize that. Try again.';
+      err.textContent = (e && e.message) ? e.message : 'Could not do that. Try again.';
       err.hidden = false;
     } finally {
-      goBtn.disabled = false; goBtn.textContent = 'Summarize';
+      goBtn.disabled = noteBtn.disabled = false;
+      goBtn.textContent = 'Summarize';
+      noteBtn.textContent = 'Create detailed note';
     }
-  });
+  }
+  goBtn.addEventListener('click', () => run('summary'));
+  noteBtn.addEventListener('click', () => run('note'));
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
-    h('p', { class: 'hint-line', text: 'Paste notes, or add a photo of them, to get a summary plus any formulas pulled out as a cheat sheet.' }),
+    h('p', { class: 'hint-line', text: 'Paste notes, or add up to ' + SUMMARIZER_MAX_PAGES + ' page photos, then either get a summary with formulas pulled out, or a detailed note you can save straight into a subject, chapter or topic.' }),
     h('div', { class: 'field' }, ta),
     h('div', { class: 'vault-actions' }, photoBtn, galleryBtn, cameraInput, galleryInput),
-    photoLabel, clearPhotoBtn, goBtn, err, result);
+    pagesLabel, clearPhotoBtn,
+    h('div', { class: 'vault-actions' }, goBtn, noteBtn),
+    err, result);
 }
 
 async function summarizerList() {
@@ -2937,9 +3001,70 @@ async function summarizerPast(chatId) {
   return { title: chatRes.data.title || 'Summary', nodes: [
     crumbs(crumb),
     src && src.image_path ? dlThumb(src.image_path) : null,
-    ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No summary saved.' }),
+    ans ? h('div', { class: 'chat-log' },
+            h('div', { class: 'bubble assistant', text: ans.content }))
+        : h('p', { class: 'none', text: 'No summary saved.' }),
+    ans ? h('button', { class: 'btn small', type: 'button', text: 'Save to a subject, chapter or topic',
+                         onclick: () => openSaveNoteDialog(ans.content, (chatRes.data.title || 'Note').slice(0, 60)) }) : null,
     editButton('Delete chat', () => confirmDeleteChat(chatId))
   ] };
+}
+
+// Cascading subject → chapter → topic picker, used to save AI-generated text
+// (e.g. the Summarizer's "Create detailed note") as a real Note item.
+async function openSaveNoteDialog(bodyText, suggestedTitle) {
+  let subjects = [];
+  try { subjects = must(await ordered(sb.from('subjects').select('*'))); } catch (e) { /* handled below */ }
+
+  showDialog({
+    title: 'Save as a note',
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField('Title (optional)', { value: suggestedTitle || '', maxlength: 120 });
+      const fSubject = h('select', { class: 'control' },
+        h('option', { value: '', text: subjects.length ? 'Choose a subject…' : 'No subjects yet' }),
+        subjects.map(s => h('option', { value: s.id, text: s.name })));
+      const fChapter = h('select', { class: 'control' }, h('option', { value: '', text: '— none (save at subject level) —' }));
+      const fTopic = h('select', { class: 'control' }, h('option', { value: '', text: '— none (save at chapter level) —' }));
+      fChapter.disabled = true; fTopic.disabled = true;
+
+      fSubject.addEventListener('change', async () => {
+        fChapter.replaceChildren(h('option', { value: '', text: '— none (save at subject level) —' }));
+        fTopic.replaceChildren(h('option', { value: '', text: '— none (save at chapter level) —' }));
+        fTopic.disabled = true;
+        if (!fSubject.value) { fChapter.disabled = true; return; }
+        fChapter.disabled = false;
+        const res = await ordered(sb.from('chapters').select('id, title').eq('subject_id', fSubject.value));
+        (res.data || []).forEach(c => fChapter.append(h('option', { value: c.id, text: c.title })));
+      });
+      fChapter.addEventListener('change', async () => {
+        fTopic.replaceChildren(h('option', { value: '', text: '— none (save at chapter level) —' }));
+        if (!fChapter.value) { fTopic.disabled = true; return; }
+        fTopic.disabled = false;
+        const res = await ordered(sb.from('topics').select('id, title').eq('chapter_id', fChapter.value));
+        (res.data || []).forEach(t => fTopic.append(h('option', { value: t.id, text: t.title })));
+      });
+
+      form.append(
+        fTitle.wrap,
+        h('div', { class: 'field' }, h('label', { text: 'Subject' }), fSubject),
+        h('div', { class: 'field' }, h('label', { text: 'Chapter' }), fChapter),
+        h('div', { class: 'field' }, h('label', { text: 'Topic' }), fTopic));
+
+      return () => {
+        if (!fSubject.value) throw new Error('Choose a subject.');
+        return {
+          title: fTitle.input.value.trim() || null,
+          subjectId: fSubject.value, chapterId: fChapter.value || null, topicId: fTopic.value || null
+        };
+      };
+    },
+    async onSubmit({ title, subjectId, chapterId, topicId }) {
+      const scope = { subjectId, chapterId, topicId };
+      const res = await sb.from('notes').insert({ ...scopeCols(scope), title, body: bodyText, kind: 'short_note', updated_at: new Date().toISOString() });
+      if (res.error) throw res.error;
+    }
+  });
 }
 
 /* ---------- Quiz Generator ----------
@@ -3138,28 +3263,23 @@ async function quizPast(chatId) {
   return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), node, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
 }
 
-/* ---------- Translator & Dictionary ---------- */
+/* ---------- Translator ---------- */
 // Uses Google Translate's own public web endpoint directly — the same one translate.google.com
 // calls — rather than Gemini (see https://share.google/IFudsH7n65R4shBqQ). No Gemini key needed.
 // This is an unofficial, undocumented endpoint: it can rate-limit or change shape without notice,
 // so a failed call surfaces a plain error instead of crashing the tool.
+// (Dictionary mode was removed — this now does translation only.)
 const BANGLA_RE = /[\u0980-\u09FF]/;
 
 async function callGoogleTranslate(text, sl, tl) {
   const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=' + encodeURIComponent(sl) +
-    '&tl=' + encodeURIComponent(tl) + '&dt=t&dt=bd&q=' + encodeURIComponent(text);
+    '&tl=' + encodeURIComponent(tl) + '&dt=t&q=' + encodeURIComponent(text);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error('Google Translate could not be reached (HTTP ' + resp.status + ').');
   const data = await resp.json();
   const translated = (data[0] || []).map(seg => seg[0]).filter(Boolean).join('');
-  let dictionary = [];
-  if (Array.isArray(data[1])) {
-    dictionary = data[1]
-      .map(entry => ({ pos: entry[0], terms: Array.isArray(entry[1]) ? entry[1].slice(0, 6) : [] }))
-      .filter(e => e.terms.length);
-  }
   if (!translated) throw new Error('Google Translate returned nothing for that text.');
-  return { translated, dictionary };
+  return translated;
 }
 
 function translatorHub(chatId) {
@@ -3167,17 +3287,13 @@ function translatorHub(chatId) {
 }
 
 function translatorPanel() {
-  let mode = 'translate', direction = 'auto';
-  const modeSeg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Mode' },
-    [['translate', 'Translate'], ['dictionary', 'Dictionary']].map(([k, l]) =>
-      h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { mode = k; syncMode(); } })));
+  let direction = 'auto';
   const dirSeg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Direction' },
     [['auto', 'Auto'], ['en2bn', 'En → Bn'], ['bn2en', 'Bn → En']].map(([k, l]) =>
       h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { direction = k; syncDir(); } })));
   const dirWrap = h('div', { class: 'field' }, h('label', { text: 'Direction' }), dirSeg);
-  const syncMode = () => modeSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === mode)));
   const syncDir = () => dirSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === direction)));
-  syncMode(); syncDir();
+  syncDir();
 
   const fText = makeField('Word, phrase or text', { multiline: true, rows: 3, placeholder: 'Type here…' });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Go' });
@@ -3197,20 +3313,16 @@ function translatorPanel() {
     goBtn.disabled = true; goBtn.textContent = 'Working…';
     try {
       const { sl, tl } = langsFor(text);
-      const { translated, dictionary } = await callGoogleTranslate(text, sl, tl);
-      const nodes = [h('div', { class: 'bubble assistant', text: translated })];
-      if (mode === 'dictionary' && dictionary.length) {
-        dictionary.forEach(e => nodes.push(h('p', { class: 'hint-line', text: (e.pos ? e.pos + ': ' : '') + e.terms.join(', ') })));
-      }
-      result.replaceChildren(h('div', { class: 'chat-log' }, nodes), h('p', { class: 'hint-line', text: 'Source: Google Translate' }));
+      const translated = await callGoogleTranslate(text, sl, tl);
+      result.replaceChildren(
+        h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: translated })),
+        h('p', { class: 'hint-line', text: 'Source: Google Translate' }));
 
-      const savedContent = translated + (dictionary.length
-        ? '\n\n' + dictionary.map(e => (e.pos ? e.pos + ': ' : '') + e.terms.join(', ')).join('\n') : '');
       const chatIns = await sb.from('ai_chats').insert({ tool: 'translate', title: text.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
       const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + mode + ' · ' + sl + '→' + tl + '] ' + text },
-         { chat_id: chatIns.data.id, role: 'assistant', content: savedContent }]);
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + sl + '→' + tl + '] ' + text },
+         { chat_id: chatIns.data.id, role: 'assistant', content: translated }]);
       if (msgIns.error) throw msgIns.error;
       fText.input.value = '';
     } catch (e) {
@@ -3222,8 +3334,7 @@ function translatorPanel() {
   });
 
   return h('section', { class: 'sec' },
-    h('div', { class: 'sec-head' }, h('h3', { text: 'New lookup' })),
-    h('div', { class: 'field' }, h('label', { text: 'Mode' }), modeSeg),
+    h('div', { class: 'sec-head' }, h('h3', { text: 'New translation' })),
     dirWrap, fText.wrap, goBtn, err, result,
     h('p', { class: 'hint-line', text: 'Powered by Google Translate.' }));
 }
@@ -3231,27 +3342,27 @@ function translatorPanel() {
 async function translatorList() {
   const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'translate').order('created_at', { ascending: false });
   const chats = must(res);
-  return { title: 'Translator & Dictionary', nodes: [
+  return { title: 'Translator', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
     translatorPanel(),
     ...(chats.length
-      ? [section('Past lookups', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/translate/' + c.id, c.title || 'Lookup', new Date(c.created_at).toLocaleString(), c.id))))]
-      : [h('p', { class: 'none', text: 'No lookups yet.' })])
+      ? [section('Past translations', null, null,
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/translate/' + c.id, c.title || 'Translation', new Date(c.created_at).toLocaleString(), c.id))))]
+      : [h('p', { class: 'none', text: 'No translations yet.' })])
   ] };
 }
 
 async function translatorPast(chatId) {
-  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Translator & Dictionary', href: '#ai/translate' }];
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Translator', href: '#ai/translate' }];
   const [chatRes, msgRes] = await Promise.all([
     sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
     sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
   ]);
-  if (chatRes.error) return { title: 'Translator & Dictionary', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
+  if (chatRes.error) return { title: 'Translator', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
   const msgs = must(msgRes);
   const src = msgs.find(m => m.role === 'user');
   const ans = msgs.find(m => m.role === 'assistant');
-  return { title: chatRes.data.title || 'Lookup', nodes: [
+  return { title: chatRes.data.title || 'Translation', nodes: [
     crumbs(crumb),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
     ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' }),
@@ -4170,6 +4281,93 @@ function openSimDialog(existing, presetCat) {
       route();
     },
     extra: existing ? { label: 'Delete simulation', onClick: () => confirmDeleteRow('saved_simulations', row, 'simulation', { after: () => go('#workspace/threed') }) } : null
+  });
+}
+
+/* ---------- YouTube hub: watch any video in-app, and save your favourites ----------
+   YouTube's own /embed/ endpoint sends permissive frame headers (unlike most other
+   sites — see section 14 of the blueprint), so unlike Portals/3D sim hub this plays
+   right inside the app instead of navigating away. */
+const YT_CRUMBS = [{ text: 'Workspace', href: '#workspace' }, { text: 'YouTube hub', href: '#workspace/youtube' }];
+
+async function ytHub(itemKey) {
+  if (itemKey) {
+    if (UUID.test(itemKey)) return savedVideoViewer(itemKey);
+    return go('#workspace/youtube');
+  }
+
+  let saved = [], savedError = null;
+  try { saved = must(await sb.from('saved_videos').select('*').order('created_at', { ascending: false })); }
+  catch (e) { savedError = e; }
+
+  const fUrl = makeField('YouTube link', { placeholder: 'https://www.youtube.com/watch?v=…' });
+  fUrl.input.type = 'url';
+  fUrl.input.setAttribute('autocapitalize', 'none');
+  const watchBtn = h('button', { class: 'btn small', type: 'button', text: 'Watch' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const playerBox = h('div');
+  const saveBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Save this video', hidden: true });
+  let currentUrl = '';
+
+  watchBtn.addEventListener('click', () => {
+    const url = fUrl.input.value.trim();
+    if (!url || !youtubeVideoId(url)) { err.textContent = 'Paste a valid YouTube link.'; err.hidden = false; return; }
+    err.hidden = true; currentUrl = url;
+    playerBox.replaceChildren(youtubePlayer(url));
+    saveBtn.hidden = false;
+  });
+  saveBtn.addEventListener('click', () => openSaveVideoDialog(null, currentUrl));
+
+  const mineBox = saved.length
+    ? h('div', { class: 'list' }, saved.map(r => linkRow({ href: '#workspace/youtube/' + r.id, title: r.title, meta: 'Saved video' })))
+    : h('p', { class: 'none', text: 'Nothing saved yet.' });
+
+  return { title: 'YouTube hub', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    section('Watch a video', null, null,
+      h('div', { class: 'field' }, fUrl.wrap), watchBtn, err, playerBox, saveBtn),
+    section('My videos', '+ Save a video', () => openSaveVideoDialog(null),
+      savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
+                     'Run the update SQL in Supabase (schema-update-3.2-youtube.sql), then reload.') : null,
+      mineBox)
+  ] };
+}
+
+async function savedVideoViewer(id) {
+  const row = must(await sb.from('saved_videos').select('*').eq('id', id).maybeSingle());
+  if (!row) return go('#workspace/youtube');
+  const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSaveVideoDialog(row) });
+  return { title: row.title, nodes: [crumbs(YT_CRUMBS), youtubePlayer(row.url), edit] };
+}
+
+function openSaveVideoDialog(existing, presetUrl) {
+  const row = existing || { url: presetUrl || '' };
+  showDialog({
+    title: existing ? 'Edit video' : 'Save a video',
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField('Title', { value: row.title || '', maxlength: 120, placeholder: 'e.g. Newton’s laws explained' });
+      const fUrl = makeField('Link', { value: row.url || '', placeholder: 'https://www.youtube.com/watch?v=…' });
+      fUrl.input.type = 'url';
+      fUrl.input.setAttribute('autocapitalize', 'none');
+      form.append(fTitle.wrap, fUrl.wrap);
+      return () => {
+        const title = fTitle.input.value.trim();
+        const url = fUrl.input.value.trim();
+        if (!title) throw new Error('Enter a title.');
+        if (!youtubeVideoId(url)) throw new Error('Enter a valid YouTube link.');
+        return { title, url: normalizeUrl(url) };
+      };
+    },
+    async onSubmit({ title, url }) {
+      const payload = { title, url };
+      const res = existing
+        ? await sb.from('saved_videos').update(payload).eq('id', row.id)
+        : await sb.from('saved_videos').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete video', onClick: () => confirmDeleteRow('saved_videos', row, 'video', { after: () => go('#workspace/youtube') }) } : null
   });
 }
 
