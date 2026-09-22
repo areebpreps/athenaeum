@@ -2235,10 +2235,174 @@ async function buildFullBackupZip(onStatus) {
     'WHAT IS NOT IN HERE\n' +
     '- Your Gemini API key. It lives only in this device\'s browser storage and is never uploaded to your account, so it can never appear in a backup.\n' +
     '- The actual bytes of your Reference Vault photos and PDFs — only their titles, type and storage path or link are listed. Use the Download Manager in the app for an offline copy of the files themselves.\n\n' +
-    'This is a read-only snapshot for safekeeping. There is no import/restore button — restoring means re-entering this data through the app, or directly in Supabase.'
+    'RESTORING\n' +
+    'Use "Restore from backup" on the Downloads tab and choose this ZIP. It adds every item back as a new row — it does not match or overwrite anything already in your account, so restoring into an account that already has data will duplicate it. Restore into the same account this backup came from: Reference Vault photos/PDFs will only reopen if that account\'s storage still has the original files (the backup never touched storage, only these JSON rows).'
   );
 
   return zip;
+}
+
+/* ---------- Restore from backup (post-4.2) ----------
+   The counterpart to buildFullBackupZip(): reads a previously downloaded
+   backup ZIP and re-inserts its rows through the normal Supabase client,
+   so the existing RLS policies and user_id defaults apply exactly as they
+   do for anything typed into the app. Every row is inserted fresh (no id
+   or user_id from the file is ever sent), so this ADDS the backup's data
+   rather than overwriting anything — running it twice, or into an account
+   that already has data, duplicates rows. Parent tables (subjects,
+   chapters, topics, ai_chats) are inserted one row at a time so each new
+   id can be captured and used to remap the children that reference it;
+   mistake_vault's quiz_chat_id is remapped the same way, and is left null
+   if that chat wasn't part of the backup. Reference Vault rows are
+   restored as metadata pointing at their original storage_path, which
+   only resolves to a real file if this is the same account the backup
+   came from and that file hasn't been deleted since. */
+function stripBackupRow(row) {
+  const { id, user_id, origin, ...rest } = row;
+  return rest;
+}
+
+// Inserts rows one at a time (so each new id can be captured), optionally
+// remapping foreign keys first via remap(strippedRow) => payload | null
+// (null skips the row, e.g. its parent failed or wasn't in the backup).
+async function insertMappedRows(table, rows, remap) {
+  const idMap = {};
+  let ok = 0, skipped = 0, failed = 0;
+  for (const row of rows || []) {
+    let payload;
+    try {
+      const stripped = stripBackupRow(row);
+      payload = remap ? remap(stripped) : stripped;
+    } catch (e) { payload = null; }
+    if (payload === null) { skipped++; continue; }
+    try {
+      const res = await sb.from(table).insert(payload).select('id').single();
+      if (res.error) throw res.error;
+      if (row.id) idMap[row.id] = res.data.id;
+      ok++;
+    } catch (e) { failed++; }
+  }
+  return { idMap, ok, skipped, failed };
+}
+
+async function restoreBackupZip(file, onStatus) {
+  const say = m => { if (onStatus) onStatus(m); };
+  if (!window.JSZip) throw new Error('The ZIP library did not load. Check your connection and try again.');
+
+  say('Reading the ZIP…');
+  const zip = await JSZip.loadAsync(file);
+  async function readJSON(path, fallback) {
+    const f = zip.file(path);
+    if (!f) return fallback;
+    try { return JSON.parse(await f.async('string')); } catch (e) { return fallback; }
+  }
+
+  const report = {};
+
+  say('Restoring subjects…');
+  report.subjects = await insertMappedRows('subjects', await readJSON('workspace/subjects.json', []));
+
+  say('Restoring chapters…');
+  report.chapters = await insertMappedRows('chapters', await readJSON('workspace/chapters.json', []), row => {
+    const subject_id = report.subjects.idMap[row.subject_id];
+    if (!subject_id) return null;
+    return { ...row, subject_id };
+  });
+
+  say('Restoring topics…');
+  report.topics = await insertMappedRows('topics', await readJSON('workspace/topics.json', []), row => {
+    const chapter_id = report.chapters.idMap[row.chapter_id];
+    if (!chapter_id) return null;
+    return { ...row, chapter_id };
+  });
+
+  // Shared remap for every table scoped with subject_id/chapter_id/topic_id
+  // (notes, formulas, mnemonics, info_boxes, traps, sources, mistake_vault).
+  // A row saved at subject or chapter level has null chapter_id/topic_id —
+  // those stay null rather than being dropped; only a *set* id that fails
+  // to map (its parent wasn't restored) skips the row.
+  const remapScope = row => {
+    const out = { ...row };
+    if (out.subject_id) {
+      out.subject_id = report.subjects.idMap[out.subject_id];
+      if (!out.subject_id) return null;
+    }
+    if (out.chapter_id) {
+      out.chapter_id = report.chapters.idMap[out.chapter_id] || null;
+      if (!out.chapter_id) return null;
+    }
+    if (out.topic_id) {
+      out.topic_id = report.topics.idMap[out.topic_id] || null;
+      if (!out.topic_id) return null;
+    }
+    return out;
+  };
+
+  say('Restoring notes, formulas and mnemonics…');
+  report.notes = await insertMappedRows('notes', await readJSON('workspace/notes.json', []), remapScope);
+  report.formulas = await insertMappedRows('formulas', await readJSON('workspace/formulas.json', []), remapScope);
+  report.mnemonics = await insertMappedRows('mnemonics', await readJSON('workspace/mnemonics.json', []), remapScope);
+
+  say('Restoring info boxes and traps…');
+  report.info_boxes = await insertMappedRows('info_boxes', await readJSON('workspace/info_boxes.json', []), remapScope);
+  report.traps = await insertMappedRows('traps', await readJSON('workspace/traps.json', []), remapScope);
+
+  say('Restoring Reference Vault entries…');
+  report.sources = await insertMappedRows('sources', await readJSON('reference_vault.json', []), remapScope);
+
+  say('Restoring saved simulations and videos…');
+  report.saved_simulations = await insertMappedRows('saved_simulations', await readJSON('workspace/saved_simulations.json', []));
+  report.saved_videos = await insertMappedRows('saved_videos', await readJSON('workspace/saved_videos.json', []));
+
+  say('Restoring your planner and projects…');
+  const plannerObj = await readJSON('planner.json', { planner_items: [], projects: [] });
+  report.planner_items = await insertMappedRows('planner_items', plannerObj.planner_items || []);
+  report.projects = await insertMappedRows('projects', plannerObj.projects || []);
+
+  say('Restoring AI chat history…');
+  const chatsWithMsgs = await readJSON('ai/chats.json', []);
+  report.ai_chats = await insertMappedRows('ai_chats', chatsWithMsgs.map(({ messages, ...rest }) => rest));
+  const allMsgs = [];
+  chatsWithMsgs.forEach(c => (c.messages || []).forEach(m => allMsgs.push(m)));
+  report.ai_messages = await insertMappedRows('ai_messages', allMsgs, row => {
+    const chat_id = report.ai_chats.idMap[row.chat_id];
+    if (!chat_id) return null;
+    return { ...row, chat_id };
+  });
+
+  say('Restoring the Mistake Vault…');
+  report.mistake_vault = await insertMappedRows('mistake_vault', await readJSON('progress/mistake_vault.json', []), row => {
+    const out = remapScope(row);
+    if (out === null) return null;
+    if (out.quiz_chat_id) out.quiz_chat_id = report.ai_chats.idMap[out.quiz_chat_id] || null;
+    return out;
+  });
+
+  return report;
+}
+
+const RESTORE_LABEL = {
+  subjects: 'Subjects', chapters: 'Chapters', topics: 'Topics', notes: 'Notes',
+  formulas: 'Formulas', mnemonics: 'Mnemonics', info_boxes: 'Info boxes', traps: 'Traps',
+  sources: 'Reference Vault entries', saved_simulations: 'Saved simulations', saved_videos: 'Saved videos',
+  planner_items: 'Planner items', projects: 'Projects', ai_chats: 'AI chats', ai_messages: 'AI messages',
+  mistake_vault: 'Mistake Vault entries'
+};
+
+function restoreSummary(report) {
+  const totalOk = Object.values(report).reduce((s, r) => s + r.ok, 0);
+  const totalSkipped = Object.values(report).reduce((s, r) => s + r.skipped, 0);
+  const totalFailed = Object.values(report).reduce((s, r) => s + r.failed, 0);
+  const lines = Object.keys(RESTORE_LABEL)
+    .filter(k => report[k] && (report[k].ok || report[k].skipped || report[k].failed))
+    .map(k => {
+      const r = report[k];
+      let line = RESTORE_LABEL[k] + ': ' + plural(r.ok, 'added', 'added');
+      if (r.skipped) line += ', ' + r.skipped + ' skipped';
+      if (r.failed) line += ', ' + r.failed + ' failed';
+      return line;
+    });
+  return { totalOk, totalSkipped, totalFailed, lines };
 }
 
 function backupPanel() {
@@ -2268,10 +2432,55 @@ function backupPanel() {
     }
   });
 
+  const restoreBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Restore from backup (.zip)' });
+  const fileInput = h('input', { type: 'file', accept: '.zip', hidden: true });
+  const rStatus = h('p', { class: 'hint-line', hidden: true });
+  const rErr = h('p', { class: 'msg err', hidden: true });
+
+  restoreBtn.addEventListener('click', () => { fileInput.value = ''; fileInput.click(); });
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    rErr.hidden = true; rStatus.hidden = true;
+    showDialog({
+      title: 'Restore from ' + file.name + '?',
+      text: 'This adds everything in the backup as new items — it does not overwrite or match up with anything already in your account, so restoring into an account that already has data will duplicate it. Reference Vault photos and PDFs only reopen correctly if this is the same account the backup came from. This cannot be undone automatically.',
+      submitLabel: 'Restore',
+      onSubmit() {
+        rErr.hidden = true;
+        rStatus.hidden = false; rStatus.textContent = 'Starting…';
+        restoreBtn.disabled = true;
+        restoreBackupZip(file, m => { rStatus.textContent = m; })
+          .then(report => {
+            const sum = restoreSummary(report);
+            rStatus.textContent = plural(sum.totalOk, 'item', 'items') + ' restored' +
+              (sum.totalSkipped ? ', ' + sum.totalSkipped + ' skipped' : '') +
+              (sum.totalFailed ? ', ' + sum.totalFailed + ' failed' : '') + '.';
+            if (sum.totalFailed || sum.totalSkipped) {
+              rErr.hidden = false;
+              rErr.textContent = sum.lines.join(' · ');
+            }
+            restoreBtn.disabled = false;
+            route();
+          })
+          .catch(e => {
+            restoreBtn.disabled = false;
+            rStatus.hidden = true;
+            rErr.hidden = false;
+            rErr.textContent = (e && e.message) ? e.message : 'Could not read that ZIP. Make sure it is an Athenaeum backup file.';
+          });
+      }
+    });
+  });
+
   return section('Backup', null, null,
     h('p', { class: 'hint-line', text: 'A one-click export of your whole account — subjects, notes, planner, Mistake Vault and AI chat history — as a ZIP of JSON files. Your Gemini key and the actual photo/PDF files are never included.' }),
     h('div', { class: 'edit-row' }, btn),
-    status, err);
+    status, err,
+    h('p', { class: 'hint-line', text: 'Restoring adds a backup\'s items back to your account as new rows; it does not overwrite existing data.' }),
+    h('div', { class: 'edit-row' }, restoreBtn, fileInput),
+    rStatus, rErr);
 }
 
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
