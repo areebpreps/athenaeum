@@ -202,6 +202,7 @@
   .btn.danger { background: var(--err); color: #2A0A0A; }
   .btn.quiet.danger-text { color: var(--err); }
   #forgot-btn { margin-top: 10px; }
+  .divider { border: none; border-top: 1px solid var(--line); margin: 18px 0; }
   .loading, .none { color: var(--dim); margin: 0; }
   .none { padding: 4px 2px; }
 
@@ -2508,18 +2509,29 @@ async function buildWorkspaceRoot() {
    ===================================================================== */
 const AI_KEYS = {
   geminiKey:   'aw.ai.gemini.key',
-  geminiModel: 'aw.ai.gemini.model'
+  geminiModel: 'aw.ai.gemini.model',
+  searchKey:   'aw.ai.search.key',
+  searchCx:    'aw.ai.search.cx'
 };
 
 function aiSettings() {
   return {
     geminiKey:   store.get(AI_KEYS.geminiKey)   || '',
-    geminiModel: store.get(AI_KEYS.geminiModel) || ''
+    geminiModel: store.get(AI_KEYS.geminiModel) || '',
+    searchKey:   store.get(AI_KEYS.searchKey)   || '',
+    searchCx:    store.get(AI_KEYS.searchCx)    || ''
   };
 }
 function aiConfigured() {
   const s = aiSettings();
   return !!(s.geminiKey && s.geminiModel);
+}
+// True once both search credentials are saved — an independent, separately-
+// quota'd way to fetch live results, instead of relying on Gemini's own
+// google_search tool (which shares a much smaller, often-zero free quota).
+function searchConfigured() {
+  const s = aiSettings();
+  return !!(s.searchKey && s.searchCx);
 }
 
 const GEMINI_MODEL_RE = /^[a-zA-Z0-9._-]+$/;
@@ -2528,6 +2540,27 @@ const GEMINI_MODEL_RE = /^[a-zA-Z0-9._-]+$/;
 // and cleans them up rather than sending a request Gemini will reject outright.
 function normalizeGeminiModel(raw) {
   return (raw || '').trim().replace(/^["']|["']$/g, '').replace(/^models\//, '');
+}
+
+// Google Programmable Search Engine (Custom Search JSON API): a free,
+// independently-quota'd way to get live results (100 searches/day free),
+// called straight from the browser. Separate entirely from Gemini's own
+// google_search grounding tool, which shares a different, much stingier quota.
+// Returns up to 5 {title, snippet, link} results, or [] if unset/failed
+// (callers should treat that as "no live results available" and fall back).
+async function webSearchSnippets(query) {
+  const s = aiSettings();
+  if (!s.searchKey || !s.searchCx) return [];
+  const url = 'https://www.googleapis.com/customsearch/v1?key=' + encodeURIComponent(s.searchKey) +
+              '&cx=' + encodeURIComponent(s.searchCx) + '&num=5&q=' + encodeURIComponent(query);
+  try {
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return [];
+    return (data.items || []).map(it => ({ title: it.title, snippet: it.snippet, link: it.link }));
+  } catch (e) {
+    return []; // network hiccup — caller falls back to an ungrounded answer
+  }
 }
 
 /* ---------- provider caller ----------
@@ -2656,6 +2689,10 @@ function aiSettingsPage() {
   const fGeminiModel = makeField('Gemini model name', { value: s.geminiModel, placeholder: 'e.g. gemini-2.5-flash' });
   fGeminiKey.input.type = 'password'; fGeminiKey.input.autocomplete = 'off';
 
+  const fSearchKey = makeField('Search API key (optional)', { value: s.searchKey, placeholder: 'Paste your Google Cloud API key' });
+  const fSearchCx  = makeField('Search engine ID (optional)', { value: s.searchCx, placeholder: 'Paste your Programmable Search Engine ID' });
+  fSearchKey.input.type = 'password'; fSearchKey.input.autocomplete = 'off';
+
   const msg = h('div', { class: 'msg', hidden: true });
   const showMsgLocal = (text, kind) => { msg.className = 'msg ' + kind; msg.textContent = text; msg.hidden = false; };
 
@@ -2665,8 +2702,11 @@ function aiSettingsPage() {
       const gKey = fGeminiKey.input.value.trim(), gModel = normalizeGeminiModel(fGeminiModel.input.value);
       if (!gKey || !gModel) return showMsgLocal('Enter both a Gemini key and a model name.', 'err');
       if (!GEMINI_MODEL_RE.test(gModel)) return showMsgLocal('That model name looks off — paste just the id, e.g. gemini-2.5-flash, with no extra text.', 'err');
+      const sKey = fSearchKey.input.value.trim(), sCx = fSearchCx.input.value.trim();
       store.set(AI_KEYS.geminiKey, gKey);
       store.set(AI_KEYS.geminiModel, gModel);
+      store.set(AI_KEYS.searchKey, sKey);
+      store.set(AI_KEYS.searchCx, sCx);
       fGeminiModel.input.value = gModel;
       showMsgLocal('Saved.', 'ok');
     }
@@ -2676,12 +2716,19 @@ function aiSettingsPage() {
     h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://ai.google.dev/gemini-api/docs/models', text: 'Check the model list ↗' }),
     fGeminiModel.wrap,
     h('p', { class: 'hint-line', text: 'Free at Google AI Studio. Paste the model id exactly as it appears on the model list — no spaces, no "models/" prefix.' }),
+    h('hr', { class: 'divider' }),
+    h('p', { class: 'hint-line', text: 'Optional: add a Programmable Search Engine so Fact Checker can look up current info directly (100 free searches/day), instead of relying on Gemini\'s own search grounding, which is often unavailable on free-tier keys.' }),
+    h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://programmablesearchengine.google.com/controlpanel/create', text: 'Create a search engine ↗' }),
+    fSearchCx.wrap,
+    h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://console.cloud.google.com/apis/credentials', text: 'Get an API key ↗' }),
+    fSearchKey.wrap,
+    h('p', { class: 'hint-line', text: 'When creating the search engine, turn on "Search the entire web". The API key needs the Custom Search API enabled in the same Google Cloud project.' }),
     msg,
     h('button', { class: 'btn', type: 'submit', text: 'Save' }));
 
   return { title: 'Settings', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    h('p', { class: 'provider-note', text: 'Your key stays on this device only — never synced to your account, never in the backup file.' }),
+    h('p', { class: 'provider-note', text: 'Your keys stay on this device only — never synced to your account, never in the backup file.' }),
     form
   ] };
 }
@@ -2987,33 +3034,86 @@ async function solverPast(chatId) {
 
 /* ---------- Fact Checker ----------
    Single-shot: a claim (text and/or a photo of one) in, a verdict out.
-   Grounded in live Google Search results (via Gemini's google_search tool),
-   so verdicts on current events, office-holders, or anything time-sensitive
-   reflect what's true now rather than the model's frozen training data. */
-const FACTCHECK_SYSTEM =
+   Tries a live-grounded check first (Gemini's google_search tool), so verdicts
+   on current events/office-holders/etc. reflect what's true now. Google Search
+   grounding runs on its own quota that reads zero on many free-tier keys, so if
+   that specific call is quota-exhausted, this falls back to an ungrounded
+   answer (the model's own knowledge) rather than failing outright, and marks
+   the result so it's clear it wasn't checked against live info. */
+const FACTCHECK_SYSTEM_GROUNDED =
   'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. You have a ' +
   'Google Search tool — use it whenever the claim depends on current events, office-holders, dates, scores, prices, or anything ' +
   'that could have changed since your training data; answer purely-timeless factual or conceptual claims directly. Reply in plain ' +
   'text, no markdown. The very first line must be exactly one of these three words: True, False, or Partially true. Then, on the ' +
   'next lines, a short explanation (2-4 sentences) of why.';
+const FACTCHECK_SYSTEM_UNGROUNDED =
+  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. Live search ' +
+  'is unavailable right now, so answer from your own knowledge, and if the claim depends on something that may have changed ' +
+  'recently (current events, office-holders, etc.), say so plainly instead of guessing confidently. Reply in plain text, no ' +
+  'markdown. The very first line must be exactly one of these three words: True, False, or Partially true. Then, on the next ' +
+  'lines, a short explanation (2-4 sentences) of why.';
+
+function isQuotaError(e) {
+  const msg = ((e && e.message) || '').toLowerCase();
+  return msg.includes('resource_exhausted') || msg.includes('exceeded your current quota') || msg.includes('quota');
+}
+
+const FACTCHECK_SYSTEM_SEARCHED =
+  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim (as text and/or in a photo) plus a set ' +
+  'of live web search results for it. Weigh the claim against those results — they may be incomplete or off-topic, so use ' +
+  'judgment and fall back on your own knowledge where the results don\'t help. Reply in plain text, no markdown. The very first ' +
+  'line must be exactly one of these three words: True, False, or Partially true. Then, on the next lines, a short explanation ' +
+  '(2-4 sentences) of why.';
 
 async function callAIFactCheck(claimText, imageB64, mime) {
   const s = aiSettings();
   if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
   const parts = [];
-  if (claimText) parts.push({ text: claimText });
-  if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
-  return callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }], [{ google_search: {} }]);
+
+  // Preferred path: an independently-quota'd live search (Google Programmable
+  // Search Engine, 100 free/day), fed to Gemini as plain context — sidesteps
+  // Gemini's own grounding tool entirely, so it isn't subject to that quota.
+  if (claimText && searchConfigured()) {
+    const results = await webSearchSnippets(claimText);
+    if (results.length) {
+      const context = results.map((r, i) => (i + 1) + '. ' + r.title + ' — ' + r.snippet + ' (' + r.link + ')').join('\n');
+      parts.push({ text: 'Claim: ' + claimText + '\n\nSearch results:\n' + context });
+      if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
+      const answer = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_SEARCHED, [{ role: 'user', parts }]);
+      return { answer, grounded: true };
+    }
+    // No results (quota hit, network issue, or genuinely nothing found) — fall through below.
+  }
+
+  const plainParts = [];
+  if (claimText) plainParts.push({ text: claimText });
+  if (imageB64) plainParts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
+
+  try {
+    const answer = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_GROUNDED, [{ role: 'user', parts: plainParts }], [{ google_search: {} }]);
+    return { answer, grounded: true };
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    // Grounding quota exhausted (common on free-tier keys) — fall back rather than fail outright.
+    const answer = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_UNGROUNDED, [{ role: 'user', parts: plainParts }]);
+    return { answer, grounded: false };
+  }
 }
 
 // Renders the verdict word as a coloured status card (reuses the .status
 // card the app already uses for error states) followed by the explanation.
-function verdictBadge(answer) {
+// content may be prefixed with an "[UNGROUNDED]" marker line (added when the
+// live-search fallback kicked in) — that's stripped out and shown as a note.
+function verdictBadge(content) {
+  let answer = content, ungrounded = false;
+  if (/^\[UNGROUNDED\]\n/.test(answer)) { ungrounded = true; answer = answer.replace(/^\[UNGROUNDED\]\n/, ''); }
   const m = answer.match(/^(True|False|Partially true)\s*/i);
   const word = m ? m[0].trim() : 'Result';
   const rest = m ? answer.slice(m[0].length).trim() : answer;
   const kind = /^false$/i.test(word) ? 'bad' : /^true$/i.test(word) ? 'good' : '';
-  return h('div', { class: 'status ' + kind }, h('strong', { text: word }), rest);
+  return h('div', {},
+    h('div', { class: 'status ' + kind }, h('strong', { text: word }), rest),
+    ungrounded ? h('p', { class: 'hint-line', text: 'Live search quota was unavailable — this was checked from the model\'s own knowledge, not live info.' }) : null);
 }
 
 function factcheckHub(chatId) {
@@ -3049,8 +3149,9 @@ function factcheckPanel() {
         mime = blob.type || 'image/jpeg';
         b64 = await blobToBase64(blob);
       }
-      const answer = await callAIFactCheck(claim, b64, mime);
-      result.replaceChildren(verdictBadge(answer));
+      const { answer, grounded } = await callAIFactCheck(claim, b64, mime);
+      const stored = (grounded ? '' : '[UNGROUNDED]\n') + answer;
+      result.replaceChildren(verdictBadge(stored));
 
       if (blob) { try { imagePath = await uploadToolImage('factcheck', blob); } catch (e) { /* non-fatal */ } }
 
@@ -3058,7 +3159,7 @@ function factcheckPanel() {
       if (chatIns.error) throw chatIns.error;
       const msgIns = await sb.from('ai_messages').insert(
         [{ chat_id: chatIns.data.id, role: 'user', content: claim || '[Photo claim]', image_path: imagePath },
-         { chat_id: chatIns.data.id, role: 'assistant', content: answer }]);
+         { chat_id: chatIns.data.id, role: 'assistant', content: stored }]);
       if (msgIns.error) throw msgIns.error;
 
       ta.value = ''; pickedFile = null; fileInput.value = ''; photoLabel.hidden = true;
