@@ -91,7 +91,7 @@
   }
   .control::placeholder { color: #6E7794; }
   .control:focus { border-color: var(--marker); outline: none; box-shadow: 0 0 0 3px rgba(243,201,85,.25); }
-  /* custom major picker (replaces the native select, which cannot be themed on Android) */
+  /* custom picker styles (replaces the native select, which cannot be themed on Android) */
   .picker-btn { display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; cursor: pointer; }
   .picker-btn .chev { width: 20px; height: 20px; flex: none; color: var(--dim); }
   .picker-btn .placeholder { color: #6E7794; }
@@ -201,6 +201,7 @@
   .btn.small { width: auto; min-height: 44px; padding: 0 16px; font-size: 15px; border-radius: 12px; }
   .btn.danger { background: var(--err); color: #2A0A0A; }
   .btn.quiet.danger-text { color: var(--err); }
+  #forgot-btn { margin-top: 10px; }
   .loading, .none { color: var(--dim); margin: 0; }
   .none { padding: 4px 2px; }
 
@@ -469,11 +470,10 @@
 
   <form id="auth-form" novalidate>
     <div class="field">
-      <label for="username">Username</label>
-      <input class="control" id="username" name="username" type="text" inputmode="text"
-             autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
-             placeholder="e.g. areeb_2026" maxlength="30">
-      <div class="hint" id="username-hint" hidden>3 to 30 characters: letters, numbers and underscores.</div>
+      <label for="email">Email</label>
+      <input class="control" id="email" name="email" type="email" inputmode="email"
+             autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false"
+             placeholder="you@example.com">
     </div>
 
     <div class="field">
@@ -486,17 +486,30 @@
       <div class="hint" id="password-hint" hidden>At least 8 characters.</div>
     </div>
 
-    <div class="field">
-      <label id="major-label" for="major-btn">Academic major</label>
-      <input type="hidden" id="major" name="major" value="">
-      <button type="button" class="control picker-btn" id="major-btn" aria-haspopup="dialog" aria-labelledby="major-label major-btn-text">
-        <span id="major-btn-text" class="placeholder">Select your major</span>
-        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      <div class="hint" id="major-hint">Choose the same major every time you log in.</div>
-    </div>
-
     <button class="btn" id="auth-submit" type="submit">Log in</button>
+    <button class="btn quiet small" id="forgot-btn" type="button">Forgot password?</button>
+  </form>
+
+  <form id="reset-form" novalidate hidden>
+    <p class="hint-line">We'll email you a link to reset your password.</p>
+    <div class="field">
+      <label for="reset-email">Email</label>
+      <input class="control" id="reset-email" name="reset-email" type="email" inputmode="email"
+             autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false"
+             placeholder="you@example.com">
+    </div>
+    <button class="btn" id="reset-submit" type="submit">Send reset link</button>
+    <button class="btn quiet small" id="reset-cancel" type="button">Back to log in</button>
+  </form>
+
+  <form id="newpw-form" novalidate hidden>
+    <p class="hint-line">Choose a new password for your account.</p>
+    <div class="field">
+      <label for="newpw">New password</label>
+      <input class="control" id="newpw" name="newpw" type="password" autocomplete="new-password" placeholder="At least 8 characters">
+      <div class="hint">At least 8 characters.</div>
+    </div>
+    <button class="btn" id="newpw-submit" type="submit">Set new password</button>
   </form>
 </section>
 
@@ -534,16 +547,6 @@
   </nav>
 </section>
 
-<div class="scrim picker-scrim" id="major-picker" hidden>
-  <div class="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title">
-    <div class="picker-head">
-      <h3 id="picker-title">Academic major</h3>
-      <button type="button" class="picker-close" id="picker-close">Close</button>
-    </div>
-    <ul class="picker-list" id="major-list" role="radiogroup" aria-labelledby="picker-title"></ul>
-  </div>
-</div>
-
 <div class="scrim" id="dialog" hidden>
   <form class="sheet form-sheet" id="dialog-form" role="dialog" aria-modal="true" aria-labelledby="dialog-title" novalidate></form>
 </div>
@@ -580,25 +583,10 @@
 const CONFIG = {
   SUPABASE_URL:      'https://vzbkgfcvmpmgxhxilzdg.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_SQeATP_IzDUg46BmV2uZ0Q_eVAIL9Sr',
-  // Usernames become internal emails like  areeb_2026@academic-workspace.app
-  AUTH_EMAIL_DOMAIN: 'academic-workspace.app',
   // Phase 3.1 portal embed.
   PORTAL_CHORCHA_URL: 'https://chorcha.net/question-bank'
 };
 
-const MAJORS = [
-  'Accounting','Aerospace Engineering','Anthropology','Architecture','Art History','Astronomy',
-  'Biochemistry','Biology','Biomedical Engineering','Business Administration','Chemical Engineering',
-  'Chemistry','Civil Engineering','Communications','Computer Engineering','Computer Science',
-  'Criminology','Data Science','Economics','Education','Electrical Engineering','English Literature',
-  'Environmental Science','Finance','Geology','Graphic Design','History','Human Resource Management',
-  'Industrial Engineering','Information Technology','International Relations','Journalism','Law',
-  'Linguistics','Marketing','Materials Science','Mathematics','Mechanical Engineering','Medicine',
-  'Music','Nursing','Nutrition','Pharmacy','Philosophy','Physics','Political Science','Psychology',
-  'Public Health','Sociology','Statistics'
-];
-
-const VERIFIED_KEY = 'aw.verifiedUser';   // set only after the server accepts the major
 const TABS = {
   workspace: { title: 'General workspace' },
   subjects:  { title: 'Subjects' },
@@ -643,66 +631,9 @@ function showMsg(text, kind = 'err') {
   el.hidden = false;
 }
 
-function emailFor(username) { return username + '@' + CONFIG.AUTH_EMAIL_DOMAIN; }
 function usernameFrom(user) { return (user.email || '').split('@')[0]; }
 
-function minutesUntil(iso) {
-  const ms = new Date(iso).getTime() - Date.now();
-  return Math.max(1, Math.ceil(ms / 60000));
-}
-
 /* ---------- login screen ---------- */
-function buildMajorList() {
-  const list = $('#major-list');
-  MAJORS.forEach(m => {
-    const li = document.createElement('li');
-    li.setAttribute('role', 'presentation');
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'opt';
-    b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', 'false');
-    b.dataset.major = m;
-    const t = document.createElement('span'); t.textContent = m;
-    const d = document.createElement('span'); d.className = 'dot'; d.setAttribute('aria-hidden', 'true');
-    b.append(t, d);
-    li.appendChild(b);
-    list.appendChild(li);
-  });
-  list.addEventListener('click', e => {
-    const b = e.target.closest('.opt');
-    if (b) chooseMajor(b.dataset.major);
-  });
-}
-
-function openPicker() {
-  const picker = $('#major-picker');
-  picker.hidden = false;
-  const current = $('#major').value;
-  let target = null;
-  picker.querySelectorAll('.opt').forEach(b => {
-    const on = b.dataset.major === current;
-    b.setAttribute('aria-checked', String(on));
-    if (on) target = b;
-  });
-  target = target || picker.querySelector('.opt');
-  target.scrollIntoView({ block: 'center' });
-  target.focus({ preventScroll: true });
-}
-
-function closePicker(restoreFocus = true) {
-  const picker = $('#major-picker');
-  if (picker.hidden) return;
-  picker.hidden = true;
-  if (restoreFocus) $('#major-btn').focus();
-}
-
-function chooseMajor(m) {
-  $('#major').value = m;
-  const label = $('#major-btn-text');
-  label.textContent = m;
-  label.classList.remove('placeholder');
-  closePicker();
-}
-
 function setMode(next) {
   mode = next;
   const signup = next === 'signup';
@@ -710,11 +641,14 @@ function setMode(next) {
   $('#mode-signup').setAttribute('aria-pressed', String(signup));
   $('#auth-submit').textContent = signup ? 'Create account' : 'Log in';
   $('#password').autocomplete = signup ? 'new-password' : 'current-password';
-  $('#username-hint').hidden = !signup;
   $('#password-hint').hidden = !signup;
-  $('#major-hint').textContent = signup
-    ? 'Remember this one. You must pick the same major at every login.'
-    : 'Choose the same major every time you log in.';
+  showMsg('');
+}
+
+function showAuthForm(which) {
+  $('#auth-form').hidden = which !== 'login';
+  $('#reset-form').hidden = which !== 'reset';
+  $('#newpw-form').hidden = which !== 'newpw';
   showMsg('');
 }
 
@@ -728,10 +662,12 @@ function setBusy(busy) {
 function friendlyAuthError(error) {
   const code = error.code || '';
   const msg  = (error.message || '').toLowerCase();
-  if (code === 'user_already_exists' || msg.includes('already registered')) return 'That username is taken. Pick another one.';
-  if (code === 'email_address_invalid') return 'Supabase rejected the internal email for this username. Change AUTH_EMAIL_DOMAIN in the CONFIG block.';
+  if (code === 'user_already_exists' || msg.includes('already registered')) return 'An account with that email already exists. Log in instead, or reset your password.';
+  if (code === 'email_address_invalid') return 'That doesn\'t look like a valid email address.';
   if (code === 'weak_password') return 'That password is too weak. Use at least 8 characters with a mix of letters and numbers.';
   if (code === 'signup_disabled') return 'Sign-ups are turned off in your Supabase project (Authentication settings).';
+  if (code === 'invalid_credentials' || msg.includes('invalid login credentials')) return 'Wrong email or password.';
+  if (code === 'email_not_confirmed' || msg.includes('email not confirmed')) return 'Please verify your email first — check your inbox for the confirmation link.';
   if (code.includes('rate_limit') || msg.includes('rate limit')) return 'Too many attempts. Wait a few minutes and try again.';
   if (msg.includes('failed to fetch') || msg.includes('network')) return 'Cannot reach the server. Check your internet connection.';
   return 'Something went wrong: ' + error.message;
@@ -741,21 +677,17 @@ async function submitAuth(evt) {
   evt.preventDefault();
   showMsg('');
 
-  const username = $('#username').value.trim().toLowerCase();
+  const email    = $('#email').value.trim();
   const password = $('#password').value;
-  const major    = $('#major').value;
 
-  if (!/^[a-z0-9_]{3,30}$/.test(username)) {
-    return showMsg('Username must be 3 to 30 characters: letters, numbers and underscores only.');
-  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showMsg('Enter a valid email address.');
   if (!password) return showMsg('Enter your password.');
   if (mode === 'signup' && password.length < 8) return showMsg('Use a password with at least 8 characters.');
-  if (!major) return showMsg('Select your academic major.');
 
   setBusy(true);
   try {
-    if (mode === 'signup') await doSignup(username, password, major);
-    else                   await doLogin(username, password, major);
+    if (mode === 'signup') await doSignup(email, password);
+    else                   await doLogin(email, password);
   } catch (err) {
     showMsg(friendlyAuthError(err));
   } finally {
@@ -763,57 +695,61 @@ async function submitAuth(evt) {
   }
 }
 
-async function doSignup(username, password, major) {
-  const { data, error } = await sb.auth.signUp({ email: emailFor(username), password });
+async function doSignup(email, password) {
+  const { data, error } = await sb.auth.signUp({
+    email, password,
+    options: { emailRedirectTo: location.origin + location.pathname }
+  });
   if (error) return showMsg(friendlyAuthError(error));
 
   if (!data.session) {
-    return showMsg('Account created, but Supabase is asking for email confirmation. In Supabase open Authentication, then Sign In / Providers, then Email, and turn off "Confirm email". After that, log in.');
+    return showMsg('Account created — check your email for a verification link, then log in.', 'ok');
   }
-
-  const { error: rpcErr } = await sb.rpc('register_major', { p_major: major });
-  if (rpcErr) {
-    await sb.auth.signOut();
-    return showMsg('Account created, but saving your major failed: ' + rpcErr.message + '. Log in again to retry.');
-  }
-  store.set(VERIFIED_KEY, data.user.id);
   enterApp(data.user);
 }
 
-async function doLogin(username, password, major) {
-  const { data, error } = await sb.auth.signInWithPassword({ email: emailFor(username), password });
-  if (error) {
-    const msg = (error.message || '').toLowerCase();
-    if (msg.includes('failed to fetch') || msg.includes('network')) return showMsg(friendlyAuthError(error));
-    // one generic message on purpose: do not reveal which detail was wrong
-    return showMsg('Those details did not match. Check your username, password and major.');
-  }
+async function doLogin(email, password) {
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) return showMsg(friendlyAuthError(error));
+  enterApp(data.user);
+}
 
-  const uid = data.user.id;
-  let { data: res, error: rpcErr } = await sb.rpc('verify_major', { p_major: major });
-  if (rpcErr) {
-    await sb.auth.signOut();
-    return showMsg('Could not check your major: ' + rpcErr.message);
+async function submitForgotPassword(evt) {
+  evt.preventDefault();
+  showMsg('');
+  const email = $('#reset-email').value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showMsg('Enter a valid email address.');
+  const btn = $('#reset-submit');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    if (error) throw error;
+    showMsg('If that email has an account, a reset link is on its way.', 'ok');
+  } catch (err) {
+    showMsg(friendlyAuthError(err));
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send reset link';
   }
+}
 
-  // Account exists but no major was ever saved (sign-up was interrupted): finish setup now.
-  if (res && res.reason === 'no_major_set') {
-    const r = await sb.rpc('register_major', { p_major: major });
-    if (r.error) { await sb.auth.signOut(); return showMsg('Could not finish setup: ' + r.error.message); }
-    res = { ok: true };
+async function submitNewPassword(evt) {
+  evt.preventDefault();
+  showMsg('');
+  const pw = $('#newpw').value;
+  if (pw.length < 8) return showMsg('Use a password with at least 8 characters.');
+  const btn = $('#newpw-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const { error } = await sb.auth.updateUser({ password: pw });
+    if (error) throw error;
+    showAuthForm('login');
+    setMode('login');
+    showMsg('Password updated — log in with your new password.', 'ok');
+  } catch (err) {
+    showMsg(friendlyAuthError(err));
+  } finally {
+    btn.disabled = false; btn.textContent = 'Set new password';
   }
-
-  if (res && res.ok) {
-    store.set(VERIFIED_KEY, uid);
-    return enterApp(data.user);
-  }
-
-  await sb.auth.signOut();
-  store.del(VERIFIED_KEY);
-  if (res && res.reason === 'locked') {
-    return showMsg('Too many wrong attempts. Try again in about ' + minutesUntil(res.locked_until) + ' minute(s).');
-  }
-  showMsg('Those details did not match. Check your username, password and major.');
 }
 
 async function logout() {
@@ -823,10 +759,10 @@ async function logout() {
   lastHash = null;
   $('#view').replaceChildren();
   history.replaceState(null, '', location.pathname + location.search);
-  store.del(VERIFIED_KEY);
   currentUser = null;
   try { await sb.auth.signOut(); } catch (e) {}
   $('#password').value = '';
+  showAuthForm('login');
   setMode('login');
   showScreen('auth');
 }
@@ -1015,10 +951,13 @@ function linkRow({ href, color, title, meta }) {
 }
 
 // A history row for a saved AI chat: tap to open it, tap × to delete it (with confirmation).
-function chatRow(href, title, meta, chatId) {
+// chip (optional) shows a small type badge (e.g. quiz type) before the title.
+function chatRow(href, title, meta, chatId, chip) {
   return h('div', { class: 'row hist-row' },
     h('a', { class: 'row-link grow', href },
-      h('span', { class: 'grow' }, h('strong', { text: title }), h('small', { text: meta })),
+      h('span', { class: 'grow' },
+        chip ? h('span', { class: 'chip', text: chip }) : null,
+        h('strong', { text: title }), h('small', { text: meta })),
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
     h('button', {
       class: 'row-del', type: 'button', 'aria-label': 'Delete chat',
@@ -2596,7 +2535,7 @@ function normalizeGeminiModel(raw) {
    (already includes the newest message) and resolves to the reply text. */
 // Lowest-level caller: takes a ready-made Gemini `contents` array (so callers
 // can mix text and inline image parts) and returns the reply text.
-async function callGeminiRaw(model, key, system, contents) {
+async function callGeminiRaw(model, key, system, contents, tools) {
   const modelId = normalizeGeminiModel(model);
   if (!GEMINI_MODEL_RE.test(modelId)) {
     throw new Error('That Gemini model name looks off. In Settings, use just the model id with no extra text — e.g. gemini-2.5-flash.');
@@ -2605,6 +2544,7 @@ async function callGeminiRaw(model, key, system, contents) {
               encodeURIComponent(modelId) + ':generateContent?key=' + encodeURIComponent(key);
   const body = { contents };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
+  if (tools) body.tools = tools;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data.error && data.error.message) || ('Gemini error (' + res.status + ').'));
@@ -2688,7 +2628,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/settings', title: 'Settings', meta: configured ? 'Gemini key added' : 'Add your Gemini key to begin' }),
         linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }),
         linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }),
-        linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, from the model itself' }),
+        linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, checked against live info' }),
         linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
@@ -3047,11 +2987,15 @@ async function solverPast(chatId) {
 
 /* ---------- Fact Checker ----------
    Single-shot: a claim (text and/or a photo of one) in, a verdict out.
-   Answered from the model's own knowledge only — no live web search. */
+   Grounded in live Google Search results (via Gemini's google_search tool),
+   so verdicts on current events, office-holders, or anything time-sensitive
+   reflect what's true now rather than the model's frozen training data. */
 const FACTCHECK_SYSTEM =
-  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. Answer from ' +
-  'your own knowledge. Reply in plain text, no markdown. The very first line must be exactly one of these three words: True, ' +
-  'False, or Partially true. Then, on the next lines, a short explanation (2-4 sentences) of why.';
+  'You are the Fact Checker in a student\'s Athenaeum workspace app. You are given a claim, as text and/or in a photo. You have a ' +
+  'Google Search tool — use it whenever the claim depends on current events, office-holders, dates, scores, prices, or anything ' +
+  'that could have changed since your training data; answer purely-timeless factual or conceptual claims directly. Reply in plain ' +
+  'text, no markdown. The very first line must be exactly one of these three words: True, False, or Partially true. Then, on the ' +
+  'next lines, a short explanation (2-4 sentences) of why.';
 
 async function callAIFactCheck(claimText, imageB64, mime) {
   const s = aiSettings();
@@ -3059,7 +3003,7 @@ async function callAIFactCheck(claimText, imageB64, mime) {
   const parts = [];
   if (claimText) parts.push({ text: claimText });
   if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
-  return callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }]);
+  return callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM, [{ role: 'user', parts }], [{ google_search: {} }]);
 }
 
 // Renders the verdict word as a coloured status card (reuses the .status
@@ -3762,7 +3706,7 @@ function quizPanel(tree) {
       if (scope.subjectId) { quiz.scope = scope; quiz.scopeNames = picker.getScopeNames(); }
       const chatIns = await sb.from('ai_chats').insert({ tool: 'quiz', title: material.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
-      result.replaceChildren(quizPlayer(quiz, chatIns.data.id));
+      result.replaceChildren(h('span', { class: 'chip', text: QUIZ_KINDS[kind].label }), quizPlayer(quiz, chatIns.data.id));
       const msgIns = await sb.from('ai_messages').insert(
         [{ chat_id: chatIns.data.id, role: 'user', content: '[' + QUIZ_KINDS[kind].label + ' · ' + count + ' questions] ' + material.slice(0, 300) },
          { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(quiz) }]);
@@ -3785,18 +3729,33 @@ function quizPanel(tree) {
     goBtn, err, result);
 }
 
+// Reads the quiz `type` out of each chat's saved assistant JSON, so the type
+// (MCQ, Essay, etc.) can be shown as a chip in the list without re-opening it.
+async function quizTypesFor(chatIds) {
+  const types = {};
+  if (!chatIds.length) return types;
+  const res = await sb.from('ai_messages').select('chat_id, content').in('chat_id', chatIds).eq('role', 'assistant');
+  if (res.error) return types; // non-fatal: list still renders, just without chips
+  (res.data || []).forEach(row => {
+    try { types[row.chat_id] = JSON.parse(row.content).type; } catch (e) { /* skip unparsable */ }
+  });
+  return types;
+}
+
 async function quizList() {
   const [res, tree] = await Promise.all([
     sb.from('ai_chats').select('id, title, created_at').eq('tool', 'quiz').order('created_at', { ascending: false }),
     loadScopeTree()
   ]);
   const chats = must(res);
+  const types = await quizTypesFor(chats.map(c => c.id));
   return { title: 'Quiz Generator', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
     quizPanel(tree),
     ...(chats.length
       ? [section('Past quizzes', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/quiz/' + c.id, c.title || 'Quiz', new Date(c.created_at).toLocaleString(), c.id))))]
+          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/quiz/' + c.id, c.title || 'Quiz', new Date(c.created_at).toLocaleString(), c.id,
+            QUIZ_KINDS[types[c.id]] ? QUIZ_KINDS[types[c.id]].label : null))))]
       : [h('p', { class: 'none', text: 'No quizzes yet.' })])
   ] };
 }
@@ -3810,10 +3769,13 @@ async function quizPast(chatId) {
   if (chatRes.error) return { title: 'Quiz Generator', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
   const msgs = must(msgRes);
   const ans = msgs.find(m => m.role === 'assistant');
-  let node;
-  try { node = ans ? quizPlayer(JSON.parse(ans.content), chatId) : h('p', { class: 'none', text: 'No quiz saved.' }); }
-  catch (e) { node = h('p', { class: 'none', text: 'Could not read this saved quiz.' }); }
-  return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), node, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
+  let node, typeChip = null;
+  try {
+    const quiz = ans ? JSON.parse(ans.content) : null;
+    node = quiz ? quizPlayer(quiz, chatId) : h('p', { class: 'none', text: 'No quiz saved.' });
+    if (quiz && QUIZ_KINDS[quiz.type]) typeChip = h('span', { class: 'chip', text: QUIZ_KINDS[quiz.type].label });
+  } catch (e) { node = h('p', { class: 'none', text: 'Could not read this saved quiz.' }); }
+  return { title: chatRes.data.title || 'Quiz', nodes: [crumbs(crumb), typeChip, node, editButton('Delete chat', () => confirmDeleteChat(chatId))] };
 }
 
 /* ---------- Mistake Vault hub (4.1) ----------
@@ -5814,14 +5776,13 @@ function closeSheet() { $('#sheet').hidden = true; }
 
 /* ---------- start-up ---------- */
 async function boot() {
-  buildMajorList();
-
   $('#mode-login').addEventListener('click',  () => setMode('login'));
   $('#mode-signup').addEventListener('click', () => setMode('signup'));
   $('#auth-form').addEventListener('submit', submitAuth);
-  $('#major-btn').addEventListener('click', openPicker);
-  $('#picker-close').addEventListener('click', () => closePicker());
-  $('#major-picker').addEventListener('click', e => { if (e.target.id === 'major-picker') closePicker(); });
+  $('#forgot-btn').addEventListener('click', () => showAuthForm('reset'));
+  $('#reset-form').addEventListener('submit', submitForgotPassword);
+  $('#reset-cancel').addEventListener('click', () => showAuthForm('login'));
+  $('#newpw-form').addEventListener('submit', submitNewPassword);
   $('#pw-toggle').addEventListener('click', () => {
     const pw = $('#password'); const show = pw.type === 'password';
     pw.type = show ? 'text' : 'password';
@@ -5837,7 +5798,7 @@ async function boot() {
   $('#sheet-close').addEventListener('click', closeSheet);
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   $('#viewer-close').addEventListener('click', closeViewer);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closePicker(); closeSheet(); } });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closeSheet(); } });
   $('#back-btn').addEventListener('click', () => { if (backTarget) location.hash = backTarget; });
   $('#dialog').addEventListener('click', e => { if (e.target.id === 'dialog') closeDialog(); });
   $('#logout-btn').addEventListener('click', logout);
@@ -5851,20 +5812,21 @@ async function boot() {
   }
 
   sb = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
   });
 
   sb.auth.onAuthStateChange((event) => {
-    if (event === 'SIGNED_OUT' && currentUser) { currentUser = null; store.del(VERIFIED_KEY); showScreen('auth'); }
+    if (event === 'SIGNED_OUT' && currentUser) { currentUser = null; showScreen('auth'); }
+    // Clicked a "reset your password" email link: Supabase signs the user in
+    // via the recovery token in the URL, then fires this event.
+    if (event === 'PASSWORD_RECOVERY') { showScreen('auth'); showAuthForm('newpw'); }
   });
 
-  // Keep the person logged in only if this device already passed the major check.
   let session = null;
   try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
-  if (session && store.get(VERIFIED_KEY) === session.user.id) {
+  if (session) {
     enterApp(session.user);
   } else {
-    if (session) { try { await sb.auth.signOut(); } catch (e) {} }
     showScreen('auth');
   }
 }
