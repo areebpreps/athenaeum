@@ -6438,14 +6438,20 @@ function confirmDeleteItem(existing) {
    still get armed even if the Planner tab isn't the one open.
    This is foreground-only: there is no push server behind Athenaeum, so
    it cannot wake a closed app or a locked phone the way a native OS
-   alarm can — it rings for as long as Athenaeum is open somewhere. */
-const plannerAlarmTimers = new Map(); // planner_item_id -> setTimeout id
+   alarm can — it rings for as long as Athenaeum is open somewhere.
 
-function armPlannerAlarms(todaySlots) {
+   E4 reuses this same plumbing for scholarship deadlines synced into
+   Planner as milestones (see syncScholarshipDeadline below): a milestone
+   has no start_time of its own, so a due-today milestone with its alarm
+   on is armed for a fixed time of day (DEADLINE_ALARM_TIME) instead. */
+const plannerAlarmTimers = new Map(); // planner_item_id -> setTimeout id
+const DEADLINE_ALARM_TIME = '09:00'; // E4: fixed local time a due-today deadline alarm rings at
+
+function armPlannerAlarms(todayItems) {
   plannerAlarmTimers.forEach(id => clearTimeout(id));
   plannerAlarmTimers.clear();
   const now = new Date();
-  (todaySlots || []).forEach(r => {
+  (todayItems || []).forEach(r => {
     if (!r.alarm_enabled || !r.start_time) return;
     const [hh, mm] = r.start_time.slice(0, 5).split(':').map(Number);
     if (Number.isNaN(hh) || Number.isNaN(mm)) return;
@@ -6458,20 +6464,35 @@ function armPlannerAlarms(todaySlots) {
 
 function firePlannerAlarm(r) {
   if (!(window.Notification && Notification.permission === 'granted')) return;
+  const isDeadline = r.kind === 'milestone'; // E4: scholarship deadline, not a study slot
   const time = (r.start_time || '').slice(0, 5);
-  try { new Notification(r.title, { body: (time ? time + ' · ' : '') + 'time to start', tag: 'planner-' + r.id }); } catch (e) {}
+  const body = isDeadline ? 'deadline today' : (time ? time + ' · ' : '') + 'time to start';
+  try { new Notification(r.title, { body, tag: 'planner-' + r.id }); } catch (e) {}
 }
 
-// Re-reads today's alarm-on slots from the server and re-arms timers for
-// them. Cheap enough to call after any slot save/toggle, not just on a
+// Re-reads today's alarm-on slots (D3) and today's alarm-on scholarship
+// deadlines (E4) from the server and re-arms timers for them. Cheap enough
+// to call after any slot/deadline save or alarm toggle, not just on a
 // timer, so a change takes effect immediately.
 async function refreshPlannerAlarms() {
   if (!currentUser || !sb) return;
-  const res = await sb.from('planner_items').select('id,title,weekday,start_time,alarm_enabled')
-    .eq('kind', 'slot').eq('alarm_enabled', true);
-  if (res.error) return; // most likely: alarm_enabled column not migrated in yet — fail quiet, no alarms this session
   const today = new Date().getDay();
-  armPlannerAlarms(res.data.filter(r => r.weekday === today));
+  const [slotsRes, deadlinesRes] = await Promise.all([
+    sb.from('planner_items').select('id,title,weekday,start_time,alarm_enabled')
+      .eq('kind', 'slot').eq('alarm_enabled', true),
+    sb.from('planner_items').select('id,title,kind,milestone_date,alarm_enabled')
+      .eq('kind', 'milestone').eq('alarm_enabled', true).not('scholarship_id', 'is', null)
+  ]);
+  const items = [];
+  if (!slotsRes.error) items.push(...slotsRes.data.filter(r => r.weekday === today));
+  // most likely reason either query errors: the alarm_enabled/scholarship_id columns
+  // aren't migrated in yet — fail quiet, no alarms from that half this session
+  if (!deadlinesRes.error) {
+    const todayStr = todayISO();
+    items.push(...deadlinesRes.data.filter(r => r.milestone_date === todayStr)
+      .map(r => ({ ...r, start_time: DEADLINE_ALARM_TIME })));
+  }
+  armPlannerAlarms(items);
 }
 
 async function initPlannerAlarms() {
@@ -6489,8 +6510,10 @@ async function initPlannerAlarms() {
    reuses the same row/card components (slotBlock, milestoneRow, projectCard)
    the Planner and Projects hubs use, so an action taken here (ticking a
    task, starting a session, editing a due date) behaves identically
-   wherever it's done from. Scholarship Center deadlines (Phase E) will plug
-   into the `overdue` and `dueSoon` lists below once that data exists. ---- */
+   wherever it's done from. Scholarship Center deadlines (E4) are ordinary
+   kind='milestone' rows, so they already flow into `overdue` and `dueSoon`
+   below with no extra filtering needed -- E6 only had to add the collision
+   warning (see `conflictSection`), not the list membership itself. ---- */
 async function todayHub() {
   const today = new Date().getDay();
   const todayDate = todayISO();
@@ -6528,6 +6551,26 @@ async function todayHub() {
     if (st.tone !== 'upcoming') return false;
     return daysBetween(parseLocalDate(r.milestone_date), todayMidnight) <= 7;
   }).sort((a, b) => cmpDate(a.milestone_date, b.milestone_date));
+
+  // E6: D7's conflict detection (previously slot-vs-slot only, at add-time)
+  // extended to flag a scholarship deadline that lands on a day already
+  // carrying study blocks or another milestone. A deadline has no time of
+  // day to overlap, so this is a same-day heads-up rather than the hard
+  // block the slot dialog gives overlapping times -- it doesn't stop
+  // anything, it just makes sure a collision isn't missed.
+  const dueTodayMilestones = milestones.filter(r => milestoneStatus(r).tone === 'ongoing');
+  const collisions = dueTodayMilestones.filter(r => r.scholarship_id).map(r => {
+    const bits = [];
+    if (todaySlots.length) bits.push(plural(todaySlots.length, 'study block', 'study blocks') + ' scheduled today');
+    const other = dueTodayMilestones.find(m => m.id !== r.id);
+    if (other) bits.push('\u201c' + other.title + '\u201d also due today');
+    return bits.length ? { title: r.title, text: bits.join(' and ') } : null;
+  }).filter(Boolean);
+  const conflictSection = collisions.length
+    ? h('div', { class: 'status bad' },
+        h('strong', { text: plural(collisions.length, 'deadline collision', 'deadline collisions') }),
+        collisions.map(c => h('p', { style: 'margin:4px 0 0', text: '\u201c' + c.title + '\u201d is due today, and ' + c.text + '.' })))
+    : null;
 
   // Assignments (stored as kind 'eca') and projects/learning goals, soonest-due first.
   // Overdue ones already show under "Overdue", so they're left out here to avoid duplicates.
@@ -6573,6 +6616,7 @@ async function todayHub() {
   return { title: 'Today', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     summary,
+    conflictSection,
     overdueSection,
     section('Today\u2019s schedule', '+ Add slot', () => openPlannerDialog('slot', null), scheduleNode),
     section('Due soon', null, null,
@@ -6827,18 +6871,44 @@ async function scholarshipsHub(sub) {
   return { title: 'Scholarship Center', nodes: [crumb, shortlistLink, box] };
 }
 
-/* ---------- E2/E3: Scholarship Center -- shortlist & compare ----------------
+/* ---------- E2/E3/E5: Scholarship Center -- shortlist, compare & documents --
    E2: a follow/unfollow list, separate from search results (which don't
    exist yet -- E7). Until then, scholarships are added manually. E3: pick
    two or more shortlisted scholarships and compare them side by side.
+   E5: a per-scholarship document checklist (see schShortlistRow's `list`).
    One row per saved scholarship in scholarship_shortlist (SQL for E2 is in
    schema-update-E2-scholarship-shortlist.sql; the compare fields E3 adds
-   are in schema-update-E3-scholarship-shortlist-compare-fields.sql).
+   are in schema-update-E3-scholarship-shortlist-compare-fields.sql; the
+   `documents` column E5 adds is in schema-update-E5-scholarship-documents.sql).
    `followed` starts true on manual add (adding one is already an active
-   choice); E4 will read it to decide which deadlines sync to Planner, and
-   E9 will let search results insert here with `followed` left to the
-   user. E5's document checklist etc. build on this same row later without
-   needing this shape to change. ------------------------------------------ */
+   choice); E4 reads it (see syncScholarshipDeadline below) to decide which
+   deadlines sync to Planner, and E9 will let search results insert here
+   with `followed` left to the user. ---------------------------------------- */
+// E4: keeps one planner_items milestone row (kind='milestone',
+// scholarship_id=row.id) mirroring a followed scholarship's deadline, so
+// it shows up in Planner/Today (D8, wired in E6) the same as any other
+// milestone. Unfollowing or clearing the deadline removes that row again;
+// deleting the shortlist row itself takes it along via the ON DELETE
+// CASCADE on planner_items.scholarship_id (schema-update-E4). Reuses D3's
+// alarm_enabled column so the alarm toggle on the synced milestone (see
+// milestoneRow) rings through the same plumbing as a slot's alarm.
+async function syncScholarshipDeadline(row) {
+  if (!sb) return;
+  const existing = await sb.from('planner_items').select('id').eq('scholarship_id', row.id).maybeSingle();
+  if (existing.error) return; // most likely: scholarship_id column not migrated in yet (schema-update-E4) — fail quiet
+  if (!row.followed || !row.deadline) {
+    if (existing.data) await sb.from('planner_items').delete().eq('id', existing.data.id);
+  } else if (existing.data) {
+    await sb.from('planner_items').update({ title: row.name, milestone_date: row.deadline }).eq('id', existing.data.id);
+  } else {
+    await sb.from('planner_items').insert({
+      kind: 'milestone', title: row.name, milestone_date: row.deadline,
+      scholarship_id: row.id, alarm_enabled: false
+    });
+  }
+  refreshPlannerAlarms();
+}
+
 async function schShortlistPage() {
   const res = await sb.from('scholarship_shortlist').select('*').order('created_at', { ascending: false });
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
@@ -6878,7 +6948,7 @@ async function schShortlistPage() {
 
     box.replaceChildren(section('Shortlist', selecting ? null : '+ Add', () => schShortlistDialog(null),
       h('p', { class: 'hint-line', text: selecting ? 'Pick two or more scholarships to compare.' :
-        'Scholarships you\u2019re saving or actively pursuing. Tap a scholarship to edit it, or use Following to mark it as one you\u2019re actively working on.' }),
+        'Scholarships you\u2019re saving or actively pursuing. Tap a scholarship for its document checklist, use the pencil to edit it, or Following to mark it as one you\u2019re actively working on.' }),
       compareToggle, list, selectBar));
   }
 
@@ -6947,13 +7017,83 @@ function schShortlistRow(r, opts) {
     const out = await sb.from('scholarship_shortlist').update({ followed: next }).eq('id', r.id);
     if (out.error) { followBtn.setAttribute('aria-pressed', String(!next)); followBtn.textContent = !next ? 'Following' : 'Follow'; return; }
     r.followed = next;
+    syncScholarshipDeadline(r); // E4
   });
 
-  return h('div', { class: 'row hist-row' },
-    h('button', { class: 'row-link grow', type: 'button', onclick: () => schShortlistDialog(r) },
-      h('span', { class: 'grow' }, h('strong', { text: r.name }), meta),
+  // E5: per-scholarship document checklist (SOP, recommendation letters,
+  // transcripts, etc.), same {id,text,done} shape and check-list/check-row
+  // markup milestones/slots already use, stored on the shortlist row itself
+  // (scholarship_shortlist.documents, schema-update-E5) so it travels with
+  // Backup export/restore the same way the rest of the row already does.
+  let list = Array.isArray(r.documents) ? r.documents.slice() : [];
+  let chain = Promise.resolve();
+  const count = h('small');
+  const bar = h('i');
+  const track = h('div', { class: 'progress', 'aria-hidden': 'true' }, bar);
+  const listBox = h('div', { class: 'check-list' });
+  const msg = h('p', { class: 'msg err', hidden: true });
+
+  const paint = () => {
+    const done = list.filter(x => x.done).length;
+    count.textContent = list.length ? done + ' of ' + list.length + ' documents' : 'No documents yet';
+    bar.style.width = (list.length ? Math.round(done / list.length * 100) : 0) + '%';
+    track.hidden = !list.length;
+    listBox.replaceChildren(...list.map(item => {
+      const icb = h('input', { type: 'checkbox', class: 'dl-check' });
+      icb.checked = !!item.done;
+      icb.addEventListener('change', () => save(list.map(x => x.id === item.id ? { ...x, done: icb.checked } : x)));
+      return h('div', { class: 'check-row' + (item.done ? ' done' : '') },
+        h('label', { class: 'check-lab' }, icb, h('span', { text: item.text })),
+        h('button', { class: 'check-del', type: 'button', 'aria-label': 'Remove ' + item.text, text: '×',
+                      onclick: () => save(list.filter(x => x.id !== item.id)) }));
+    }));
+  };
+
+  function save(next) {
+    list = next;
+    paint();
+    chain = chain.then(async () => {
+      const res = await sb.from('scholarship_shortlist').update({ documents: list }).eq('id', r.id);
+      if (res.error) { msg.textContent = 'Could not save the checklist: ' + res.error.message; msg.hidden = false; }
+      else { r.documents = list; msg.hidden = true; }
+    });
+  }
+
+  const input = h('input', { class: 'control', type: 'text', maxlength: 150, placeholder: 'Add a document (e.g. SOP, transcript)', 'aria-label': 'New document', enterkeyhint: 'done' });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
+  const add = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    save([...list, { id: crypto.randomUUID(), text, done: false }]);
+    input.focus({ preventScroll: true });
+  };
+  addBtn.addEventListener('click', add);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+
+  // Reuses the same "which checklists are expanded" set Planner's
+  // milestones/slots keep (see plannerOpenSlots), namespaced with 'sch-'
+  // the same way milestones already namespace theirs with 'm-'.
+  const body = h('div', { class: 'check-body', hidden: !plannerOpenSlots.has('sch-' + r.id) },
+    listBox, msg, h('div', { class: 'check-add' }, input, addBtn));
+  const toggle = () => {
+    const key = 'sch-' + r.id;
+    if (plannerOpenSlots.has(key)) plannerOpenSlots.delete(key); else plannerOpenSlots.add(key);
+    body.hidden = !plannerOpenSlots.has(key);
+  };
+
+  const editBtn = h('button', {
+    class: 'item-edit', type: 'button', 'aria-label': 'Edit ' + r.name,
+    onclick: e => { e.stopPropagation(); schShortlistDialog(r); }
+  }, pencilIcon());
+
+  paint();
+  return h('div', { class: 'proj' },
+    h('button', { class: 'proj-head', type: 'button', onclick: toggle },
+      h('span', { class: 'grow' }, h('strong', { text: r.name }), meta, count, track),
+      followBtn, editBtn,
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' })),
-    followBtn);
+    body);
 }
 
 function schShortlistDialog(existing) {
@@ -6987,11 +7127,15 @@ function schShortlistDialog(existing) {
     async onSubmit(values) {
       const res = existing
         ? await sb.from('scholarship_shortlist').update({ ...values, updated_at: new Date().toISOString() }).eq('id', existing.id)
-        : await sb.from('scholarship_shortlist').insert({ ...values, followed: true, updated_at: new Date().toISOString() });
+        : await sb.from('scholarship_shortlist').insert({ ...values, followed: true, updated_at: new Date().toISOString() }).select('id').single();
       if (res.error) throw res.error;
+      const id = existing ? existing.id : res.data.id;
+      const followed = existing ? existing.followed : true; // E4: this dialog never edits `followed` itself
+      await syncScholarshipDeadline({ id, name: values.name, deadline: values.deadline, followed });
       route();
     },
-    extra: existing ? { label: 'Remove from shortlist', onClick: () => confirmDeleteRow('scholarship_shortlist', existing, 'scholarship') } : null
+    extra: existing ? { label: 'Remove from shortlist', onClick: () => confirmDeleteRow('scholarship_shortlist', existing, 'scholarship',
+      { after: () => { refreshPlannerAlarms(); route(); } }) } : null // E4: cascade drops the synced deadline; just re-arm alarms
   });
 }
 
@@ -7794,16 +7938,47 @@ function milestoneRow(r) {
     body.hidden = !plannerOpenSlots.has(key);
   };
 
+  // E4: a scholarship-synced deadline is edited from the Shortlist (the
+  // source of truth for its title/date), not here, to avoid the two
+  // drifting apart; everything else about the milestone (checklist, done)
+  // stays fully editable in place same as any other milestone.
   const editBtn = h('button', {
-    class: 'item-edit', type: 'button', 'aria-label': 'Edit ' + r.title,
-    onclick: e => { e.stopPropagation(); openPlannerDialog('milestone', r); }
+    class: 'item-edit', type: 'button', 'aria-label': r.scholarship_id ? 'Edit ' + r.title + ' in Shortlist' : 'Edit ' + r.title,
+    onclick: e => { e.stopPropagation();
+      r.scholarship_id ? (location.hash = '#workspace/scholarships/shortlist') : openPlannerDialog('milestone', r); }
   }, pencilIcon());
+
+  // E4: same quick alarm toggle D3 gives study slots, offered here only for
+  // scholarship deadlines (not every milestone, to stay in this phase's scope).
+  const alarmBtn = r.scholarship_id ? h('button', {
+    class: 'item-edit alarm-toggle', type: 'button',
+    'aria-pressed': String(!!r.alarm_enabled),
+    'aria-label': (r.alarm_enabled ? 'Turn off alarm for ' : 'Turn on alarm for ') + r.title,
+    onclick: async e => {
+      e.stopPropagation();
+      const next = !r.alarm_enabled;
+      alarmBtn.setAttribute('aria-pressed', String(next));
+      const res = await sb.from('planner_items').update({ alarm_enabled: next }).eq('id', r.id);
+      if (res.error) {
+        alarmBtn.setAttribute('aria-pressed', String(!next));
+        msg.textContent = 'Could not update the alarm: ' + res.error.message;
+        msg.hidden = false;
+      } else {
+        r.alarm_enabled = next;
+        msg.hidden = true;
+        refreshPlannerAlarms();
+      }
+    }
+  }, bellIcon()) : null;
+
+  const originTag = r.scholarship_id ? h('span', { class: 'chip', text: 'Scholarship' }) : null;
 
   paint();
   return h('div', { class: 'proj' },
     h('button', { class: 'proj-head', type: 'button', onclick: toggle },
       cb,
-      h('span', { class: 'grow' }, titleEl, chip, range, count, track),
+      h('span', { class: 'grow' }, titleEl, originTag, chip, range, count, track),
+      alarmBtn,
       editBtn,
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
     body);
