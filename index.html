@@ -688,6 +688,7 @@
     <p id="sheet-user"></p>
     <a class="btn quiet" id="sheet-profile" href="#workspace/profile">My public profile</a>
     <a class="btn quiet" id="sheet-posts" href="#workspace/posts">My posts</a>
+    <a class="btn quiet" id="sheet-teach" href="#workspace/teach">Become a teacher</a>
     <button class="btn quiet" id="logout-btn" type="button">Log out</button>
     <button class="btn quiet" id="sheet-close" type="button">Close</button>
   </div>
@@ -2930,6 +2931,13 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'today')   return todayHub();
   if (ids[0] === 'scholarships') return scholarshipsHub(ids[1]);
   if (ids[0] === 'profile')  return profilePage();
+  if (ids[0] === 'teach')    return teacherPage();
+  if (ids[0] === 'courses')  return coursesPage(ids[1]);
+  if (ids[0] === 'market')   return marketPage(ids[1]);
+  if (ids[0] === 'qa')       return qaPage(ids[1]);
+  if (ids[0] === 'books')    return booksPage();
+  if (ids[0] === 'consult')  return consultPage();
+  if (ids[0] === 'groups')   return groupsPage(ids[1]);
   if (ids[0] === 'posts')    return postsPage();
   if (ids[0] === 'community') return communityPage();
   if (ids[0] === 'people')   return peoplePage(ids[1]);
@@ -2954,7 +2962,13 @@ function hubsSection() {
       linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Question banks — Bangladesh & international' }),
       linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
       linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' }),
-      linkRow({ href: '#workspace/library',  title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' })));
+      linkRow({ href: '#workspace/library',  title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' }),
+      linkRow({ href: '#workspace/groups',   title: 'Study groups',       meta: 'Join or create a group around a subject or chapter' }),
+      linkRow({ href: '#workspace/consult',  title: 'Consult a teacher', meta: 'Book a scheduled, study-focused session with a teacher' }),
+      linkRow({ href: '#workspace/books',    title: 'Book reviews',       meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }),
+      linkRow({ href: '#workspace/qa',       title: 'Q&A',                meta: 'Ask a question, answer others, or request a teacher' }),
+      linkRow({ href: '#workspace/market',   title: 'Course marketplace', meta: 'Courses from teachers \u2014 free or unlocked with a payment' }),
+      linkRow({ href: '#workspace/teach',    title: 'Teach on Athenaeum', meta: 'Apply for teacher status \u2014 you are a student until approved' })));
 }
 
 async function buildWorkspaceRoot() {
@@ -10647,7 +10661,7 @@ async function communityFeed({ userId, emptyTitle, emptyBody }) {
       body,
       post.url ? (href ? h('a', { href, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:14px', text: post.url }) : h('small', { text: post.url })) : null,
       err,
-      mine ? h('small', { text: 'Your post' }) : h('div', { class: 'vault-actions', style: 'margin:0' }, saveBtn));
+      mine ? h('small', { text: 'Your post' }) : h('div', { class: 'vault-actions', style: 'margin:0' }, saveBtn, reportBtn('post', post.id, post.user_id, post.title || post.body)));
   }
 
   function paint() {
@@ -10691,8 +10705,943 @@ async function peoplePage(uid) {
         h('small', { text: [row && row.country, row && row.field_of_study].filter(Boolean).join(' \u00b7 ') || (row ? 'No country or field added' : 'No profile yet') }))),
       mine ? h('p', { class: 'hint-line', text: 'This is how other people see your profile.' }) : null,
       mine ? h('a', { class: 'btn quiet', style: 'margin-bottom:16px', href: '#workspace/profile', text: 'Edit profile' }) : null,
-      section('Public posts', null, null, feed)] };
+      mine ? null : reportBtn('profile', uid, uid, name),
+      await teacherProfileSection(uid, mine),
+      section('Public posts', null, null, feed),
+      await bookReviewsSection(uid, mine)] };
   } catch (e) { return { title: 'Profile', nodes: [crumb, communitySetupCard(e)] }; }
+}
+
+/* ---------- G1: teacher application flow ----------
+   #workspace/teach. Everyone is a Student by default; this is the application for
+   Teacher status (teacher_applications; schema-update-G1-teacher-application.sql).
+   One open application per person: pending (can edit or withdraw), approved, or
+   closed (rejected / withdrawn, then apply again). Decisions are made from the
+   Supabase SQL editor with review_teacher_application(). */
+const TEACH_STATUS = { pending: ['In review', ''], approved: ['Approved teacher', 'pub'], rejected: ['Not approved', ''], withdrawn: ['Withdrawn', ''] };
+async function teacherPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  const res = await sb.from('teacher_applications').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false });
+  if (res.error) {
+    return { title: 'Become a teacher', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Teacher applications are not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-G1-teacher-application.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+  const apps = res.data || [], last = apps[0] || null;
+  const open = last && (last.status === 'pending' || last.status === 'approved') ? last : null;
+  if (!myProfile) await loadMyProfile();
+  const nodes = [crumb];
+
+  if (last) {
+    const [label, cls] = TEACH_STATUS[last.status];
+    const when = d => new Date(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    nodes.push(h('div', { class: 'status' + (last.status === 'approved' ? ' good' : last.status === 'rejected' ? ' bad' : '') },
+      h('strong', { text: last.status === 'approved' ? 'You are a teacher' : last.status === 'pending' ? 'Your application is in review' : last.status === 'rejected' ? 'Your application was not approved' : 'Your application was withdrawn' }),
+      last.status === 'approved' ? 'Approved ' + when(last.reviewed_at || last.updated_at) + '. You can build courses now; selling them comes later.'
+        : last.status === 'pending' ? 'Sent ' + when(last.created_at) + '. You will see the decision here \u2014 there are no notifications yet.'
+        : last.status === 'rejected' ? 'Reviewed ' + when(last.reviewed_at || last.updated_at) + '. You can fix the points below and apply again.'
+        : 'You can apply again whenever you like.'));
+    if (last.review_note) nodes.push(h('p', { class: 'hint-line', text: 'Reviewer note: ' + last.review_note }));
+    nodes.push(h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:12px' },
+      h('span', { class: 'chip ' + cls, text: label }),
+      h('strong', { style: 'overflow-wrap:anywhere', text: last.subjects }),
+      h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.qualifications }),
+      last.experience ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.experience }) : null,
+      h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.about }),
+      last.proof_url && safeHref(last.proof_url) ? h('a', { href: last.proof_url, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere', text: last.proof_url }) : null));
+  } else {
+    nodes.push(h('p', { class: 'hint-line', text: 'Everyone starts as a student. Teachers will be able to build and sell courses. Tell us what you teach and why you are qualified; your application is reviewed by hand.' }));
+  }
+
+  if (last && last.status === 'approved') { nodes.push(h('div', { class: 'list', style: 'margin-bottom:16px' }, linkRow({ href: '#workspace/courses', title: 'My courses', meta: 'Build courses from videos, notes, mnemonics, photos and live classes' }))); return { title: 'Become a teacher', nodes }; }
+  if (!myProfile) {
+    nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Add a public profile first' }), 'Reviewers and students see your name, country and field of study. ',
+      h('a', { href: '#workspace/profile', text: 'Set up your profile' })));
+    return { title: 'Become a teacher', nodes };
+  }
+
+  const editing = last && last.status === 'pending';
+  const seed = last || {};
+  const fSub = makeField('Subjects you would teach', { value: seed.subjects, maxlength: 200, placeholder: 'e.g. SSC Physics, Higher Math' });
+  const fQual = makeField('Qualifications', { value: seed.qualifications, maxlength: 1500, multiline: true, rows: 4, placeholder: 'Degrees, results, certificates (10+ characters)' });
+  const fExp = makeField('Teaching experience (optional)', { value: seed.experience, maxlength: 1500, multiline: true, rows: 3, placeholder: 'Tutoring, classes taught, students helped' });
+  const fAbout = makeField('Why do you want to teach here?', { value: seed.about, maxlength: 1000, multiline: true, rows: 3, placeholder: 'A few sentences (10+ characters)' });
+  const fProof = makeField('Link to proof (optional, https)', { value: seed.proof_url, maxlength: 500, placeholder: 'Certificate, portfolio or channel link' });
+  const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const say = t => { msg.textContent = t; msg.hidden = !t; };
+  const send = h('button', { class: 'btn', type: 'button', text: editing ? 'Save changes' : last ? 'Apply again' : 'Submit application' });
+  send.addEventListener('click', async () => {
+    say('');
+    const subjects = fSub.input.value.trim(), qualifications = fQual.input.value.trim(), experience = fExp.input.value.trim(), about = fAbout.input.value.trim();
+    if (subjects.length < 2) return say('Enter the subjects you would teach.');
+    if (qualifications.length < 10) return say('Describe your qualifications (at least 10 characters).');
+    if (about.length < 10) return say('Tell us why you want to teach (at least 10 characters).');
+    let proof_url = null;
+    if (fProof.input.value.trim()) { try { proof_url = normalizeUrl(fProof.input.value); } catch (e) { return say(e.message); } }
+    send.disabled = true;
+    const body = { subjects, qualifications, experience, about, proof_url, updated_at: new Date().toISOString() };
+    const r = editing ? await sb.from('teacher_applications').update(body).eq('id', last.id)
+      : await sb.from('teacher_applications').insert({ ...body, user_id: currentUser.id });
+    if (r.error) { send.disabled = false; return say('Could not send: ' + r.error.message); }
+    route();
+  });
+  const withdraw = editing ? h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Withdraw application', onclick: () => showDialog({
+    title: 'Withdraw your application?', text: 'It will be closed and you can apply again later.', submitLabel: 'Withdraw', danger: true,
+    async onSubmit() { const r = await sb.from('teacher_applications').update({ status: 'withdrawn', updated_at: new Date().toISOString() }).eq('id', last.id); if (r.error) throw r.error; route(); } }) }) : null;
+  nodes.push(section(editing ? 'Edit your application' : 'Application', null, null, fSub.wrap, fQual.wrap, fExp.wrap, fAbout.wrap, fProof.wrap, msg,
+    h('div', { class: 'actions' }, send, withdraw)));
+  return { title: 'Become a teacher', nodes };
+}
+
+/* ---------- G2: course creation ----------
+   #workspace/courses (list) and #workspace/courses/<id> (builder). Approved teachers
+   only (G1). A course is ordered lessons of five kinds: video, note, mnemonic, photo
+   (https image link) and live class (https link + optional start time).
+   courses / course_lessons; schema-update-G2-courses.sql. Only the teacher can see a
+   course until the marketplace (G3) exists. */
+const LESSON_KIND = { video: 'Video', note: 'Note', mnemonic: 'Mnemonic', photo: 'Photo', live: 'Live class' };
+const courseSetup = e => h('div', { class: 'status bad' }, h('strong', { text: 'Courses are not set up yet' }),
+  'Run the update SQL in Supabase (schema-update-G2-courses.sql), then reload. (' + e.message + ') ',
+  h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
+
+function courseDialog(row) {
+  showDialog({
+    title: row ? 'Edit course' : 'New course', submitLabel: row ? 'Save' : 'Create',
+    render(form) {
+      const t = makeField('Title', { value: row && row.title, maxlength: 120, placeholder: 'e.g. SSC Physics: Motion' });
+      const sub = makeField('Subject (optional)', { value: row && row.subject, maxlength: 80 });
+      const d = makeField('Description', { value: row && row.description, maxlength: 1500, multiline: true, rows: 4, placeholder: 'What students will learn' });
+      const pr = makeField('Price in \u09f3 (0 = free)', { value: String(row ? row.price_bdt : 0), maxlength: 7 }); pr.input.inputMode = 'numeric';
+      const pay = makeField('How students pay you', { value: row && row.pay_instructions, maxlength: 500, multiline: true, rows: 2, placeholder: 'e.g. bKash 01XXXXXXXXX (send money), then enter the transaction ID' });
+      form.append(t.wrap, sub.wrap, d.wrap, pr.wrap, pay.wrap);
+      return () => {
+        const title = t.input.value.trim(), price = Number(pr.input.value.trim() || 0), pi = pay.input.value.trim();
+        if (title.length < 2) throw new Error('Enter a course title.');
+        if (!Number.isInteger(price) || price < 0 || price > 1000000) throw new Error('Price must be a whole number, 0 or more.');
+        if (price > 0 && !pi) throw new Error('Say how students should pay you.');
+        return { title, subject: sub.input.value.trim(), description: d.input.value.trim(), price_bdt: price, pay_instructions: pi };
+      };
+    },
+    async onSubmit(v) {
+      const body = { ...v, updated_at: new Date().toISOString() };
+      const r = row ? await sb.from('courses').update(body).eq('id', row.id) : await sb.from('courses').insert({ ...body, teacher_id: currentUser.id }).select('id').single();
+      if (r.error) throw r.error;
+      if (!row) go('#workspace/courses/' + r.data.id); else route();
+    },
+    extra: row ? { label: 'Delete course', onClick: () => confirmDeleteRow('courses', row, 'course', { after: () => go('#workspace/courses') }) } : null
+  });
+}
+
+function lessonDialog(course, row, nextPos) {
+  let kind = row ? row.kind : 'video';
+  showDialog({
+    title: row ? 'Edit lesson' : 'Add a lesson', submitLabel: row ? 'Save' : 'Add lesson',
+    render(form) {
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Lesson type' },
+        Object.entries(LESSON_KIND).map(([k, l]) => h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { kind = k; sync(); } })));
+      const t = makeField('Title', { value: row && row.title, maxlength: 120 });
+      const b = makeField('Text', { value: row && row.body, maxlength: 20000, multiline: true, rows: 5 });
+      const u = makeField('Link', { value: row && row.url, maxlength: 500, placeholder: 'https://\u2026' });
+      const st = makeField('Starts at (optional)', { value: row && row.starts_at ? new Date(new Date(row.starts_at) - new Date(row.starts_at).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' });
+      st.input.type = 'datetime-local';
+      const sync = () => {
+        seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.k === kind)));
+        const text = kind === 'note' || kind === 'mnemonic';
+        b.label.textContent = text ? (kind === 'note' ? 'Note' : 'Mnemonic') : 'Description (optional)';
+        u.wrap.hidden = text; st.wrap.hidden = kind !== 'live';
+        u.label.textContent = kind === 'video' ? 'Video link' : kind === 'photo' ? 'Photo link (https image)' : 'Class link';
+      };
+      sync();
+      form.append(h('div', { class: 'field' }, h('label', { text: 'Type' }), seg), t.wrap, u.wrap, st.wrap, b.wrap);
+      return () => {
+        const title = t.input.value.trim(), body = b.input.value.trim(), text = kind === 'note' || kind === 'mnemonic';
+        if (!title) throw new Error('Enter a title.');
+        if (text && !body) throw new Error('Write the ' + LESSON_KIND[kind].toLowerCase() + '.');
+        const url = text ? null : normalizeUrl(u.input.value);
+        const starts_at = kind === 'live' && st.input.value ? new Date(st.input.value).toISOString() : null;
+        return { kind, title, body, url, starts_at };
+      };
+    },
+    async onSubmit(v) {
+      const r = row ? await sb.from('course_lessons').update(v).eq('id', row.id) : await sb.from('course_lessons').insert({ ...v, course_id: course.id, position: nextPos });
+      if (r.error) throw r.error;
+      route();
+    },
+    extra: row ? { label: 'Delete lesson', onClick: () => confirmDeleteRow('course_lessons', row, 'lesson') } : null
+  });
+}
+
+async function coursesPage(id) {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Teach', href: '#workspace/teach' }]);
+  const t = await sb.from('teacher_applications').select('id').eq('user_id', currentUser.id).eq('status', 'approved').maybeSingle();
+  if (t.error) return { title: 'My courses', nodes: [crumb, courseSetup(t.error)] };
+  if (!t.data) return { title: 'My courses', nodes: [crumb, emptyBlock('Teachers only', 'Courses are for approved teachers. Apply on the Become a teacher page.'), h('a', { class: 'btn quiet', href: '#workspace/teach', text: 'Become a teacher' })] };
+  const [cr, lr] = await Promise.all([
+    sb.from('courses').select('*').eq('teacher_id', currentUser.id).order('created_at', { ascending: false }),
+    sb.from('course_lessons').select('*').order('position')]);
+  if (cr.error || lr.error) return { title: 'My courses', nodes: [crumb, courseSetup(cr.error || lr.error)] };
+  const courses = cr.data || [], lessons = lr.data || [];
+  if (!id) {
+    return { title: 'My courses', nodes: [crumb, section('Courses', '+ New course', () => courseDialog(null),
+      courses.length ? h('div', { class: 'list' }, courses.map(c => linkRow({ href: '#workspace/courses/' + c.id, title: c.title,
+        meta: [c.published ? 'Published' : 'Draft', c.price_bdt ? '\u09f3' + c.price_bdt : 'Free', lessons.filter(l => l.course_id === c.id).length + ' lessons', c.subject].filter(Boolean).join(' \u00b7 ') })))
+        : emptyBlock('No courses yet', 'Create a course, then add videos, notes, mnemonics, photos and live classes.'))] };
+  }
+  const course = courses.find(c => c.id === id);
+  const back = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'My courses', href: '#workspace/courses' }]);
+  if (!course) return { title: 'Course', nodes: [back, emptyBlock('Course not found', 'It may have been deleted.')] };
+  const ls = lessons.filter(l => l.course_id === id);
+  const en = await sb.from('course_enrollments').select('*').eq('course_id', id).order('created_at');
+  const enr = en.error ? [] : (en.data || []), enNames = await profNames(enr.map(e => e.user_id));
+  const move = async (i, d) => {
+    const a = ls[i], b = ls[i + d]; if (!b) return;
+    const pa = a.position, pb = b.position === a.position ? a.position + d : b.position;
+    const r = await Promise.all([sb.from('course_lessons').update({ position: pb }).eq('id', a.id), sb.from('course_lessons').update({ position: pa }).eq('id', b.id)]);
+    if (r.some(x => x.error)) { alert('Could not reorder.'); }
+    route();
+  };
+  const rows = ls.map((l, i) => h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' },
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip', text: LESSON_KIND[l.kind] }),
+      l.kind === 'live' && l.starts_at ? h('small', { text: new Date(l.starts_at).toLocaleString() }) : null),
+    h('strong', { style: 'overflow-wrap:anywhere', text: (i + 1) + '. ' + l.title }),
+    l.body ? h('small', { class: 'post-body', style: 'cursor:default', text: l.body }) : null,
+    l.url && safeHref(l.url) ? h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:13px', text: l.url }) : null,
+    h('div', { class: 'vault-actions' },
+      h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => lessonDialog(course, l, 0) }),
+      h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
+      h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === ls.length - 1, onclick: () => move(i, 1) }))));
+  const pub = h('button', { class: 'btn quiet small', type: 'button', text: course.published ? 'Unpublish' : 'Mark as published', onclick: async () => {
+    const r = await sb.from('courses').update({ published: !course.published, updated_at: new Date().toISOString() }).eq('id', id);
+    if (r.error) alert('Could not update: ' + r.error.message); route(); } });
+  const nextPos = ls.length ? Math.max(...ls.map(l => l.position)) + 1 : 1;
+  return { title: course.title, nodes: [back,
+    h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:12px' },
+      h('span', { class: 'chip ' + (course.published ? 'pub' : ''), text: course.published ? 'Published' : 'Draft' }),
+      course.subject ? h('small', { text: course.subject }) : null,
+      course.description ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: course.description }) : null,
+      h('div', { class: 'vault-actions' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Edit course', onclick: () => courseDialog(course) }), pub)),
+    h('p', { class: 'hint-line', text: 'Drafts are private. Published courses appear in the Course marketplace; paid ones unlock lessons only after you approve a student\u2019s payment.' }),
+    course.price_bdt ? section('Students', null, null, enr.length ? enr.map(e => enrollRow(e, enNames)) : h('p', { class: 'hint-line', text: 'Nobody has asked for access yet.' })) : null,
+    section('Lessons', '+ Add lesson', () => lessonDialog(course, null, nextPos), ls.length ? rows : emptyBlock('No lessons yet', 'Add a video, note, mnemonic, photo or live class.'))] };
+}
+
+/* ---------- G3: course marketplace & paywall ----------
+   #workspace/market (published courses) and #workspace/market/<id>. Free courses open
+   straight away. Paid courses show the teacher's own payment instructions; the student
+   pays outside the app (e.g. bKash) and sends the transaction ID, the teacher approves it
+   in the course builder, and the lessons unlock (course_enrollments;
+   schema-update-G3-marketplace.sql). The app never handles money. */
+const TAKA = '\u09f3';
+async function profNames(ids) {
+  const u = [...new Set(ids.filter(Boolean))], m = {};
+  if (u.length) { const r = await sb.from('user_profiles').select('user_id,display_name').in('user_id', u); (r.data || []).forEach(x => { m[x.user_id] = x.display_name; }); }
+  return m;
+}
+function enrollRow(e, names) {
+  const set = async st => { const r = await sb.from('course_enrollments').update({ status: st, decided_at: new Date().toISOString() }).eq('id', e.id); if (r.error) alert('Could not update: ' + r.error.message); route(); };
+  const b = (t, st) => h('button', { class: 'btn quiet small', type: 'button', text: t, onclick: () => set(st) });
+  return h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' },
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+      h('span', { class: 'chip ' + (e.status === 'active' ? 'pub' : ''), text: e.status === 'active' ? 'Unlocked' : e.status === 'pending' ? 'Waiting' : 'Declined' }),
+      h('a', { href: '#workspace/people/' + e.user_id, text: names[e.user_id] || 'Athenaeum user' })),
+    h('small', { style: 'overflow-wrap:anywhere', text: 'Payment reference: ' + e.payment_ref }),
+    h('div', { class: 'vault-actions' }, e.status === 'pending' ? [b('Approve & unlock', 'active'), b('Decline', 'rejected')] : e.status === 'active' ? b('Remove access', 'rejected') : b('Unlock anyway', 'active')));
+}
+async function marketPage(id) {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Marketplace', href: '#workspace/market' }]);
+  const cr = await sb.from('courses').select('*').eq('published', true).order('created_at', { ascending: false });
+  if (cr.error) return { title: 'Course marketplace', nodes: [crumb, h('div', { class: 'status bad' }, h('strong', { text: 'The marketplace is not set up yet' }),
+    'Run schema-update-G2-courses.sql and schema-update-G3-marketplace.sql in Supabase, then reload. (' + cr.error.message + ') ',
+    h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  const courses = cr.data || [], names = await profNames(courses.map(c => c.teacher_id));
+  if (!id) {
+    const list = h('div', { class: 'list' });
+    const q = h('input', { class: 'control', type: 'search', placeholder: 'Search courses', 'aria-label': 'Search courses' });
+    const paint = () => {
+      const t = q.value.trim().toLowerCase();
+      const hit = courses.filter(c => !t || [c.title, c.subject, c.description, names[c.teacher_id]].join(' ').toLowerCase().includes(t));
+      list.replaceChildren(...(hit.length ? hit.map(c => linkRow({ href: '#workspace/market/' + c.id, title: c.title,
+        meta: [c.price_bdt ? TAKA + c.price_bdt : 'Free', c.subject, names[c.teacher_id] || 'Athenaeum user'].filter(Boolean).join(' \u00b7 ') })) : [emptyBlock(courses.length ? 'No matches' : 'No courses yet', courses.length ? 'Try a different word.' : 'Published courses from teachers will appear here.')]));
+    };
+    q.addEventListener('input', paint); paint();
+    return { title: 'Course marketplace', nodes: [crumb, h('div', { class: 'field' }, q), list] };
+  }
+  const c = courses.find(x => x.id === id);
+  if (!c) return { title: 'Course', nodes: [crumb, emptyBlock('Course not found', 'It may have been unpublished or deleted.')] };
+  const mine = c.teacher_id === currentUser.id;
+  const er = mine || !c.price_bdt ? { data: null } : await sb.from('course_enrollments').select('*').eq('course_id', id).eq('user_id', currentUser.id).maybeSingle();
+  const enr = er.data, open = mine || !c.price_bdt || (enr && enr.status === 'active');
+  const nodes = [crumb, h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:12px' },
+    h('strong', { style: 'overflow-wrap:anywhere', text: c.title }),
+    h('small', { text: [c.price_bdt ? TAKA + c.price_bdt : 'Free', c.subject].filter(Boolean).join(' \u00b7 ') }),
+    h('a', { href: '#workspace/people/' + c.teacher_id, text: 'By ' + (names[c.teacher_id] || 'Athenaeum user') }),
+    c.description ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: c.description }) : null)];
+  if (mine) nodes.push(h('a', { class: 'btn quiet', style: 'margin-bottom:12px', href: '#workspace/courses/' + id, text: 'Open in course builder' }));
+  if (!mine) nodes.push(reportBtn('course', c.id, c.teacher_id, c.title));
+  if (!open) {
+    if (enr && enr.status === 'pending') nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Waiting for the teacher' }), 'Sent with reference \u201c' + enr.payment_ref + '\u201d. The lessons unlock when the teacher confirms your payment.'),
+      h('button', { class: 'btn quiet', type: 'button', text: 'Cancel request', onclick: async () => { await sb.from('course_enrollments').delete().eq('id', enr.id); route(); } }));
+    else {
+      const ref = makeField('Payment reference / transaction ID', { maxlength: 100, placeholder: 'From your payment receipt' });
+      const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+      const go2 = h('button', { class: 'btn', type: 'button', text: 'I have paid \u2014 request access' });
+      go2.addEventListener('click', async () => {
+        const v = ref.input.value.trim(); msg.hidden = true;
+        if (v.length < 3) { msg.textContent = 'Enter the payment reference (3+ characters).'; msg.hidden = false; return; }
+        go2.disabled = true;
+        if (enr) await sb.from('course_enrollments').delete().eq('id', enr.id);
+        const r = await sb.from('course_enrollments').insert({ course_id: id, user_id: currentUser.id, payment_ref: v });
+        if (r.error) { go2.disabled = false; msg.textContent = 'Could not send: ' + r.error.message; msg.hidden = false; return; }
+        route();
+      });
+      nodes.push(h('div', { class: 'status' + (enr ? ' bad' : '') }, h('strong', { text: enr ? 'The teacher declined that payment' : 'This course is paid' }),
+        enr ? 'Check the reference and try again, or contact the teacher.' : 'Pay the teacher directly, then send the reference so they can unlock it.'),
+        h('p', { class: 'hint-line', style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: 'How to pay: ' + c.pay_instructions }), ref.wrap, msg, h('div', { class: 'actions' }, go2),
+        h('p', { class: 'hint-line', text: 'Athenaeum does not handle the payment or refunds \u2014 that is between you and the teacher.' }));
+    }
+    return { title: c.title, nodes };
+  }
+  const lr = await sb.from('course_lessons').select('*').eq('course_id', id).order('position');
+  const ls = lr.data || [];
+  nodes.push(section('Lessons', null, null, ls.length ? ls.map((l, i) => h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' },
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip', text: LESSON_KIND[l.kind] }),
+      l.kind === 'live' && l.starts_at ? h('small', { text: new Date(l.starts_at).toLocaleString() }) : null),
+    h('strong', { style: 'overflow-wrap:anywhere', text: (i + 1) + '. ' + l.title }),
+    l.body ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: l.body }) : null,
+    l.url && safeHref(l.url) ? h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:13px', text: l.kind === 'live' ? 'Join class' : 'Open' }) : null))
+    : emptyBlock('No lessons yet', 'The teacher has not added lessons.')));
+  return { title: c.title, nodes };
+}
+
+/* ---------- G4: Q&A ----------
+   #workspace/qa (latest 50 questions, filters) and #workspace/qa/<id>. Any signed-in
+   user can ask or answer; a question can name one approved teacher to answer it
+   (\"request a teacher\"); the asker can mark one answer as accepted. qa_questions /
+   qa_answers plus the teachers_public view; schema-update-G4-qa.sql. */
+const qaSetup = e => h('div', { class: 'status bad' }, h('strong', { text: 'Q&A is not set up yet' }),
+  'Run the update SQL in Supabase (schema-update-G4-qa.sql), then reload. (' + e.message + ') ',
+  h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
+function questionDialog(row, teachers, names) {
+  showDialog({
+    title: row ? 'Edit question' : 'Ask a question', submitLabel: row ? 'Save' : 'Post question',
+    render(form) {
+      const t = makeField('Question', { value: row && row.title, maxlength: 200, placeholder: 'What do you want to know? (5+ characters)' });
+      const b = makeField('Details (optional)', { value: row && row.body, maxlength: 5000, multiline: true, rows: 4 });
+      const sub = makeField('Subject (optional)', { value: row && row.subject, maxlength: 80, placeholder: 'e.g. Physics' });
+      const sel = h('select', { class: 'control', 'aria-label': 'Request a teacher' }, h('option', { value: '', text: 'Anyone can answer' }),
+        teachers.filter(x => x.user_id !== currentUser.id).map(x => h('option', { value: x.user_id, text: (names[x.user_id] || 'Teacher') + ' \u00b7 ' + x.subjects })));
+      sel.value = (row && row.requested_teacher_id) || '';
+      form.append(t.wrap, b.wrap, sub.wrap, h('div', { class: 'field' }, h('label', { text: 'Request a teacher (optional)' }), sel));
+      return () => {
+        const title = t.input.value.trim();
+        if (title.length < 5) throw new Error('Write your question (at least 5 characters).');
+        return { title, body: b.input.value.trim(), subject: sub.input.value.trim(), requested_teacher_id: sel.value || null };
+      };
+    },
+    async onSubmit(v) {
+      const body = { ...v, updated_at: new Date().toISOString() };
+      const r = row ? await sb.from('qa_questions').update(body).eq('id', row.id) : await sb.from('qa_questions').insert({ ...body, user_id: currentUser.id }).select('id').single();
+      if (r.error) throw r.error;
+      if (!row) go('#workspace/qa/' + r.data.id); else route();
+    }
+  });
+}
+async function qaPage(id) {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Q&A', href: '#workspace/qa' }]);
+  const tr = await sb.from('teachers_public').select('user_id,subjects');
+  if (tr.error) return { title: 'Q&A', nodes: [crumb, qaSetup(tr.error)] };
+  const teachers = tr.data || [], isT = new Set(teachers.map(x => x.user_id)), me = currentUser.id;
+  if (!id) {
+    const qr = await sb.from('qa_questions').select('*, qa_answers(count)').order('created_at', { ascending: false }).limit(50);
+    if (qr.error) return { title: 'Q&A', nodes: [crumb, qaSetup(qr.error)] };
+    const qs = qr.data || [], names = await profNames([...qs.flatMap(q => [q.user_id, q.requested_teacher_id]), ...teachers.map(x => x.user_id)]);
+    let f = 'all';
+    const cnt = q => (q.qa_answers && q.qa_answers[0] && q.qa_answers[0].count) || 0;
+    const list = h('div', { class: 'list' });
+    const chips = h('div', { class: 'vault-actions', style: 'margin-bottom:12px' }, [['all', 'All'], ['open', 'Unanswered'], ['me', 'Requested from me'], ['mine', 'My questions']].map(([k, l]) =>
+      h('button', { class: 'chip-btn', type: 'button', 'data-k': k, text: l, onclick: () => { f = k; paint(); } })));
+    const paint = () => {
+      chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === f)));
+      const hit = qs.filter(q => f === 'all' || (f === 'open' && !cnt(q)) || (f === 'me' && q.requested_teacher_id === me) || (f === 'mine' && q.user_id === me));
+      list.replaceChildren(...(hit.length ? hit.map(q => linkRow({ href: '#workspace/qa/' + q.id, title: q.title,
+        meta: [q.accepted_answer_id ? 'Answered \u2713' : cnt(q) ? cnt(q) + ' answers' : 'Unanswered', q.subject, names[q.user_id] || 'Athenaeum user',
+          q.requested_teacher_id ? 'For ' + (names[q.requested_teacher_id] || 'a teacher') : ''].filter(Boolean).join(' \u00b7 ') })) : [emptyBlock('Nothing here', 'Ask the first question, or try another filter.')]));
+    };
+    paint();
+    return { title: 'Q&A', nodes: [crumb, h('div', { class: 'edit-row' }, h('button', { class: 'btn', type: 'button', text: '+ Ask a question', onclick: () => questionDialog(null, teachers, names) })), chips, list] };
+  }
+  const [qr, ar] = await Promise.all([sb.from('qa_questions').select('*').eq('id', id).maybeSingle(), sb.from('qa_answers').select('*').eq('question_id', id).order('created_at')]);
+  if (qr.error || ar.error) return { title: 'Q&A', nodes: [crumb, qaSetup(qr.error || ar.error)] };
+  const q = qr.data; if (!q) return { title: 'Question', nodes: [crumb, emptyBlock('Question not found', 'It may have been deleted.')] };
+  const ans = (ar.data || []).slice().sort((a, b) => (b.id === q.accepted_answer_id) - (a.id === q.accepted_answer_id));
+  const names = await profNames([q.user_id, q.requested_teacher_id, ...ans.map(a => a.user_id), ...teachers.map(x => x.user_id)]);
+  const mine = q.user_id === me, who = uid => h('a', { href: '#workspace/people/' + uid, text: names[uid] || 'Athenaeum user' });
+  const head = h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:12px' },
+    h('strong', { style: 'overflow-wrap:anywhere', text: q.title }),
+    q.body ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: q.body }) : null,
+    h('small', {}, 'Asked by ', who(q.user_id), q.subject ? ' \u00b7 ' + q.subject : ''),
+    q.requested_teacher_id ? h('span', { class: 'chip pub', text: q.requested_teacher_id === me ? 'Teacher requested: you' : 'Teacher requested: ' + (names[q.requested_teacher_id] || 'a teacher') }) : null,
+    mine ? h('div', { class: 'vault-actions' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => questionDialog(q, teachers, names) }),
+      h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Delete', onclick: () => confirmDeleteRow('qa_questions', q, 'question', { after: () => go('#workspace/qa') }) })) : null,
+    mine ? null : reportBtn('question', q.id, q.user_id, q.title));
+  const accept = async a => { const r = await sb.from('qa_questions').update({ accepted_answer_id: q.accepted_answer_id === a.id ? null : a.id }).eq('id', q.id); if (r.error) alert('Could not update: ' + r.error.message); route(); };
+  const rows = ans.map(a => h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' },
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+      a.id === q.accepted_answer_id ? h('span', { class: 'chip pub', text: 'Accepted \u2713' }) : null,
+      isT.has(a.user_id) ? h('span', { class: 'chip', text: 'Teacher' }) : null, who(a.user_id)),
+    h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: a.body }),
+    h('div', { class: 'vault-actions' },
+      mine ? h('button', { class: 'btn quiet small', type: 'button', text: a.id === q.accepted_answer_id ? 'Unaccept' : 'Accept answer', onclick: () => accept(a) }) : null,
+      a.user_id === me ? h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Delete', onclick: () => confirmDeleteRow('qa_answers', a, 'answer') }) : null,
+      a.user_id === me ? null : reportBtn('answer', a.id, a.user_id, a.body))));
+  const ta = makeField('Your answer', { maxlength: 5000, multiline: true, rows: 4, placeholder: 'Explain it clearly (5+ characters)' });
+  const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const post = h('button', { class: 'btn', type: 'button', text: 'Post answer' });
+  post.addEventListener('click', async () => {
+    const v = ta.input.value.trim(); msg.hidden = true;
+    if (v.length < 5) { msg.textContent = 'Write at least 5 characters.'; msg.hidden = false; return; }
+    post.disabled = true;
+    const r = await sb.from('qa_answers').insert({ question_id: id, user_id: me, body: v });
+    if (r.error) { post.disabled = false; msg.textContent = 'Could not post: ' + r.error.message; msg.hidden = false; return; }
+    route();
+  });
+  return { title: 'Question', nodes: [crumb, head, section(ans.length + (ans.length === 1 ? ' answer' : ' answers'), null, null, ans.length ? rows : h('p', { class: 'hint-line', text: 'No answers yet.' })),
+    section('Answer this', null, null, ta.wrap, msg, h('div', { class: 'actions' }, post))] };
+}
+
+/* ---------- G5: book reviews ----------
+   #workspace/books: a searchable feed of everyone's book reviews (20 at a time), and
+   the same reviews appear on each reviewer's public profile (with + Review a book on
+   your own). A review has a 1-5 rating and what the reader liked, disliked and the
+   mistakes they found; one review per person per book. book_reviews;
+   schema-update-G5-book-reviews.sql. */
+const starsOf = n => '\u2605'.repeat(n) + '\u2606'.repeat(5 - n);
+function bookCard(r, names) {
+  const part = (label, t) => t ? h('div', {}, h('strong', { style: 'font-size:13px', text: label }), h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;color:var(--dim)', text: t })) : null;
+  const mine = r.user_id === currentUser.id;
+  return h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:8px;min-width:0;margin-bottom:8px' },
+    h('strong', { style: 'overflow-wrap:anywhere', text: r.book_title }),
+    h('small', {}, [r.author, starsOf(r.rating)].filter(Boolean).join(' \u00b7 '), names ? [' \u00b7 by ', h('a', { href: '#workspace/people/' + r.user_id, text: names[r.user_id] || 'Athenaeum user' })] : ''),
+    part('Liked', r.likes), part('Disliked', r.dislikes), part('Mistakes found', r.mistakes),
+    mine ? h('div', { class: 'vault-actions' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => bookDialog(r) })) : reportBtn('book_review', r.id, r.user_id, r.book_title + ': ' + (r.likes || r.dislikes || r.mistakes)));
+}
+function bookDialog(row) {
+  let rating = row ? row.rating : 5;
+  showDialog({
+    title: row ? 'Edit your review' : 'Review a book', submitLabel: row ? 'Save' : 'Post review',
+    render(form) {
+      const t = makeField('Book title', { value: row && row.book_title, maxlength: 200 });
+      const a = makeField('Author (optional)', { value: row && row.author, maxlength: 120 });
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Rating' }, [1, 2, 3, 4, 5].map(n => h('button', { type: 'button', 'data-n': n, text: String(n), onclick: () => { rating = n; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.n) === rating)));
+      sync();
+      const li = makeField('What you liked', { value: row && row.likes, maxlength: 3000, multiline: true, rows: 3 });
+      const di = makeField('What you disliked', { value: row && row.dislikes, maxlength: 3000, multiline: true, rows: 3 });
+      const mi = makeField('Mistakes you found (page, error, fix)', { value: row && row.mistakes, maxlength: 3000, multiline: true, rows: 3 });
+      form.append(t.wrap, a.wrap, h('div', { class: 'field' }, h('label', { text: 'Rating (1\u20135)' }), seg), li.wrap, di.wrap, mi.wrap);
+      return () => {
+        const v = { book_title: t.input.value.trim(), author: a.input.value.trim(), rating, likes: li.input.value.trim(), dislikes: di.input.value.trim(), mistakes: mi.input.value.trim(), updated_at: new Date().toISOString() };
+        if (v.book_title.length < 2) throw new Error('Enter the book title.');
+        if (!(v.likes || v.dislikes || v.mistakes)) throw new Error('Write at least one of: liked, disliked, mistakes found.');
+        return v;
+      };
+    },
+    async onSubmit(v) {
+      const r = row ? await sb.from('book_reviews').update(v).eq('id', row.id) : await sb.from('book_reviews').insert({ ...v, user_id: currentUser.id });
+      if (r.error) throw new Error(r.error.code === '23505' ? 'You already reviewed this book \u2014 edit that review instead.' : r.error.message);
+      route();
+    },
+    extra: row ? { label: 'Delete review', onClick: () => confirmDeleteRow('book_reviews', row, 'review') } : null
+  });
+}
+async function bookReviewsSection(uid, mine) {
+  const r = await sb.from('book_reviews').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(50);
+  if (r.error) return null;
+  const rows = r.data || [];
+  return section('Book reviews', mine ? '+ Review a book' : null, () => bookDialog(null),
+    rows.length ? rows.map(x => bookCard(x, null)) : h('p', { class: 'hint-line', text: mine ? 'Review a book you have read \u2014 what you liked, disliked and any mistakes you found.' : 'No book reviews yet.' }));
+}
+async function booksPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  const PAGE = 20; let items = [], done = false, q = ''; const names = {};
+  const list = h('div'), more = h('button', { class: 'btn quiet', type: 'button', text: 'Load more' }), note = h('p', { class: 'hint-line', role: 'status' });
+  const paint = () => {
+    list.replaceChildren(...(items.length ? items.map(x => bookCard(x, names)) : [emptyBlock(q ? 'No matches' : 'No reviews yet', q ? 'Try another title or author.' : 'Be the first to review a book.')]));
+    more.hidden = done; note.textContent = '';
+  };
+  async function load(reset) {
+    if (reset) { items = []; done = false; }
+    let qb = sb.from('book_reviews').select('*').order('created_at', { ascending: false }).range(items.length, items.length + PAGE - 1);
+    if (q) qb = qb.or('book_title.ilike.%' + q + '%,author.ilike.%' + q + '%');
+    const r = await qb; if (r.error) return r.error;
+    Object.assign(names, await profNames(r.data.map(x => x.user_id)));
+    items = items.concat(r.data); done = r.data.length < PAGE; paint(); return null;
+  }
+  const err = await load(true);
+  if (err) return { title: 'Book reviews', nodes: [crumb, h('div', { class: 'status bad' }, h('strong', { text: 'Book reviews are not set up yet' }),
+    'Run the update SQL in Supabase (schema-update-G5-book-reviews.sql), then reload. (' + err.message + ') ',
+    h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search by book or author', 'aria-label': 'Search book reviews' });
+  const search = async () => { q = input.value.replace(/[%,()*\\]/g, ' ').trim(); note.textContent = 'Searching\u2026'; const e = await load(true); if (e) note.textContent = 'Search failed: ' + e.message; };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); search(); } });
+  more.addEventListener('click', async () => { more.disabled = true; const e = await load(false); more.disabled = false; if (e) note.textContent = 'Could not load more: ' + e.message; });
+  return { title: 'Book reviews', nodes: [crumb,
+    h('div', { class: 'edit-row' }, h('button', { class: 'btn', type: 'button', text: '+ Review a book', onclick: () => bookDialog(null) })),
+    h('div', { class: 'field' }, input), h('div', { class: 'edit-row' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Search', onclick: search })),
+    note, list, h('div', { class: 'edit-row' }, more)] };
+}
+
+/* ---------- G6: Consult Center ----------
+   #workspace/consult. Teachers publish a consult offer (length, price, how to pay);
+   students pick a teacher, propose a time and a study topic (paying the teacher directly,
+   as in G3, and giving the reference); the teacher confirms with a meeting link, declines,
+   or later marks it completed. Students can cancel. consult_offers / consult_bookings and
+   a trigger limiting what each side can change; schema-update-G6-consult.sql. */
+const CONSULT_STATUS = { requested: 'Waiting for teacher', confirmed: 'Confirmed', declined: 'Declined', cancelled: 'Cancelled', completed: 'Completed' };
+const whenTxt = d => new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const priceTxt = n => (n ? TAKA + n : 'Free');
+async function consultUpdate(b, patch) {
+  const r = await sb.from('consult_bookings').update(patch).eq('id', b.id);
+  if (r.error) alert('Could not update: ' + r.error.message);
+  route();
+}
+function offerDialog(row) {
+  let on = row ? row.enabled : true;
+  showDialog({
+    title: 'Your consult offer', submitLabel: 'Save',
+    render(form) {
+      const ab = makeField('What you help with', { value: row && row.about, maxlength: 500, multiline: true, rows: 3, placeholder: 'e.g. SSC physics doubts, exam strategy' });
+      const du = makeField('Session length (minutes, 15\u2013120)', { value: String(row ? row.duration_min : 30), maxlength: 3 }); du.input.inputMode = 'numeric';
+      const pr = makeField('Price per session in ' + TAKA + ' (0 = free)', { value: String(row ? row.price_bdt : 0), maxlength: 7 }); pr.input.inputMode = 'numeric';
+      const pi = makeField('How students pay you', { value: row && row.pay_instructions, maxlength: 500, multiline: true, rows: 2, placeholder: 'e.g. bKash 01XXXXXXXXX, then send the transaction ID' });
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Availability' }, [[true, 'Open for bookings'], [false, 'Paused']].map(([k, l]) => h('button', { type: 'button', 'data-k': String(k), text: l, onclick: () => { on = k; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.k === 'true') === on)));
+      sync();
+      form.append(h('div', { class: 'field' }, h('label', { text: 'Status' }), seg), ab.wrap, du.wrap, pr.wrap, pi.wrap);
+      return () => {
+        const d = Number(du.input.value.trim()), p = Number(pr.input.value.trim() || 0);
+        if (!Number.isInteger(d) || d < 15 || d > 120) throw new Error('Session length must be 15 to 120 minutes.');
+        if (!Number.isInteger(p) || p < 0 || p > 1000000) throw new Error('Price must be a whole number, 0 or more.');
+        if (p > 0 && !pi.input.value.trim()) throw new Error('Say how students should pay you.');
+        return { teacher_id: currentUser.id, enabled: on, about: ab.input.value.trim(), duration_min: d, price_bdt: p, pay_instructions: pi.input.value.trim(), updated_at: new Date().toISOString() };
+      };
+    },
+    async onSubmit(v) { const r = await sb.from('consult_offers').upsert(v, { onConflict: 'teacher_id' }); if (r.error) throw r.error; route(); }
+  });
+}
+function consultBookDialog(o, name) {
+  showDialog({
+    title: 'Book ' + name, submitLabel: 'Send request',
+    render(form) {
+      const t = makeField('Study topic', { maxlength: 200, placeholder: 'What do you want help with? (5+ characters)' });
+      const d = makeField('Details (optional)', { maxlength: 2000, multiline: true, rows: 3 });
+      const at = makeField('Proposed start time'); at.input.type = 'datetime-local';
+      const ref = makeField('Payment reference / transaction ID', { maxlength: 100 });
+      form.append(h('p', { class: 'hint-line', text: o.duration_min + ' minutes \u00b7 ' + priceTxt(o.price_bdt) }), t.wrap, d.wrap, at.wrap);
+      if (o.price_bdt) form.append(h('p', { class: 'hint-line', style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: 'How to pay: ' + o.pay_instructions }), ref.wrap);
+      return () => {
+        const topic = t.input.value.trim(), when = new Date(at.input.value);
+        if (topic.length < 5) throw new Error('Describe the topic (at least 5 characters).');
+        if (!at.input.value || !(when > new Date())) throw new Error('Choose a start time in the future.');
+        if (o.price_bdt && ref.input.value.trim().length < 3) throw new Error('Enter the payment reference after paying.');
+        return { topic, details: d.input.value.trim(), requested_at: when.toISOString(), payment_ref: o.price_bdt ? ref.input.value.trim() : null };
+      };
+    },
+    async onSubmit(v) {
+      const r = await sb.from('consult_bookings').insert({ ...v, teacher_id: o.teacher_id, student_id: currentUser.id, duration_min: o.duration_min, price_bdt: o.price_bdt });
+      if (r.error) throw r.error; route();
+    }
+  });
+}
+function consultRow(b, asTeacher, names) {
+  const other = asTeacher ? b.student_id : b.teacher_id, btn = (t, fn, cls) => h('button', { class: 'btn quiet small' + (cls || ''), type: 'button', text: t, onclick: fn });
+  const acts = [];
+  if (asTeacher && b.status === 'requested') acts.push(btn('Confirm', () => showDialog({ title: 'Confirm session', submitLabel: 'Confirm',
+    render(form) { const u = makeField('Meeting link (https)', { maxlength: 500, placeholder: 'Meet, Zoom or Teams link' }), n = makeField('Note (optional)', { maxlength: 500 }); form.append(u.wrap, n.wrap);
+      return () => ({ meeting_url: normalizeUrl(u.input.value), teacher_note: n.input.value.trim() || null }); },
+    async onSubmit(v) { await consultUpdate(b, { ...v, status: 'confirmed' }); } })),
+    btn('Decline', () => showDialog({ title: 'Decline this request?', submitLabel: 'Decline', danger: true,
+      render(form) { const n = makeField('Reason (optional)', { maxlength: 500 }); form.append(n.wrap); return () => ({ teacher_note: n.input.value.trim() || null }); },
+      async onSubmit(v) { await consultUpdate(b, { ...v, status: 'declined' }); } })));
+  if (asTeacher && b.status === 'confirmed') acts.push(btn('Mark completed', () => consultUpdate(b, { status: 'completed' })));
+  if (b.status === 'requested' || b.status === 'confirmed') acts.push(btn(asTeacher ? 'Cancel session' : 'Cancel booking', () => showDialog({ title: 'Cancel this session?', text: 'The other person will see it as cancelled.', submitLabel: 'Cancel session', danger: true,
+    async onSubmit() { await consultUpdate(b, { status: 'cancelled' }); } }), ' danger-text'));
+  return h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' },
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip ' + (b.status === 'confirmed' || b.status === 'completed' ? 'pub' : ''), text: CONSULT_STATUS[b.status] }), h('small', { text: whenTxt(b.requested_at) + ' \u00b7 ' + b.duration_min + ' min \u00b7 ' + priceTxt(b.price_bdt) })),
+    h('strong', { style: 'overflow-wrap:anywhere', text: b.topic }),
+    h('small', {}, asTeacher ? 'Student: ' : 'Teacher: ', h('a', { href: '#workspace/people/' + other, text: names[other] || 'Athenaeum user' })),
+    b.details ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: b.details }) : null,
+    asTeacher && b.payment_ref ? h('small', { style: 'overflow-wrap:anywhere', text: 'Payment reference: ' + b.payment_ref }) : null,
+    b.meeting_url && b.status === 'confirmed' && safeHref(b.meeting_url) ? h('a', { href: b.meeting_url, target: '_blank', rel: 'noopener noreferrer', text: 'Join session' }) : null,
+    b.teacher_note ? h('small', { style: 'overflow-wrap:anywhere', text: 'Teacher note: ' + b.teacher_note }) : null,
+    acts.length ? h('div', { class: 'vault-actions' }, acts) : null);
+}
+async function consultPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]), me = currentUser.id;
+  const tr = await sb.from('teachers_public').select('user_id,subjects');
+  if (tr.error) return { title: 'Consult a teacher', nodes: [crumb, h('div', { class: 'status bad' }, h('strong', { text: 'Consult Center is not set up yet' }),
+    'Run schema-update-G4-qa.sql and schema-update-G6-consult.sql in Supabase, then reload. (' + tr.error.message + ') ',
+    h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  const teachers = tr.data || [], isTeacher = teachers.some(x => x.user_id === me);
+  const [of, ms, mt] = await Promise.all([sb.from('consult_offers').select('*'),
+    sb.from('consult_bookings').select('*').eq('student_id', me).order('requested_at', { ascending: false }),
+    isTeacher ? sb.from('consult_bookings').select('*').eq('teacher_id', me).order('requested_at', { ascending: false }) : { data: [] }]);
+  const bad = of.error || ms.error || mt.error;
+  if (bad) return { title: 'Consult a teacher', nodes: [crumb, h('div', { class: 'status bad' }, h('strong', { text: 'Consult Center is not set up yet' }), 'Run schema-update-G6-consult.sql in Supabase, then reload. (' + bad.message + ')')] };
+  const offers = of.data || [], mine = offers.find(o => o.teacher_id === me) || null, mineS = ms.data || [], mineT = mt.data || [];
+  const names = await profNames([...offers.map(o => o.teacher_id), ...mineS.map(b => b.teacher_id), ...mineT.map(b => b.student_id)]);
+  const subj = uid => (teachers.find(x => x.user_id === uid) || {}).subjects || '';
+  const open = offers.filter(o => o.enabled && o.teacher_id !== me);
+  const nodes = [crumb, section('Book a teacher', null, null, open.length ? h('div', { class: 'list' }, open.map(o => h('button', { class: 'row', type: 'button', style: 'text-align:left', onclick: () => consultBookDialog(o, names[o.teacher_id] || 'this teacher') },
+    h('span', { style: 'display:grid;gap:2px;min-width:0' }, h('strong', { text: names[o.teacher_id] || 'Teacher' }),
+      h('small', { style: 'overflow-wrap:anywhere', text: [subj(o.teacher_id), o.duration_min + ' min', priceTxt(o.price_bdt), o.about].filter(Boolean).join(' \u00b7 ') }))))) : emptyBlock('No teachers open yet', 'Teachers who open consult sessions will be listed here.')),
+    section('My bookings', null, null, mineS.length ? mineS.map(b => consultRow(b, false, names)) : h('p', { class: 'hint-line', text: 'You have not booked a session yet.' }))];
+  if (isTeacher) nodes.push(section('Teaching: my consult offer', mine ? 'Edit' : 'Set up', () => offerDialog(mine),
+    mine ? h('p', { class: 'hint-line', text: (mine.enabled ? 'Open' : 'Paused') + ' \u00b7 ' + mine.duration_min + ' min \u00b7 ' + priceTxt(mine.price_bdt) + (mine.about ? ' \u00b7 ' + mine.about : '') }) : h('p', { class: 'hint-line', text: 'Set your session length and price to let students book you.' })),
+    section('Requests to me', null, null, mineT.length ? mineT.map(b => consultRow(b, true, names)) : h('p', { class: 'hint-line', text: 'No booking requests yet.' })));
+  return { title: 'Consult a teacher', nodes };
+}
+
+/* ---------- G7: study groups ----------
+   #workspace/groups (my groups, suggestions, discover) and #workspace/groups/<id>.
+   Groups are study spaces built around a subject and optionally a chapter, open to join
+   or by owner approval. Suggestions come from your own workspace subjects and chapters.
+   There is no messaging here: sharing is G8 and chat is G9. study_groups / group_members
+   with member counts in a view; schema-update-G7-groups.sql. */
+const groupSetup = e => h('div', { class: 'status bad' }, h('strong', { text: 'Groups are not set up yet' }),
+  'Run the update SQL in Supabase (schema-update-G7-groups.sql), then reload. (' + e.message + ') ',
+  h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
+function groupDialog(row, pre) {
+  let mode = row ? row.join_mode : 'open'; const v0 = row || pre || {};
+  showDialog({
+    title: row ? 'Edit group' : 'Create a study group', submitLabel: row ? 'Save' : 'Create group',
+    render(form) {
+      const n = makeField('Group name', { value: v0.name, maxlength: 80, placeholder: 'e.g. Physics: Motion study circle' });
+      const sub = makeField('Subject', { value: v0.subject, maxlength: 80, placeholder: 'e.g. Physics' });
+      const ch = makeField('Chapter (optional)', { value: v0.chapter, maxlength: 80, placeholder: 'e.g. Motion' });
+      const d = makeField('What is this group for?', { value: v0.description, maxlength: 500, multiline: true, rows: 3 });
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Who can join' }, [['open', 'Anyone can join'], ['approval', 'I approve members']].map(([k, l]) => h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { mode = k; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === mode)));
+      sync();
+      form.append(n.wrap, sub.wrap, ch.wrap, d.wrap, h('div', { class: 'field' }, h('label', { text: 'Joining' }), seg), h('p', { class: 'hint-line', text: 'Groups are for studying \u2014 members share notes and requests inside the group; there are no private messages.' }));
+      return () => {
+        const name = n.input.value.trim();
+        if (name.length < 3) throw new Error('Give the group a name (3+ characters).');
+        return { name, subject: sub.input.value.trim(), chapter: ch.input.value.trim(), description: d.input.value.trim(), join_mode: mode };
+      };
+    },
+    async onSubmit(v) {
+      const r = row ? await sb.from('study_groups').update(v).eq('id', row.id) : await sb.from('study_groups').insert({ ...v, owner_id: currentUser.id }).select('id').single();
+      if (r.error) throw r.error;
+      if (!row) go('#workspace/groups/' + r.data.id); else route();
+    }
+  });
+}
+async function joinGroup(g) {
+  const r = await sb.from('group_members').insert({ group_id: g.id, user_id: currentUser.id, role: 'member', status: g.join_mode === 'open' ? 'active' : 'pending' });
+  if (r.error) alert('Could not join: ' + r.error.message);
+  route();
+}
+async function groupsPage(id) {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Groups', href: '#workspace/groups' }]), me = currentUser.id;
+  const [gr, mr, cr] = await Promise.all([sb.from('study_groups').select('*').order('created_at', { ascending: false }).limit(200),
+    sb.from('group_members').select('*').eq('user_id', me), sb.from('group_member_counts').select('*')]);
+  const bad = gr.error || mr.error || cr.error;
+  if (bad) return { title: 'Study groups', nodes: [crumb, groupSetup(bad)] };
+  const groups = gr.data || [], mine = {}, counts = {};
+  (mr.data || []).forEach(m => { mine[m.group_id] = m; }); (cr.data || []).forEach(c => { counts[c.group_id] = c.members; });
+  const low = x => String(x || '').trim().toLowerCase();
+  if (id) {
+    const g = groups.find(x => x.id === id);
+    if (!g) return { title: 'Group', nodes: [crumb, emptyBlock('Group not found', 'It may have been deleted.')] };
+    const my = mine[id], isMember = my && my.status === 'active', isOwner = g.owner_id === me;
+    const [mem, it] = isMember ? await Promise.all([sb.from('group_members').select('*').eq('group_id', id).order('joined_at'),
+      sb.from('group_items').select('*').eq('group_id', id).order('created_at', { ascending: false }).limit(200)]) : [{ data: [] }, { data: [] }];
+    const ms = mem.data || [], items = it.data || [], names = await profNames([g.owner_id, ...ms.map(m => m.user_id), ...items.map(x => x.user_id)]);
+    const who = uid => h('a', { href: '#workspace/people/' + uid, text: names[uid] || 'Athenaeum user' });
+    const setSt = async (m, st) => { const r = st === 'active' ? await sb.from('group_members').update({ status: 'active' }).match({ group_id: id, user_id: m.user_id }) : await sb.from('group_members').delete().match({ group_id: id, user_id: m.user_id }); if (r.error) alert('Could not update: ' + r.error.message); route(); };
+    const nodes = [crumb, h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:12px' },
+      h('strong', { style: 'overflow-wrap:anywhere', text: g.name }),
+      h('small', { text: [g.subject, g.chapter, (counts[id] || 0) + ' members', g.join_mode === 'open' ? 'Open to join' : 'Owner approves'].filter(Boolean).join(' \u00b7 ') }),
+      g.description ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: g.description }) : null,
+      h('small', {}, 'Started by ', who(g.owner_id)),
+      isOwner ? h('div', { class: 'vault-actions' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Edit group', onclick: () => groupDialog(g) }),
+        h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Delete group', onclick: () => confirmDeleteRow('study_groups', g, 'group', { after: () => go('#workspace/groups') }) })) : reportBtn('group', g.id, g.owner_id, g.name))];
+    if (!my) nodes.push(h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', text: g.join_mode === 'open' ? 'Join group' : 'Request to join', onclick: () => joinGroup(g) })));
+    else if (!isMember) nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Waiting for approval' }), 'The group owner will review your request.'),
+      h('button', { class: 'btn quiet', type: 'button', text: 'Cancel request', onclick: async () => { await sb.from('group_members').delete().match({ group_id: id, user_id: me }); route(); } }));
+    else {
+      const pend = ms.filter(m => m.status === 'pending'), act = ms.filter(m => m.status === 'active');
+      if (isOwner && pend.length) nodes.push(section('Join requests', null, null, pend.map(m => h('div', { class: 'proj', style: 'padding:10px 14px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px' }, who(m.user_id),
+        h('div', { class: 'vault-actions' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Approve', onclick: () => setSt(m, 'active') }), h('button', { class: 'btn quiet small', type: 'button', text: 'Decline', onclick: () => setSt(m, 'no') }))))));
+      nodes.push(section('Members', null, null, act.map(m => h('div', { class: 'proj', style: 'padding:10px 14px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px' },
+        h('span', {}, who(m.user_id), m.role === 'owner' ? ' \u00b7 owner' : ''),
+        isOwner && m.role !== 'owner' ? h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Remove', onclick: () => setSt(m, 'no') }) : null))),
+        groupChat(g, names), ...groupSharing(g, items, names, it.error));
+      if (!isOwner) nodes.push(h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Leave group', onclick: () => showDialog({ title: 'Leave this group?', submitLabel: 'Leave', danger: true, async onSubmit() { const r = await sb.from('group_members').delete().match({ group_id: id, user_id: me }); if (r.error) throw r.error; go('#workspace/groups'); } }) }));
+    }
+    return { title: g.name, nodes };
+  }
+  const names = await profNames(groups.map(g => g.owner_id));
+  const row = g => linkRow({ href: '#workspace/groups/' + g.id, title: g.name, meta: [(mine[g.id] && mine[g.id].status === 'pending' ? 'Request sent' : ''), g.subject, g.chapter, (counts[g.id] || 0) + ' members', names[g.owner_id] ? 'by ' + names[g.owner_id] : ''].filter(Boolean).join(' \u00b7 ') });
+  const [sr, chr] = await Promise.all([sb.from('subjects').select('id,name'), sb.from('chapters').select('subject_id,title')]);
+  const subs = sr.data || [], chs = chr.data || [], sugg = [];
+  const inGroup = g => mine[g.id];
+  subs.forEach(su => {
+    const own = chs.filter(c => c.subject_id === su.id).slice(0, 2);
+    [{ subject: su.name, chapter: '' }, ...own.map(c => ({ subject: su.name, chapter: c.title }))].forEach(t => {
+      const hit = groups.find(g => low(g.subject) === low(t.subject) && low(g.chapter) === low(t.chapter) && !inGroup(g));
+      const has = groups.some(g => low(g.subject) === low(t.subject) && low(g.chapter) === low(t.chapter) && inGroup(g));
+      if (!has) sugg.push({ t, hit });
+    });
+  });
+  const shown = sugg.slice(0, 5);
+  const myGroups = groups.filter(g => mine[g.id]), others = groups.filter(g => !mine[g.id]);
+  const list = h('div', { class: 'list' }), q = h('input', { class: 'control', type: 'search', placeholder: 'Search groups', 'aria-label': 'Search groups' });
+  const paint = () => { const t = low(q.value); const hit = others.filter(g => !t || low([g.name, g.subject, g.chapter, g.description].join(' ')).includes(t));
+    list.replaceChildren(...(hit.length ? hit.map(row) : [emptyBlock('No groups found', 'Create one and invite classmates.')])); };
+  q.addEventListener('input', paint); paint();
+  return { title: 'Study groups', nodes: [crumb, h('div', { class: 'edit-row' }, h('button', { class: 'btn', type: 'button', text: '+ Create a group', onclick: () => groupDialog(null) })),
+    myGroups.length ? section('My groups', null, null, h('div', { class: 'list' }, myGroups.map(row))) : null,
+    shown.length ? section('Suggested for you', null, null, h('div', { class: 'list' }, shown.map(({ t, hit }) => hit ? row(hit)
+      : h('button', { class: 'row', type: 'button', style: 'text-align:left', onclick: () => groupDialog(null, { name: t.chapter ? t.subject + ': ' + t.chapter + ' study group' : t.subject + ' study group', subject: t.subject, chapter: t.chapter }) },
+        h('span', { style: 'display:grid;gap:2px;min-width:0' }, h('strong', { text: 'Start a group for ' + (t.chapter ? t.subject + ' \u2014 ' + t.chapter : t.subject) }), h('small', { text: 'No group for it yet \u2014 be the first' })))))) : null,
+    section('Discover', null, null, h('div', { class: 'field' }, q), list)] };
+}
+
+/* ---------- G8: structured sharing & requests (inside a group) ----------
+   Members share a note or a link (socials, profile, resources) and post template-based
+   requests (notes / an explanation / practice questions / resources for a topic). Others
+   answer a request by sharing a note or a link under it \u2014 there are no free-form
+   comments or threads. group_items; schema-update-G8-group-sharing.sql. */
+const REQ_TEMPLATE = { notes: 'Notes', explain: 'An explanation', practice: 'Practice questions', resources: 'Resources or links' };
+async function itemDialog(g, kind, req) {
+  let mine = [];
+  if (kind === 'note') {
+    const [a, b] = await Promise.all([sb.from('notes').select('title,body').order('created_at', { ascending: false }).limit(40), sb.from('mnemonics').select('title,body').order('created_at', { ascending: false }).limit(20)]);
+    mine = [...(a.data || []), ...(b.data || [])].filter(x => x.body);
+  }
+  showDialog({
+    title: (req ? 'Answer: ' : '') + (kind === 'note' ? 'Share a note' : 'Share a link'), submitLabel: 'Share',
+    render(form) {
+      const t = makeField(kind === 'note' ? 'Title' : 'Label', { maxlength: 200, placeholder: kind === 'note' ? 'e.g. Motion \u2014 key formulas' : 'e.g. My YouTube channel, my Instagram' });
+      const b = makeField(kind === 'note' ? 'Note' : 'Description (optional)', { maxlength: 5000, multiline: true, rows: kind === 'note' ? 6 : 2 });
+      const u = makeField('Link (https)', { maxlength: 500, placeholder: 'https://\u2026' });
+      if (mine.length) {
+        const sel = h('select', { class: 'control', 'aria-label': 'Start from a saved note' }, h('option', { value: '', text: 'Or start from one of my saved notes\u2026' }), mine.map((x, i) => h('option', { value: String(i), text: x.title || x.body.slice(0, 40) })));
+        sel.addEventListener('change', () => { const x = mine[Number(sel.value)]; if (x) { t.input.value = x.title || ''; b.input.value = x.body; } });
+        form.append(h('div', { class: 'field' }, sel));
+      }
+      form.append(t.wrap); if (kind === 'link') form.append(u.wrap); form.append(b.wrap);
+      return () => {
+        const title = t.input.value.trim(), body = b.input.value.trim();
+        if (!title) throw new Error('Enter a ' + (kind === 'note' ? 'title' : 'label') + '.');
+        if (kind === 'note' && !body) throw new Error('Write the note.');
+        return { title, body, url: kind === 'link' ? normalizeUrl(u.input.value) : null };
+      };
+    },
+    async onSubmit(v) {
+      const r = await sb.from('group_items').insert({ ...v, kind, group_id: g.id, user_id: currentUser.id, request_id: req ? req.id : null });
+      if (r.error) throw r.error; route();
+    }
+  });
+}
+function requestDialog(g) {
+  let tpl = 'notes';
+  showDialog({
+    title: 'Request something', submitLabel: 'Post request',
+    render(form) {
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'What do you need' }, Object.entries(REQ_TEMPLATE).map(([k, l]) => h('button', { type: 'button', 'data-k': k, text: l, onclick: () => { tpl = k; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === tpl)));
+      sync();
+      const topic = makeField('For which chapter or topic?', { maxlength: 120, placeholder: 'e.g. Chapter 4 \u2014 Motion' });
+      const d = makeField('Anything else? (optional)', { maxlength: 1000, multiline: true, rows: 3 });
+      form.append(h('div', { class: 'field' }, h('label', { text: 'I need' }), seg), topic.wrap, d.wrap);
+      return () => { const tp = topic.input.value.trim(); if (tp.length < 3) throw new Error('Say which chapter or topic (3+ characters).'); return { title: REQ_TEMPLATE[tpl] + ' for ' + tp, body: d.input.value.trim() }; };
+    },
+    async onSubmit(v) { const r = await sb.from('group_items').insert({ ...v, kind: 'request', template: tpl, group_id: g.id, user_id: currentUser.id }); if (r.error) throw r.error; route(); }
+  });
+}
+function groupSharing(g, items, names, err) {
+  if (err) return [h('div', { class: 'status bad' }, h('strong', { text: 'Sharing is not set up yet' }), 'Run the update SQL in Supabase (schema-update-G8-group-sharing.sql), then reload. (' + err.message + ')')];
+  const me = currentUser.id, owner = g.owner_id === me, btn = (t, fn, cls) => h('button', { class: 'btn quiet small' + (cls || ''), type: 'button', text: t, onclick: fn });
+  const who = uid => h('a', { href: '#workspace/people/' + uid, text: names[uid] || 'Athenaeum user' });
+  const del = i => (i.user_id === me || owner) ? btn('Delete', () => confirmDeleteRow('group_items', i, i.kind === 'request' ? 'request' : 'shared item'), ' danger-text') : null;
+  const card = (i, extra) => h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' }, ...extra);
+  const shareCard = i => card(i, [h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip', text: i.kind === 'note' ? 'Note' : 'Link' }), who(i.user_id)),
+    h('strong', { style: 'overflow-wrap:anywhere', text: i.title }),
+    i.body ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: i.body }) : null,
+    i.url && safeHref(i.url) ? h('a', { href: i.url, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:13px', text: i.url }) : null,
+    del(i) ? h('div', { class: 'vault-actions' }, del(i)) : null,
+    i.user_id === me ? null : reportBtn('group_item', i.id, i.user_id, i.title + ' ' + i.body)]);
+  const reqs = items.filter(i => i.kind === 'request'), plain = items.filter(i => i.kind !== 'request' && !i.request_id);
+  const reply = r => items.filter(i => i.request_id === r.id).slice().reverse();
+  const reqCard = r => card(r, [h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip ' + (r.status === 'fulfilled' ? 'pub' : ''), text: r.status === 'fulfilled' ? 'Answered' : 'Open request' }), who(r.user_id)),
+    h('strong', { style: 'overflow-wrap:anywhere', text: r.title }),
+    r.body ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: r.body }) : null,
+    ...reply(r).map(x => h('div', { style: 'border-left:2px solid var(--line);padding-left:10px;display:grid;gap:4px;min-width:0' }, shareCard(x))),
+    h('div', { class: 'vault-actions' }, btn('Share a note', () => itemDialog(g, 'note', r)), btn('Share a link', () => itemDialog(g, 'link', r)),
+      r.user_id === me ? btn(r.status === 'fulfilled' ? 'Reopen' : 'Mark answered', async () => { const u = await sb.from('group_items').update({ status: r.status === 'fulfilled' ? 'open' : 'fulfilled' }).eq('id', r.id); if (u.error) alert('Could not update: ' + u.error.message); route(); }) : null, del(r), r.user_id === me ? null : reportBtn('group_item', r.id, r.user_id, r.title))]);
+  return [h('div', { class: 'vault-actions', style: 'margin:12px 0' }, btn('Share a note', () => itemDialog(g, 'note', null)), btn('Share a link', () => itemDialog(g, 'link', null)), btn('Request something', () => requestDialog(g))),
+    section('Requests', null, null, reqs.length ? reqs.map(reqCard) : h('p', { class: 'hint-line', text: 'No requests yet. Ask for notes, an explanation, practice questions or resources.' })),
+    section('Shared in this group', null, null, plain.length ? plain.map(shareCard) : h('p', { class: 'hint-line', text: 'Nothing shared yet.' })),
+    h('p', { class: 'hint-line', text: 'Requests use structured answers; use the group chat above for free-form discussion.' })];
+}
+
+/* ---------- G9: in-group chat ----------
+   A chat section on every group page, visible only to active members: the latest 50
+   messages (Load earlier for more), sent as plain text, updated live through Supabase
+   Realtime with a 20 s poll as a fallback. There are no direct messages anywhere.
+   group_messages; schema-update-G9-group-chat.sql. */
+function groupChat(g, names) {
+  const me = currentUser.id, owner = g.owner_id === me, seen = new Set();
+  let oldest = null, newest = null, ch = null, timer = null;
+  const box = h('div', { style: 'max-height:50vh;overflow-y:auto;display:grid;gap:6px;align-content:start;padding:2px;margin-bottom:8px', role: 'log', 'aria-live': 'polite', 'aria-label': 'Group chat' });
+  const status = h('p', { class: 'hint-line', role: 'status', text: 'Loading chat\u2026' });
+  const earlier = h('button', { class: 'btn quiet small', type: 'button', text: 'Load earlier', hidden: true });
+  const ta = h('textarea', { class: 'control area', rows: 2, maxlength: 1000, placeholder: 'Message the group\u2026', 'aria-label': 'Message the group' });
+  const send = h('button', { class: 'btn', type: 'button', text: 'Send' });
+  const msgEl = m => {
+    const mineMsg = m.user_id === me, el = h('div', { 'data-id': m.id, style: 'padding:8px 12px;border:1px solid var(--line);border-radius:12px;min-width:0;display:grid;gap:2px;' + (mineMsg ? 'background:var(--paper-hi)' : '') },
+      h('small', { style: 'color:var(--dim)' }, h('a', { href: '#workspace/people/' + m.user_id, text: mineMsg ? 'You' : (names[m.user_id] || 'Athenaeum user') }), ' \u00b7 ' + whenTxt(m.created_at)),
+      h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: m.body }));
+    if (mineMsg || owner) el.append(h('button', { class: 'btn quiet small danger-text', type: 'button', style: 'justify-self:start', text: 'Delete', onclick: async () => { const r = await sb.from('group_messages').delete().eq('id', m.id); if (r.error) alert('Could not delete: ' + r.error.message); else drop(m.id); } }));
+    if (!mineMsg) { const rb = reportBtn('group_message', m.id, m.user_id, m.body); if (rb) el.append(rb); }
+    return el;
+  };
+  const drop = id => { const el = box.querySelector('[data-id="' + id + '"]'); if (el) el.remove(); };
+  async function add(list, atTop) {
+    const fresh = list.filter(m => !seen.has(m.id)); if (!fresh.length) return;
+    const need = fresh.map(m => m.user_id).filter(u => !(u in names));
+    if (need.length) Object.assign(names, await profNames(need));
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    fresh.forEach(m => { seen.add(m.id); if (!oldest || m.created_at < oldest) oldest = m.created_at; if (!newest || m.created_at > newest) newest = m.created_at; });
+    const els = fresh.map(msgEl);
+    if (atTop) box.prepend(...els); else { box.append(...els); if (near) box.scrollTop = box.scrollHeight; }
+  }
+  async function loadLatest() {
+    const r = await sb.from('group_messages').select('*').eq('group_id', g.id).order('created_at', { ascending: false }).limit(50);
+    if (r.error) { status.textContent = 'Chat is not set up yet. Run schema-update-G9-group-chat.sql in Supabase, then reload. (' + r.error.message + ')'; return false; }
+    const rows = (r.data || []).slice().reverse(); await add(rows, false); box.scrollTop = box.scrollHeight;
+    earlier.hidden = rows.length < 50; status.textContent = rows.length ? '' : 'No messages yet \u2014 say hello.'; return true;
+  }
+  earlier.addEventListener('click', async () => {
+    earlier.disabled = true;
+    const r = await sb.from('group_messages').select('*').eq('group_id', g.id).lt('created_at', oldest).order('created_at', { ascending: false }).limit(50);
+    earlier.disabled = false; if (r.error) { status.textContent = 'Could not load earlier messages.'; return; }
+    const rows = (r.data || []).slice().reverse(); const top = box.scrollHeight; await add(rows, true); box.scrollTop = box.scrollHeight - top; earlier.hidden = rows.length < 50;
+  });
+  async function sendMsg() {
+    const body = ta.value.trim(); if (!body) return;
+    send.disabled = true;
+    const r = await sb.from('group_messages').insert({ group_id: g.id, user_id: me, body }).select('*').single();
+    send.disabled = false;
+    if (r.error) { status.textContent = 'Could not send: ' + r.error.message; return; }
+    ta.value = ''; status.textContent = ''; await add([r.data], false); box.scrollTop = box.scrollHeight;
+  }
+  send.addEventListener('click', sendMsg);
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMsg(); } });
+  const stop = () => { clearInterval(timer); if (ch) { try { sb.removeChannel(ch); } catch (e) {} ch = null; } };
+  loadLatest().then(ok => {
+    if (!ok) return;
+    try {
+      ch = sb.channel('gchat-' + g.id)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'group_messages', filter: 'group_id=eq.' + g.id }, p => add([p.new], false))
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'group_messages' }, p => { if (p.old && p.old.id) { drop(p.old.id); } })
+        .subscribe();
+    } catch (e) { ch = null; }
+    timer = setInterval(async () => {
+      if (!box.isConnected) return stop();
+      if (!newest) return;
+      const r = await sb.from('group_messages').select('*').eq('group_id', g.id).gt('created_at', newest).order('created_at').limit(50);
+      if (!r.error && r.data && r.data.length) add(r.data, false);
+    }, 20000);
+  });
+  return section('Group chat', null, null, status, earlier, box, h('div', { class: 'field' }, ta), h('div', { class: 'actions' }, send),
+    h('p', { class: 'hint-line', text: 'Only members of this group can read or write here. Messages cannot be edited; you can delete your own.' }));
+}
+
+/* ---------- G10: teacher reputation & verification ----------
+   A Teacher section on a teacher's public profile (#workspace/people/<id>): Teacher and
+   Verified badges, average rating and ratings with comments. Only people who have used the
+   teacher can rate (an unlocked paid course, a completed consult, or an accepted answer);
+   the rule is enforced in the database. Verification is granted by the owner in the
+   Supabase SQL editor. teacher_reviews, teacher_verification, teacher_ratings;
+   schema-update-G10-teacher-reputation.sql. */
+function teacherRateDialog(tid, ex) {
+  let rating = ex ? ex.rating : 5;
+  showDialog({
+    title: ex ? 'Edit your rating' : 'Rate this teacher', submitLabel: ex ? 'Save' : 'Post rating',
+    render(form) {
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Rating' }, [1, 2, 3, 4, 5].map(n => h('button', { type: 'button', 'data-n': n, text: String(n), onclick: () => { rating = n; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.n) === rating)));
+      sync();
+      const c = makeField('Comment (optional)', { value: ex && ex.comment, maxlength: 1000, multiline: true, rows: 4, placeholder: 'How did they help you?' });
+      form.append(h('div', { class: 'field' }, h('label', { text: 'Rating (1\u20135)' }), seg), c.wrap, h('p', { class: 'hint-line', text: 'Ratings and comments are public on their profile.' }));
+      return () => ({ rating, comment: c.input.value.trim(), updated_at: new Date().toISOString() });
+    },
+    async onSubmit(v) {
+      const r = ex ? await sb.from('teacher_reviews').update(v).eq('id', ex.id) : await sb.from('teacher_reviews').insert({ ...v, teacher_id: tid, reviewer_id: currentUser.id });
+      if (r.error) throw new Error(r.error.code === '42501' ? 'You can rate a teacher after you use them (see the note on their profile).' : r.error.message);
+      route();
+    },
+    extra: ex ? { label: 'Delete rating', onClick: () => confirmDeleteRow('teacher_reviews', ex, 'rating') } : null
+  });
+}
+async function teacherProfileSection(uid, mine) {
+  try {
+    const t = await sb.from('teachers_public').select('user_id,subjects').eq('user_id', uid).maybeSingle();
+    if (t.error || !t.data) return null;
+    const [v, rt, rv, can] = await Promise.all([sb.from('teacher_verification').select('teacher_id').eq('teacher_id', uid).maybeSingle(),
+      sb.from('teacher_ratings').select('*').eq('teacher_id', uid).maybeSingle(),
+      sb.from('teacher_reviews').select('*').eq('teacher_id', uid).order('created_at', { ascending: false }).limit(50),
+      mine ? { data: false } : sb.rpc('can_rate_teacher', { tid: uid })]);
+    const head = h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px' }, h('span', { class: 'chip', text: 'Teacher' }),
+      v.data ? h('span', { class: 'chip pub', text: 'Verified \u2713' }) : null, h('small', { style: 'overflow-wrap:anywhere', text: t.data.subjects }));
+    if (rv.error || rt.error) return section('Teacher', null, null, head, h('p', { class: 'hint-line', text: 'Ratings are not set up yet (schema-update-G10-teacher-reputation.sql).' }));
+    const rows = rv.data || [], names = await profNames(rows.map(x => x.reviewer_id)), mineRev = rows.find(x => x.reviewer_id === currentUser.id);
+    const sum = rt.data && rt.data.reviews ? '\u2605 ' + Number(rt.data.avg_rating).toFixed(1) + ' \u00b7 ' + rt.data.reviews + (rt.data.reviews === 1 ? ' rating' : ' ratings') : 'No ratings yet';
+    const acts = [];
+    if (!mine && (can.data || mineRev)) acts.push(h('button', { class: 'btn quiet small', type: 'button', text: mineRev ? 'Edit my rating' : 'Rate this teacher', onclick: () => teacherRateDialog(uid, mineRev) }));
+    return section('Teacher', null, null, head, h('strong', { text: sum }),
+      !mine && !can.data && !mineRev ? h('p', { class: 'hint-line', text: 'You can rate this teacher after you finish a session with them, unlock one of their paid courses, or get an accepted answer from them.' }) : null,
+      acts.length ? h('div', { class: 'vault-actions', style: 'margin:8px 0' }, acts) : null,
+      mine ? h('p', { class: 'hint-line', text: 'This is how students see you. Verification is granted by the Athenaeum owner.' }) : null,
+      rows.map(x => h('div', { class: 'proj', style: 'padding:10px 14px;display:grid;gap:4px;min-width:0;margin-top:8px' },
+        h('small', {}, starsOf(x.rating) + ' \u00b7 ', h('a', { href: '#workspace/people/' + x.reviewer_id, text: x.reviewer_id === currentUser.id ? 'You' : (names[x.reviewer_id] || 'Athenaeum user') }), ' \u00b7 ' + new Date(x.created_at).toLocaleDateString()),
+        x.comment ? h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: x.comment }) : null,
+        reportBtn('teacher_review', x.id, x.reviewer_id, x.comment || 'rating'))));
+  } catch (e) { return null; }
+}
+
+/* ---------- G11: report & moderation ----------
+   A Report button wherever other people's content appears: community posts, questions,
+   answers, groups, group chat messages and shared items, book reviews, teacher ratings,
+   marketplace courses and public profiles. A report stores the reason, an excerpt and the
+   author; the owner reviews the queue in the Supabase SQL editor and can dismiss a report or
+   remove the content with moderation_remove(). Nothing is hidden automatically.
+   reports; schema-update-G11-reports.sql. */
+const REPORT_REASON = { spam: 'Spam or advertising', abuse: 'Harassment or abuse', inappropriate: 'Inappropriate content', wrong: 'Wrong or misleading', copyright: 'Copyright problem', other: 'Something else' };
+function reportDialog(type, id, ownerId, excerpt) {
+  showDialog({
+    title: 'Report this', submitLabel: 'Send report',
+    render(form) {
+      const sel = h('select', { class: 'control', 'aria-label': 'Reason' }, Object.entries(REPORT_REASON).map(([k, l]) => h('option', { value: k, text: l })));
+      const d = makeField('Details (optional)', { maxlength: 500, multiline: true, rows: 3, placeholder: 'What is wrong with it?' });
+      form.append(h('div', { class: 'field' }, h('label', { text: 'Reason' }), sel), d.wrap, h('p', { class: 'hint-line', text: 'The Athenaeum owner reviews reports. The content is not hidden automatically, and the author is not told who reported it.' }));
+      return () => ({ reason: sel.value, details: d.input.value.trim() });
+    },
+    async onSubmit(v) {
+      const r = await sb.from('reports').insert({ ...v, reporter_id: currentUser.id, target_type: type, target_id: id, target_owner_id: ownerId || null, excerpt: String(excerpt || '').replace(/\s+/g, ' ').trim().slice(0, 300) });
+      if (r.error) throw new Error(r.error.code === '23505' ? 'You have already reported this.' : r.error.code === '42501' ? 'You have sent a lot of reports recently. Try again later.' : r.error.code === '42P01' || /reports/.test(r.error.message) && /not exist|schema cache/.test(r.error.message) ? 'Reporting is not set up yet (schema-update-G11-reports.sql).' : r.error.message);
+      setTimeout(() => showDialog({ title: 'Report sent', text: 'Thank you. The owner will look at it.', submitLabel: 'Done', onSubmit() {} }), 0);
+    }
+  });
+}
+function reportBtn(type, id, ownerId, excerpt) {
+  if (ownerId && ownerId === currentUser.id) return null;
+  return h('button', { class: 'btn quiet small', type: 'button', text: 'Report', 'aria-label': 'Report this', onclick: () => reportDialog(type, id, ownerId, excerpt) });
 }
 
 /* ---------- E28: live classes ----------
@@ -11131,6 +12080,7 @@ async function boot() {
   $('#sheet-close').addEventListener('click', closeSheet);
   $('#sheet-profile').addEventListener('click', closeSheet);
   $('#sheet-posts').addEventListener('click', closeSheet);
+  $('#sheet-teach').addEventListener('click', closeSheet);
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   $('#viewer-close').addEventListener('click', closeViewer);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closeSheet(); } });
