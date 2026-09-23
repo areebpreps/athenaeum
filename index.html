@@ -2566,6 +2566,9 @@ async function buildFullBackupZip(onStatus) {
   ]);
   zip.file('planner.json', JSON.stringify({ planner_items: must(plannerRes), projects: must(projectsRes) }, null, 2));
 
+  const schRes = await sb.from('scholarship_profiles').select('*');
+  zip.file('scholarship_profile.json', JSON.stringify(schRes.error ? [] : schRes.data, null, 2));
+
   say('Reading your Mistake Vault…');
   const mistakeRes = await sb.from('mistake_vault').select('*').order('last_missed_at', { ascending: true });
   zip.file('progress/mistake_vault.json', JSON.stringify(withOrigin(must(mistakeRes)), null, 2));
@@ -2586,6 +2589,7 @@ async function buildFullBackupZip(onStatus) {
     '- profile.json — your username and account creation date\n' +
     '- workspace/ — subjects, chapters, topics, notes, formulas, mnemonics, flashcards, info boxes, traps, saved simulations and saved videos\n' +
     '- reference_vault.json — metadata for your Reference Vault photos, PDFs and Drive/OneDrive links (see note below)\n' +
+    '- scholarship_profile.json — your Scholarship Center intake profile (export only; re-enter it after a restore)\n' +
     '- planner.json — your weekly routine, milestones, projects and ECAs\n' +
     '- progress/mistake_vault.json — your Mistake Vault entries\n' +
     '- ai/chats.json — every AI tool conversation, with its full message history\n\n' +
@@ -2853,6 +2857,7 @@ function backupPanel() {
 // Hubs (Phase 3.1) live under the Workspace tab: #workspace/<hub>[/<item>]
 function buildWorkspace(ids = []) {
   if (ids[0] === 'today')   return todayHub();
+  if (ids[0] === 'scholarships') return scholarshipsHub();
   if (ids[0] === 'planner')  return plannerHub();
   if (ids[0] === 'projects') return projectsHub();
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
@@ -2867,6 +2872,7 @@ function hubsSection() {
   return section('Hubs', null, null,
     h('div', { class: 'list' },
       linkRow({ href: '#workspace/today',    title: 'Today',              meta: 'Everything due or scheduled today, in one place' }),
+      linkRow({ href: '#workspace/scholarships', title: 'Scholarship Center', meta: 'Your profile and scholarship planning' }),
       linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
       linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
@@ -6561,6 +6567,244 @@ async function todayHub() {
     workSection('Projects & learning', otherWork, 'project', '+ Add project'),
     extra > 0 ? h('a', { class: 'row-link', href: '#workspace/projects', text: 'View all (' + extra + ' more) \u2192' }) : null
   ].filter(Boolean) };
+}
+
+/* ---------- E1: Scholarship Center -- intake profile ----------------------
+   First-use setup wizard (education, target, home country + destinations,
+   optional test scores) and a "My profile" summary that reopens the same
+   wizard for edits. One row per person in scholarship_profiles (user_id is
+   unique; the SQL is in schema-update-E1-scholarship-profile.sql). Later
+   Scholarship Center features (search fit-scoring, roadmap, gap analysis)
+   read this row, so the shape is kept plain: education and test_scores are
+   JSON lists, destinations is a text list. ---------------------------------- */
+const SCH_EDU_LEVELS = [
+  { key: 'SSC', scale: 5 }, { key: 'HSC', scale: 5 }, { key: 'O Levels', scale: 4 }, { key: 'A Levels', scale: 4 },
+  { key: 'Diploma', scale: 4 }, { key: 'Bachelor\u2019s', scale: 4 }, { key: 'Master\u2019s', scale: 4 }
+];
+const SCH_TARGET_LEVELS = ['Bachelor\u2019s', 'Master\u2019s', 'PhD', 'Diploma / other'];
+const SCH_TESTS = ['IELTS', 'TOEFL', 'Duolingo', 'SAT', 'GRE', 'GMAT', 'Other'];
+const SCH_DESTINATIONS = ['USA', 'Canada', 'UK', 'Australia', 'Germany', 'Japan', 'South Korea', 'China', 'Turkey',
+  'Malaysia', 'Netherlands', 'Sweden', 'Finland', 'Italy', 'Hungary', 'Open to anywhere'];
+const SCH_COUNTRIES = ['Bangladesh', 'India', 'Pakistan', 'Nepal', 'Sri Lanka', 'Bhutan', 'Maldives', 'Afghanistan', 'Indonesia',
+  'Malaysia', 'Philippines', 'Vietnam', 'Thailand', 'Nigeria', 'Ghana', 'Kenya', 'Egypt', 'Ethiopia', 'Uganda', 'Tanzania',
+  'Turkey', 'Iran', 'Iraq', 'Jordan', 'Brazil', 'Mexico', 'Colombia', 'United States', 'United Kingdom', 'Canada', 'Other'];
+const SCH_STEPS = ['Education', 'Goals', 'Tests', 'Review'];
+
+function schDraftFromRow(row) {
+  return {
+    education: Array.isArray(row && row.education) ? row.education.map(e => ({ ...e })) : [],
+    target_level: (row && row.target_level) || '',
+    target_major: (row && row.target_major) || '',
+    home_country: (row && row.home_country) || '',
+    destinations: Array.isArray(row && row.destinations) ? row.destinations.slice() : [],
+    test_scores: Array.isArray(row && row.test_scores) ? row.test_scores.map(t => ({ ...t })) : []
+  };
+}
+
+// Returns an error string for a step's fields, or '' if they're fine.
+function schValidate(d, step) {
+  if (step === 0) {
+    if (!d.education.length) return 'Pick at least one qualification you have completed.';
+    for (const e of d.education) {
+      const gpa = Number(e.gpa), scale = Number(e.scale);
+      if (e.gpa === '' || e.gpa == null || isNaN(gpa)) return 'Enter your result for ' + e.level + '.';
+      if (!(scale > 0)) return 'Enter what ' + e.level + ' is out of (for example 5.00).';
+      if (gpa < 0 || gpa > scale) return 'Your ' + e.level + ' result can\u2019t be higher than ' + scale + '.';
+    }
+  }
+  if (step === 1) {
+    if (!d.target_level) return 'Choose the level you want to study.';
+    if (!d.target_major.trim()) return 'Enter the subject or major you want.';
+    if (!d.home_country.trim()) return 'Enter your home country.';
+    if (!d.destinations.length) return 'Pick at least one destination (or \u201cOpen to anywhere\u201d).';
+  }
+  if (step === 2) {
+    for (const t of d.test_scores) {
+      if (t.score === '' || t.score == null) return 'Enter your ' + (t.test === 'Other' ? 'test' : t.test) + ' score, or untick it.';
+      if (t.test === 'Other' && !String(t.name || '').trim()) return 'Enter the name of the other test.';
+    }
+  }
+  return '';
+}
+
+function schChip(text, on, onclick) {
+  return h('button', { class: 'chip-btn', type: 'button', text, 'aria-pressed': String(!!on), onclick });
+}
+
+function schSummaryFacts(row) {
+  const edu = (row.education || []).map(e => e.level + ' \u00b7 ' + e.gpa + ' / ' + e.scale);
+  const tests = (row.test_scores || []).map(t => (t.test === 'Other' ? (t.name || 'Other') : t.test) + ' \u00b7 ' + t.score);
+  return [
+    ['Education completed', edu.join('\n') || '\u2014'],
+    ['Wants to study', [row.target_level, row.target_major].filter(Boolean).join(' \u00b7 ') || '\u2014'],
+    ['Home country', row.home_country || '\u2014'],
+    ['Target destinations', (row.destinations || []).join(', ') || '\u2014'],
+    ['Test scores', tests.join('\n') || 'None yet']
+  ];
+}
+
+async function scholarshipsHub() {
+  const res = await sb.from('scholarship_profiles').select('*').maybeSingle();
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  if (res.error) {
+    return { title: 'Scholarship Center', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Scholarship Center is not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-E1-scholarship-profile.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+
+  let row = res.data || null;
+  let mode = row ? 'summary' : 'wizard';
+  let step = 0;
+  let draft = schDraftFromRow(row);
+  const box = h('div');
+
+  function paintSummary() {
+    const facts = schSummaryFacts(row);
+    box.replaceChildren(
+      section('My profile', 'Edit', () => { draft = schDraftFromRow(row); step = 0; mode = 'wizard'; paint(); },
+        h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:12px' },
+          facts.map(([k, v]) => h('div', {},
+            h('small', { text: k }),
+            h('strong', { style: 'display:block;white-space:pre-line;font-weight:600', text: v })))),
+        h('p', { class: 'hint-line', text: 'This profile is what search, your roadmap and gap analysis will use to fit scholarships to you. Update it whenever a score or result changes.' })));
+  }
+
+  function paintWizard() {
+    const err = h('p', { class: 'msg err', role: 'alert', hidden: true });
+    const fail = t => { err.textContent = t; err.hidden = false; };
+    const goto = n => { step = n; paint(); };
+    const tryNext = () => {
+      const m = schValidate(draft, step);
+      if (m) return fail(m);
+      goto(step + 1);
+    };
+
+    const stepper = h('div', { class: 'chips' }, SCH_STEPS.map((s, i) =>
+      h('button', { class: 'chip-btn', type: 'button', text: (i + 1) + '. ' + s, 'aria-pressed': String(i === step),
+        onclick: () => {
+          if (i > step) { for (let k = step; k < i; k++) { const m = schValidate(draft, k); if (m) return fail(m); } }
+          goto(i);
+        } })));
+
+    const body = h('div');
+    if (step === 0) {
+      body.append(h('p', { class: 'hint-line', text: 'Tap everything you have completed, then enter your result.' }));
+      const rowsBox = h('div');
+      const chips = h('div', { class: 'chips' }, SCH_EDU_LEVELS.map(l => {
+        const has = () => draft.education.some(e => e.level === l.key);
+        const chip = schChip(l.key, has(), () => {
+          if (has()) draft.education = draft.education.filter(e => e.level !== l.key);
+          else draft.education.push({ level: l.key, gpa: '', scale: l.scale });
+          chip.setAttribute('aria-pressed', String(has()));
+          paintRows();
+        });
+        return chip;
+      }));
+      const paintRows = () => rowsBox.replaceChildren(...SCH_EDU_LEVELS.map(l => draft.education.find(e => e.level === l.key)).filter(Boolean).map(e => {
+        const gpa = h('input', { class: 'control', type: 'number', inputmode: 'decimal', step: '0.01', min: '0', placeholder: 'Result / GPA', 'aria-label': e.level + ' result', value: e.gpa });
+        const scale = h('input', { class: 'control', type: 'number', inputmode: 'decimal', step: '0.01', min: '0', placeholder: 'Out of', 'aria-label': e.level + ' out of', value: e.scale });
+        gpa.addEventListener('input', () => { e.gpa = gpa.value; });
+        scale.addEventListener('input', () => { e.scale = scale.value; });
+        return h('div', { class: 'field' }, h('label', { text: e.level }),
+          h('div', { style: 'display:flex;gap:10px;align-items:center' }, gpa, h('span', { text: 'out of' }), scale));
+      }));
+      paintRows();
+      body.append(chips, rowsBox);
+    }
+
+    if (step === 1) {
+      const major = makeField('Subject / major you want to study', { value: draft.target_major, maxlength: 100, placeholder: 'e.g. Computer Science' });
+      major.input.addEventListener('input', () => { draft.target_major = major.input.value; });
+      const home = makeField('Home country', { value: draft.home_country, maxlength: 60, placeholder: 'e.g. Bangladesh' });
+      home.input.setAttribute('list', 'sch-countries');
+      home.input.addEventListener('input', () => { draft.home_country = home.input.value; });
+      const dl = h('datalist', { id: 'sch-countries' }, SCH_COUNTRIES.map(c => h('option', { value: c })));
+
+      const levelChips = h('div', { class: 'chips' });
+      const paintLevels = () => levelChips.replaceChildren(...SCH_TARGET_LEVELS.map(l =>
+        schChip(l, draft.target_level === l, () => { draft.target_level = l; paintLevels(); })));
+      paintLevels();
+
+      const destChips = h('div', { class: 'chips' });
+      const paintDest = () => destChips.replaceChildren(...SCH_DESTINATIONS.map(d =>
+        schChip(d, draft.destinations.includes(d), () => {
+          draft.destinations = draft.destinations.includes(d) ? draft.destinations.filter(x => x !== d) : [...draft.destinations, d];
+          paintDest();
+        })));
+      paintDest();
+
+      body.append(
+        h('div', { class: 'field' }, h('label', { text: 'Level you want to study' }), levelChips),
+        major.wrap, home.wrap, dl,
+        h('div', { class: 'field' }, h('label', { text: 'Target destinations (pick any)' }), destChips));
+    }
+
+    if (step === 2) {
+      body.append(h('p', { class: 'hint-line', text: 'Optional. Tap the tests you have taken and enter your score. Skip this if you haven\u2019t taken any yet \u2014 you can add scores later.' }));
+      const rowsBox = h('div');
+      const chips = h('div', { class: 'chips' }, SCH_TESTS.map(t => {
+        const has = () => draft.test_scores.some(x => x.test === t);
+        const chip = schChip(t, has(), () => {
+          if (has()) draft.test_scores = draft.test_scores.filter(x => x.test !== t);
+          else draft.test_scores.push({ test: t, score: '', name: '' });
+          chip.setAttribute('aria-pressed', String(has()));
+          paintRows();
+        });
+        return chip;
+      }));
+      const paintRows = () => rowsBox.replaceChildren(...SCH_TESTS.map(t => draft.test_scores.find(x => x.test === t)).filter(Boolean).map(t => {
+        const score = h('input', { class: 'control', type: 'text', inputmode: 'decimal', maxlength: 12, placeholder: 'Score', 'aria-label': t.test + ' score', value: t.score });
+        score.addEventListener('input', () => { t.score = score.value.trim(); });
+        const kids = [];
+        if (t.test === 'Other') {
+          const name = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'Test name', 'aria-label': 'Test name', value: t.name || '' });
+          name.addEventListener('input', () => { t.name = name.value; });
+          kids.push(name);
+        }
+        kids.push(score);
+        return h('div', { class: 'field' }, h('label', { text: t.test }), h('div', { style: 'display:flex;gap:10px' }, kids));
+      }));
+      paintRows();
+      body.append(chips, rowsBox);
+    }
+
+    if (step === 3) {
+      body.append(h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:12px;margin-bottom:12px' },
+        schSummaryFacts(draft).map(([k, v]) => h('div', {}, h('small', { text: k }),
+          h('strong', { style: 'display:block;white-space:pre-line;font-weight:600', text: v })))));
+    }
+
+    const back = step > 0 ? h('button', { class: 'btn quiet', type: 'button', text: 'Back', onclick: () => goto(step - 1) }) : null;
+    const cancel = row && step === 0 ? h('button', { class: 'btn quiet', type: 'button', text: 'Cancel', onclick: () => { mode = 'summary'; paint(); } }) : null;
+    const nextBtn = h('button', { class: 'btn', type: 'button', text: step === 3 ? (row ? 'Save changes' : 'Save my profile') : 'Next' });
+    nextBtn.addEventListener('click', async () => {
+      if (step < 3) return tryNext();
+      for (let k = 0; k < 3; k++) { const m = schValidate(draft, k); if (m) { goto(k); return; } }
+      nextBtn.disabled = true; err.hidden = true;
+      const payload = {
+        education: draft.education.map(e => ({ level: e.level, gpa: Number(e.gpa), scale: Number(e.scale) })),
+        target_level: draft.target_level, target_major: draft.target_major.trim(), home_country: draft.home_country.trim(),
+        destinations: draft.destinations,
+        test_scores: draft.test_scores.map(t => ({ test: t.test, score: t.score, ...(t.test === 'Other' ? { name: String(t.name).trim() } : {}) })),
+        updated_at: new Date().toISOString()
+      };
+      const out = row
+        ? await sb.from('scholarship_profiles').update(payload).eq('id', row.id).select().single()
+        : await sb.from('scholarship_profiles').insert({ ...payload, completed_at: new Date().toISOString() }).select().single();
+      nextBtn.disabled = false;
+      if (out.error) return fail('Could not save: ' + out.error.message);
+      row = out.data; mode = 'summary'; paint();
+    });
+
+    box.replaceChildren(section(row ? 'Edit profile' : 'Set up your profile', null, null,
+      row ? null : h('p', { class: 'hint-line', text: 'A few quick questions so Scholarship Center can fit scholarships to you. You can change any answer later.' }),
+      stepper, body, err, h('div', { class: 'actions' }, nextBtn, back, cancel)));
+  }
+
+  function paint() { if (mode === 'summary') paintSummary(); else paintWizard(); }
+  paint();
+  return { title: 'Scholarship Center', nodes: [crumb, box] };
 }
 
 /* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
