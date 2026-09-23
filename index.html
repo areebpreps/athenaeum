@@ -270,6 +270,10 @@
   }
   .yt-card small { color: var(--dim); font-size: 12px; }
 
+  /* Library hub (C3): Internet Archive BookReader embed for in-app reading */
+  .ia-embed { position: relative; width: 100%; height: 70vh; max-height: 640px; border-radius: 14px; overflow: hidden; margin: 10px 0; background: #000; }
+  .ia-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
   .item {
     display: grid; gap: 6px; width: 100%; text-align: left; padding: 14px 16px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 16px; color: var(--chalk);
@@ -2499,13 +2503,15 @@ async function buildFullBackupZip(onStatus) {
     .order('created_at', { ascending: true });
   zip.file('reference_vault.json', JSON.stringify(withOrigin(must(sourcesRes)), null, 2));
 
-  say('Reading your saved simulations and videos…');
-  const [simsRes, videosRes] = await Promise.all([
+  say('Reading your saved simulations, videos and library…');
+  const [simsRes, videosRes, libraryRes] = await Promise.all([
     sb.from('saved_simulations').select('*').order('created_at', { ascending: true }),
-    sb.from('saved_videos').select('*').order('created_at', { ascending: true })
+    sb.from('saved_videos').select('*').order('created_at', { ascending: true }),
+    sb.from('saved_library').select('*').order('created_at', { ascending: true })
   ]);
   zip.file('workspace/saved_simulations.json', JSON.stringify(must(simsRes), null, 2));
   zip.file('workspace/saved_videos.json', JSON.stringify(must(videosRes), null, 2));
+  zip.file('workspace/saved_library.json', JSON.stringify(must(libraryRes), null, 2));
 
   say('Reading your planner and projects…');
   const [plannerRes, projectsRes] = await Promise.all([
@@ -2662,9 +2668,10 @@ async function restoreBackupZip(file, onStatus) {
   say('Restoring Reference Vault entries…');
   report.sources = await insertMappedRows('sources', await readJSON('reference_vault.json', []), remapScope);
 
-  say('Restoring saved simulations and videos…');
+  say('Restoring saved simulations, videos and library…');
   report.saved_simulations = await insertMappedRows('saved_simulations', await readJSON('workspace/saved_simulations.json', []));
   report.saved_videos = await insertMappedRows('saved_videos', await readJSON('workspace/saved_videos.json', []));
+  report.saved_library = await insertMappedRows('saved_library', await readJSON('workspace/saved_library.json', []));
 
   say('Restoring your planner and projects…');
   const plannerObj = await readJSON('planner.json', { planner_items: [], projects: [] });
@@ -2697,6 +2704,7 @@ const RESTORE_LABEL = {
   subjects: 'Subjects', chapters: 'Chapters', topics: 'Topics', notes: 'Notes',
   formulas: 'Formulas', mnemonics: 'Mnemonics', flashcards: 'Flashcards', info_boxes: 'Info boxes', traps: 'Traps',
   sources: 'Reference Vault entries', saved_simulations: 'Saved simulations', saved_videos: 'Saved videos',
+  saved_library: 'Saved library items',
   planner_items: 'Planner items', projects: 'Projects', ai_chats: 'AI chats', ai_messages: 'AI messages',
   mistake_vault: 'Mistake Vault entries'
 };
@@ -2804,6 +2812,7 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'portals')  return portalsPage(ids[1]);
   if (ids[0] === 'threed')   return simHub(ids[1]);
   if (ids[0] === 'youtube')  return ytHub(ids[1]);
+  if (ids[0] === 'library')  return libraryHub(ids[1]);
   return buildWorkspaceRoot();
 }
 
@@ -2815,7 +2824,8 @@ function hubsSection() {
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
       linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Question banks — Bangladesh & international' }),
       linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
-      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' })));
+      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' }),
+      linkRow({ href: '#workspace/library',  title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' })));
 }
 
 async function buildWorkspaceRoot() {
@@ -7172,6 +7182,233 @@ function openSaveVideoDialog(existing, presetUrl, presetTitle) {
       route();
     },
     extra: existing ? { label: 'Delete video', onClick: () => confirmDeleteRow('saved_videos', row, 'video', { after: () => go('#workspace/youtube') }) } : null
+  });
+}
+
+/* ---------- Library hub (C3): free ebooks and open-access articles ----------
+   Styled like the 3D simulation hub — a filterable "Main sources" list (opened
+   the same launch-and-save way as simulation sites), plus "My library" for
+   whatever the user saves. On top of that, a search box looks books up across
+   two free, keyless, CORS-enabled catalogs: Open Library and Project
+   Gutenberg (via the Gutendex wrapper). A result with an Internet Archive id
+   reads right in-app through archive.org's embeddable BookReader (the one
+   reader endpoint that, like YouTube's /embed/, sends permissive frame
+   headers); everything else — Gutenberg books and Open Library results with
+   no scanned copy — links out to its own page, same as a main-source site. */
+const LIB_CRUMBS = [{ text: 'Workspace', href: '#workspace' }, { text: 'Library hub', href: '#workspace/library' }];
+const LIBRARY_CATS = [{ key: 'books', label: 'Books' }, { key: 'articles', label: 'Articles' }];
+const libraryCatLabel = k => (LIBRARY_CATS.find(c => c.key === k) || { label: 'Books' }).label;
+
+const LIBRARY_SITES = [
+  { key: 'gutenberg',  cat: 'books',    name: 'Project Gutenberg',    url: 'https://www.gutenberg.org/',        note: '75,000+ free public-domain ebooks' },
+  { key: 'openlibrary', cat: 'books',   name: 'Open Library',         url: 'https://openlibrary.org/',          note: 'Borrow and read millions of books' },
+  { key: 'ia-texts',   cat: 'books',    name: 'Internet Archive Texts', url: 'https://archive.org/details/texts', note: 'Scanned books and documents' },
+  { key: 'std-ebooks', cat: 'books',    name: 'Standard Ebooks',      url: 'https://standardebooks.org/',       note: 'Free, carefully formatted classics' },
+  { key: 'wikisource', cat: 'books',    name: 'Wikisource',           url: 'https://en.wikisource.org/',        note: 'Free source texts and translations' },
+  { key: 'arxiv',      cat: 'articles', name: 'arXiv',                 url: 'https://arxiv.org/',                 note: 'Free research preprints — physics, math, CS and more' },
+  { key: 'doaj',       cat: 'articles', name: 'DOAJ',                  url: 'https://doaj.org/',                  note: 'Directory of Open Access Journals' },
+  { key: 'pmc',        cat: 'articles', name: 'PubMed Central',        url: 'https://www.ncbi.nlm.nih.gov/pmc/',  note: 'Free full-text biomedical and life-science articles' },
+  { key: 'jstor-oa',   cat: 'articles', name: 'JSTOR Open Collection', url: 'https://about.jstor.org/oa-and-free-content/', note: 'Free, publicly available research and primary sources' }
+];
+
+let libFilter = 'all';
+let libSearchState = { query: '', results: [], error: null };
+
+// Open Library search: keyless, CORS-enabled. A result with an `ia` (Internet
+// Archive) id can be read in-app; everything else links to its Open Library page.
+async function searchOpenLibrary(query) {
+  const url = 'https://openlibrary.org/search.json?q=' + encodeURIComponent(query) +
+              '&fields=title,author_name,first_publish_year,ia,key&limit=10';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Open Library search failed.');
+  const data = await res.json().catch(() => ({}));
+  return (data.docs || []).map(d => {
+    const meta = [(d.author_name || [])[0], d.first_publish_year, 'Open Library'].filter(Boolean).join(' · ');
+    const ia = (d.ia || [])[0];
+    return ia ? { title: d.title, meta, iaId: ia } : { title: d.title, meta, url: 'https://openlibrary.org' + d.key };
+  });
+}
+
+// Project Gutenberg via Gutendex (gutendex.com), a free keyless CORS-enabled
+// wrapper around Gutenberg's catalog. Links straight to the book's Gutenberg page.
+async function searchGutendex(query) {
+  const url = 'https://gutendex.com/books/?search=' + encodeURIComponent(query);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Project Gutenberg search failed.');
+  const data = await res.json().catch(() => ({}));
+  return (data.results || []).slice(0, 10).map(b => ({
+    title: b.title,
+    meta: [(b.authors || [])[0] && b.authors[0].name, 'Project Gutenberg'].filter(Boolean).join(' · '),
+    url: 'https://www.gutenberg.org/ebooks/' + b.id
+  }));
+}
+
+// Best-effort title/author lookup for an Internet Archive id, so the reader page
+// and "Save to My library" have a real title even after a reload (no search cache needed).
+async function iaMetadata(id) {
+  try {
+    const res = await fetch('https://archive.org/metadata/' + encodeURIComponent(id));
+    const data = await res.json().catch(() => ({}));
+    const md = data.metadata || {};
+    return { title: md.title || 'Reading', creator: md.creator || null };
+  } catch (e) { return { title: 'Reading', creator: null }; }
+}
+
+function libResultRow(r) {
+  if (r.iaId) return linkRow({ href: '#workspace/library/read-' + r.iaId, title: r.title, meta: r.meta });
+  return h('a', { class: 'row', href: r.url },
+    h('span', { class: 'grow' }, h('strong', { text: r.title }), h('small', { text: r.meta })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '↗' }));
+}
+
+function libraryHub(itemKey) {
+  if (itemKey && itemKey.startsWith('read-')) return libraryReadViewer(itemKey.slice(5));
+  if (itemKey) {
+    const site = LIBRARY_SITES.find(s => s.key === itemKey);
+    if (site) return librarySiteViewer(site);
+    if (UUID.test(itemKey)) return savedLibraryViewer(itemKey);
+    return go('#workspace/library');
+  }
+  return libraryHubHome();
+}
+
+async function libraryHubHome() {
+  let saved = [], savedError = null;
+  try { saved = must(await sb.from('saved_library').select('*').order('created_at', { ascending: false })); }
+  catch (e) { savedError = e; }
+
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search books, e.g. Pride and Prejudice', 'aria-label': 'Search books', enterkeyhint: 'search' });
+  input.value = libSearchState.query;
+  const searchBtn = h('button', { class: 'btn small', type: 'button', text: 'Search' });
+  const searchStatus = h('p', { class: 'none' });
+  const searchList = h('div', { class: 'list' });
+
+  function paintSearch() {
+    searchList.replaceChildren();
+    if (libSearchState.error) {
+      searchStatus.hidden = false; searchStatus.textContent = libSearchState.error;
+    } else if (libSearchState.results.length) {
+      searchStatus.hidden = true;
+      libSearchState.results.forEach(r => searchList.append(libResultRow(r)));
+    } else {
+      searchStatus.hidden = false;
+      searchStatus.textContent = libSearchState.query ? 'No results.' : 'Search Project Gutenberg and Open Library for a free ebook to read in-app.';
+    }
+  }
+
+  async function doSearch() {
+    const q = input.value.trim();
+    libSearchState.query = q; libSearchState.error = null;
+    if (!q) { libSearchState.results = []; paintSearch(); return; }
+    searchBtn.disabled = true; searchStatus.hidden = false; searchStatus.textContent = 'Searching…';
+    const [olRes, gbRes] = await Promise.allSettled([searchOpenLibrary(q), searchGutendex(q)]);
+    libSearchState.results = [
+      ...(olRes.status === 'fulfilled' ? olRes.value : []),
+      ...(gbRes.status === 'fulfilled' ? gbRes.value : [])
+    ];
+    libSearchState.error = (!libSearchState.results.length && olRes.status === 'rejected' && gbRes.status === 'rejected')
+      ? 'Could not search. Check your connection and try again.' : null;
+    paintSearch();
+    searchBtn.disabled = false;
+  }
+
+  searchBtn.addEventListener('click', doSearch);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+  paintSearch();
+
+  const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by type' });
+  const sitesBox = h('div'), mineBox = h('div');
+  const show = cat => libFilter === 'all' || libFilter === cat;
+
+  const paint = () => {
+    chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === libFilter)));
+    const sites = LIBRARY_SITES.filter(x => show(x.cat));
+    sitesBox.replaceChildren(sites.length
+      ? h('div', { class: 'list' }, sites.map(x => linkRow({ href: '#workspace/library/' + x.key, title: x.name, meta: libraryCatLabel(x.cat) + ' · ' + x.note })))
+      : h('p', { class: 'none', text: 'No sources for this type yet.' }));
+    const mine = saved.filter(r => show(r.category));
+    mineBox.replaceChildren(mine.length
+      ? h('div', { class: 'list' }, mine.map(r => linkRow({ href: '#workspace/library/' + r.id, title: r.title, meta: libraryCatLabel(r.category) })))
+      : h('p', { class: 'none', text: saved.length ? 'Nothing saved for this type yet.' : 'Nothing saved yet.' }));
+  };
+  [{ key: 'all', label: 'All' }, ...LIBRARY_CATS].forEach(c => chips.append(h('button', {
+    type: 'button', class: 'chip-btn', 'data-cat': c.key, text: c.label, onclick: () => { libFilter = c.key; paint(); }
+  })));
+  paint();
+
+  return { title: 'Library hub', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    h('div', { class: 'search-row' }, input, searchBtn),
+    searchStatus, searchList,
+    chips,
+    section('Main sources', null, null,
+      h('p', { class: 'hint-line', text: 'Open a source, find a book or article, then save its link below.' }),
+      sitesBox),
+    section('My library', '+ Save a link', () => openLibraryDialog(null),
+      savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
+                     'Run the update SQL in Supabase (schema-update-3.3-library.sql), then reload.') : null,
+      mineBox)
+  ] };
+}
+
+async function libraryReadViewer(iaId) {
+  const meta = await iaMetadata(iaId);
+  const save = h('button', { class: 'btn small', type: 'button', text: 'Save to My library', onclick: () => openLibraryDialog(null, 'https://archive.org/details/' + iaId, meta.title, 'books') });
+  return { title: meta.title, nodes: [
+    crumbs(LIB_CRUMBS),
+    h('div', { class: 'ia-embed' }, h('iframe', {
+      src: 'https://archive.org/embed/' + iaId, title: 'Book reader', frameborder: '0', allowfullscreen: true
+    })),
+    meta.creator ? h('p', { class: 'hint-line', text: meta.creator }) : null,
+    h('div', { class: 'dl-actions' }, save)
+  ] };
+}
+
+function librarySiteViewer(site) {
+  const save = h('button', { class: 'btn small', type: 'button', text: '+ Save a link', onclick: () => openLibraryDialog(null, null, null, site.cat) });
+  return launchPage(site.name, site.url, LIB_CRUMBS, [save],
+    'Found a book or article you like? Copy its link, come back and save it below.');
+}
+
+async function savedLibraryViewer(id) {
+  const row = must(await sb.from('saved_library').select('*').eq('id', id).maybeSingle());
+  if (!row) return go('#workspace/library');
+  const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openLibraryDialog(row) });
+  return launchPage(row.title, row.url, LIB_CRUMBS, [edit], libraryCatLabel(row.category) + ' · saved to My library');
+}
+
+function openLibraryDialog(existing, presetUrl, presetTitle, presetCat) {
+  const row = existing || { url: presetUrl || '', title: presetTitle || '' };
+  let cat = (existing && existing.category) || presetCat || (libFilter !== 'all' ? libFilter : 'books');
+
+  showDialog({
+    title: existing ? 'Edit library item' : 'Save to My library',
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField('Title', { value: row.title || '', maxlength: 120, placeholder: 'e.g. Pride and Prejudice' });
+      const fUrl = makeField('Link', { value: row.url || '', placeholder: 'Paste the book or article link' });
+      fUrl.input.type = 'url';
+      fUrl.input.setAttribute('autocapitalize', 'none');
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Type' },
+        LIBRARY_CATS.map(c => h('button', { type: 'button', 'data-cat': c.key, text: c.label, onclick: () => { cat = c.key; sync(); } })));
+      const sync = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === cat)));
+      sync();
+      form.append(fTitle.wrap, fUrl.wrap, h('div', { class: 'field' }, h('label', { text: 'Type' }), seg));
+      return () => {
+        const title = fTitle.input.value.trim();
+        if (!title) throw new Error('Enter a title.');
+        return { title, url: normalizeUrl(fUrl.input.value) };
+      };
+    },
+    async onSubmit({ title, url }) {
+      const payload = { title, url, category: cat };
+      const res = existing
+        ? await sb.from('saved_library').update(payload).eq('id', row.id)
+        : await sb.from('saved_library').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete item', onClick: () => confirmDeleteRow('saved_library', row, 'library item', { after: () => go('#workspace/library') }) } : null
   });
 }
 
