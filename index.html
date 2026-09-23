@@ -450,6 +450,13 @@
     background: var(--paper); color: var(--dim); font-weight: 600; font-size: 14px;
   }
   .chip-btn[aria-pressed="true"] { background: var(--paper-hi); color: var(--chalk); border-color: var(--marker); }
+  /* E3: shortlist compare-mode row selection */
+  button.row[aria-pressed="true"] { border-color: var(--marker); background: var(--paper-hi); }
+  .sel-dot {
+    width: 24px; height: 24px; flex: none; border-radius: 50%; border: 1px solid var(--line);
+    display: grid; place-items: center; font-size: 14px; color: var(--marker);
+  }
+  button.row[aria-pressed="true"] .sel-dot { border-color: var(--marker); background: var(--marker); color: var(--marker-ink); }
 
   /* projects with checklists */
   .proj { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
@@ -2569,6 +2576,9 @@ async function buildFullBackupZip(onStatus) {
   const schRes = await sb.from('scholarship_profiles').select('*');
   zip.file('scholarship_profile.json', JSON.stringify(schRes.error ? [] : schRes.data, null, 2));
 
+  const schShortlistRes = await sb.from('scholarship_shortlist').select('*').order('created_at', { ascending: true });
+  zip.file('scholarship_shortlist.json', JSON.stringify(schShortlistRes.error ? [] : schShortlistRes.data, null, 2));
+
   say('Reading your Mistake Vault…');
   const mistakeRes = await sb.from('mistake_vault').select('*').order('last_missed_at', { ascending: true });
   zip.file('progress/mistake_vault.json', JSON.stringify(withOrigin(must(mistakeRes)), null, 2));
@@ -2590,6 +2600,7 @@ async function buildFullBackupZip(onStatus) {
     '- workspace/ — subjects, chapters, topics, notes, formulas, mnemonics, flashcards, info boxes, traps, saved simulations and saved videos\n' +
     '- reference_vault.json — metadata for your Reference Vault photos, PDFs and Drive/OneDrive links (see note below)\n' +
     '- scholarship_profile.json — your Scholarship Center intake profile (export only; re-enter it after a restore)\n' +
+    '- scholarship_shortlist.json — your saved/followed scholarships\n' +
     '- planner.json — your weekly routine, milestones, projects and ECAs\n' +
     '- progress/mistake_vault.json — your Mistake Vault entries\n' +
     '- ai/chats.json — every AI tool conversation, with its full message history\n\n' +
@@ -2723,6 +2734,9 @@ async function restoreBackupZip(file, onStatus) {
   report.saved_videos = await insertMappedRows('saved_videos', await readJSON('workspace/saved_videos.json', []));
   report.saved_library = await insertMappedRows('saved_library', await readJSON('workspace/saved_library.json', []));
 
+  say('Restoring your scholarship shortlist…');
+  report.scholarship_shortlist = await insertMappedRows('scholarship_shortlist', await readJSON('scholarship_shortlist.json', []));
+
   say('Restoring your planner and projects…');
   const plannerObj = await readJSON('planner.json', { planner_items: [], projects: [] });
   report.planner_items = await insertMappedRows('planner_items', plannerObj.planner_items || []);
@@ -2755,6 +2769,7 @@ const RESTORE_LABEL = {
   formulas: 'Formulas', mnemonics: 'Mnemonics', flashcards: 'Flashcards', info_boxes: 'Info boxes', traps: 'Traps',
   sources: 'Reference Vault entries', saved_simulations: 'Saved simulations', saved_videos: 'Saved videos',
   saved_library: 'Saved library items',
+  scholarship_shortlist: 'Shortlisted scholarships',
   planner_items: 'Planner items', projects: 'Projects', ai_chats: 'AI chats', ai_messages: 'AI messages',
   mistake_vault: 'Mistake Vault entries'
 };
@@ -2857,7 +2872,7 @@ function backupPanel() {
 // Hubs (Phase 3.1) live under the Workspace tab: #workspace/<hub>[/<item>]
 function buildWorkspace(ids = []) {
   if (ids[0] === 'today')   return todayHub();
-  if (ids[0] === 'scholarships') return scholarshipsHub();
+  if (ids[0] === 'scholarships') return scholarshipsHub(ids[1]);
   if (ids[0] === 'planner')  return plannerHub();
   if (ids[0] === 'projects') return projectsHub();
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
@@ -6643,7 +6658,9 @@ function schSummaryFacts(row) {
   ];
 }
 
-async function scholarshipsHub() {
+async function scholarshipsHub(sub) {
+  if (sub === 'shortlist') return schShortlistPage();
+
   const res = await sb.from('scholarship_profiles').select('*').maybeSingle();
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   if (res.error) {
@@ -6652,6 +6669,9 @@ async function scholarshipsHub() {
         'Run the update SQL in Supabase (schema-update-E1-scholarship-profile.sql), then reload. (' + res.error.message + ') ',
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
   }
+
+  const shortlistLink = h('div', { class: 'list', style: 'margin-bottom:16px' },
+    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }));
 
   let row = res.data || null;
   let mode = row ? 'summary' : 'wizard';
@@ -6804,7 +6824,175 @@ async function scholarshipsHub() {
 
   function paint() { if (mode === 'summary') paintSummary(); else paintWizard(); }
   paint();
-  return { title: 'Scholarship Center', nodes: [crumb, box] };
+  return { title: 'Scholarship Center', nodes: [crumb, shortlistLink, box] };
+}
+
+/* ---------- E2/E3: Scholarship Center -- shortlist & compare ----------------
+   E2: a follow/unfollow list, separate from search results (which don't
+   exist yet -- E7). Until then, scholarships are added manually. E3: pick
+   two or more shortlisted scholarships and compare them side by side.
+   One row per saved scholarship in scholarship_shortlist (SQL for E2 is in
+   schema-update-E2-scholarship-shortlist.sql; the compare fields E3 adds
+   are in schema-update-E3-scholarship-shortlist-compare-fields.sql).
+   `followed` starts true on manual add (adding one is already an active
+   choice); E4 will read it to decide which deadlines sync to Planner, and
+   E9 will let search results insert here with `followed` left to the
+   user. E5's document checklist etc. build on this same row later without
+   needing this shape to change. ------------------------------------------ */
+async function schShortlistPage() {
+  const res = await sb.from('scholarship_shortlist').select('*').order('created_at', { ascending: false });
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  if (res.error) {
+    return { title: 'Shortlist', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Shortlist is not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-E2-scholarship-shortlist.sql, then schema-update-E3-scholarship-shortlist-compare-fields.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+
+  const rows = res.data || [];
+  const box = h('div');
+  let mode = 'list';           // 'list' | 'select' | 'compare'
+  const selected = new Set();
+
+  function paintList() {
+    const selecting = mode === 'select';
+    const list = rows.length
+      ? h('div', { class: 'list' }, rows.map(r => schShortlistRow(r, {
+          selecting, checked: selected.has(r.id),
+          onToggleSelect: () => {
+            if (selected.has(r.id)) selected.delete(r.id); else selected.add(r.id);
+            paintList();
+          }
+        })))
+      : h('p', { class: 'none', text: 'No scholarships saved yet. Add one manually below \u2014 once search (coming soon) is built, you\u2019ll be able to save results here in one tap instead.' });
+
+    const compareToggle = !selecting && rows.length >= 2
+      ? h('button', { class: 'link-btn', type: 'button', text: 'Compare scholarships', onclick: () => { mode = 'select'; paintList(); } })
+      : null;
+    const selectBar = selecting
+      ? h('div', { class: 'actions' },
+          h('button', { class: 'btn', type: 'button', text: 'Compare (' + selected.size + ')', disabled: selected.size < 2,
+            onclick: () => { mode = 'compare'; paintCompare(); } }),
+          h('button', { class: 'btn quiet', type: 'button', text: 'Cancel', onclick: () => { mode = 'list'; selected.clear(); paintList(); } }))
+      : null;
+
+    box.replaceChildren(section('Shortlist', selecting ? null : '+ Add', () => schShortlistDialog(null),
+      h('p', { class: 'hint-line', text: selecting ? 'Pick two or more scholarships to compare.' :
+        'Scholarships you\u2019re saving or actively pursuing. Tap a scholarship to edit it, or use Following to mark it as one you\u2019re actively working on.' }),
+      compareToggle, list, selectBar));
+  }
+
+  function paintCompare() {
+    const items = rows.filter(r => selected.has(r.id));
+    const thStyle = 'text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); color:var(--marker); font-size:13px; white-space:nowrap;';
+    const tdStyle = 'padding:10px 12px; border-bottom:1px solid var(--line); font-size:14px; vertical-align:top;';
+    const fields = [
+      ['Deadline', r => r.deadline ? fmtDate(parseLocalDate(r.deadline)) : '\u2014'],
+      ['Funding', r => r.funding || '\u2014'],
+      ['Required tests', r => r.required_tests || '\u2014'],
+      ['Duration', r => r.duration || '\u2014'],
+      ['Following', r => r.followed ? 'Yes' : 'No']
+    ];
+    const table = h('table', { style: 'border-collapse:collapse; width:100%; min-width:' + (120 + items.length * 160) + 'px;' },
+      h('thead', {}, h('tr', {},
+        h('th', { style: thStyle + 'width:110px;', text: '' }),
+        items.map(r => h('th', { style: thStyle, text: r.name })))),
+      h('tbody', {}, [
+        ...fields.map(([label, get]) => h('tr', {},
+          h('td', { style: tdStyle + 'font-weight:600;', text: label }),
+          items.map(r => h('td', { style: tdStyle, text: get(r) })))),
+        h('tr', {},
+          h('td', { style: tdStyle + 'font-weight:600;', text: 'Link' }),
+          items.map(r => h('td', { style: tdStyle },
+            r.link ? h('a', { href: r.link, target: '_blank', rel: 'noopener', text: 'Open \u2192' }) : '\u2014')))
+      ]));
+
+    box.replaceChildren(section('Compare', null, null,
+      h('p', { class: 'hint-line', text: 'Comparing ' + items.length + ' scholarships. Scroll sideways to see them all.' }),
+      h('div', { class: 'canvas-wrap', style: 'padding:4px;' }, table),
+      h('div', { class: 'actions' }, h('button', { class: 'btn quiet', type: 'button', text: 'Back to shortlist',
+        onclick: () => { mode = 'list'; selected.clear(); paintList(); } }))));
+  }
+
+  paintList();
+  return { title: 'Shortlist', nodes: [crumb, box] };
+}
+
+function schShortlistRow(r, opts) {
+  opts = opts || {};
+  let domain = '';
+  if (r.link) { try { domain = new URL(r.link).hostname.replace(/^www\./, ''); } catch (e) { domain = r.link; } }
+  const meta = h('div', { style: 'display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:2px' },
+    r.deadline ? dueDateChip(r.deadline) : h('small', { text: 'No deadline set' }),
+    domain ? h('small', { text: domain }) : null);
+
+  if (opts.selecting) {
+    return h('button', {
+      class: 'row', type: 'button', 'aria-pressed': String(!!opts.checked),
+      'aria-label': (opts.checked ? 'Deselect ' : 'Select ') + r.name, onclick: opts.onToggleSelect
+    },
+      h('span', { class: 'sel-dot', 'aria-hidden': 'true', text: opts.checked ? '\u2713' : '' }),
+      h('span', { class: 'grow' }, h('strong', { text: r.name }), meta));
+  }
+
+  const followBtn = h('button', {
+    class: 'chip-btn', type: 'button', 'aria-pressed': String(!!r.followed),
+    'aria-label': (r.followed ? 'Unfollow ' : 'Follow ') + r.name, text: r.followed ? 'Following' : 'Follow'
+  });
+  followBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    const next = !r.followed;
+    followBtn.setAttribute('aria-pressed', String(next));
+    followBtn.textContent = next ? 'Following' : 'Follow';
+    const out = await sb.from('scholarship_shortlist').update({ followed: next }).eq('id', r.id);
+    if (out.error) { followBtn.setAttribute('aria-pressed', String(!next)); followBtn.textContent = !next ? 'Following' : 'Follow'; return; }
+    r.followed = next;
+  });
+
+  return h('div', { class: 'row hist-row' },
+    h('button', { class: 'row-link grow', type: 'button', onclick: () => schShortlistDialog(r) },
+      h('span', { class: 'grow' }, h('strong', { text: r.name }), meta),
+      h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' })),
+    followBtn);
+}
+
+function schShortlistDialog(existing) {
+  showDialog({
+    title: existing ? 'Edit scholarship' : 'Add to shortlist',
+    submitLabel: existing ? 'Save changes' : 'Add to shortlist',
+    render(form) {
+      const fName = makeField('Scholarship name', { value: existing ? existing.name : '', maxlength: 150, placeholder: 'e.g. Chevening Scholarship' });
+      const linkInput = h('input', { class: 'control', id: 'sch-sl-link', type: 'url', maxlength: 500, placeholder: 'https://\u2026', value: existing && existing.link || '' });
+      const deadlineInput = h('input', { class: 'control', id: 'sch-sl-deadline', type: 'date', value: existing && existing.deadline || '' });
+      const fFunding = makeField('Funding (optional)', { value: existing && existing.funding || '', maxlength: 150, placeholder: 'e.g. Full tuition + stipend' });
+      const fTests = makeField('Required tests (optional)', { value: existing && existing.required_tests || '', maxlength: 150, placeholder: 'e.g. IELTS 6.5, SAT' });
+      const fDuration = makeField('Duration (optional)', { value: existing && existing.duration || '', maxlength: 100, placeholder: 'e.g. 2 years' });
+      form.append(fName.wrap,
+        h('div', { class: 'field' }, h('label', { for: 'sch-sl-link', text: 'Link (optional)' }), linkInput),
+        h('div', { class: 'field' }, h('label', { for: 'sch-sl-deadline', text: 'Deadline (optional)' }), deadlineInput),
+        fFunding.wrap, fTests.wrap, fDuration.wrap);
+      return () => {
+        const name = fName.input.value.trim();
+        if (!name) throw new Error('Enter the scholarship\u2019s name.');
+        const link = linkInput.value.trim();
+        if (link) { try { new URL(link); } catch (e) { throw new Error('Enter a valid link, starting with https://'); } }
+        return {
+          name, link: link || null, deadline: deadlineInput.value || null,
+          funding: fFunding.input.value.trim() || null,
+          required_tests: fTests.input.value.trim() || null,
+          duration: fDuration.input.value.trim() || null
+        };
+      };
+    },
+    async onSubmit(values) {
+      const res = existing
+        ? await sb.from('scholarship_shortlist').update({ ...values, updated_at: new Date().toISOString() }).eq('id', existing.id)
+        : await sb.from('scholarship_shortlist').insert({ ...values, followed: true, updated_at: new Date().toISOString() });
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Remove from shortlist', onClick: () => confirmDeleteRow('scholarship_shortlist', existing, 'scholarship') } : null
+  });
 }
 
 /* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
