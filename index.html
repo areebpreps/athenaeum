@@ -154,7 +154,18 @@
   .who {
     min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
     background: var(--paper-hi); border: 1px solid var(--line); color: var(--chalk); font-weight: 700; font-size: 16px;
+    overflow: hidden; padding: 0;
   }
+  .who img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .avatar { --sz: 44px; width: var(--sz); height: var(--sz); border-radius: 50%; overflow: hidden; flex: none; display: grid; place-items: center;
+    background: var(--paper-hi); border: 1px solid var(--line); color: var(--chalk); font-weight: 700; font-size: calc(var(--sz) * .42); }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .chip.pub { color: var(--ok); background: rgba(127,209,160,.12); }
+  .post-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dim); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; cursor: pointer; }
+  .post-body.open { -webkit-line-clamp: unset; display: block; }
+  .prof-card { display: flex; align-items: center; gap: 16px; padding: 16px; margin-bottom: 16px; }
+  .prof-card strong { display: block; font-size: 20px; overflow-wrap: anywhere; }
+  .prof-card small { display: block; color: var(--dim); overflow-wrap: anywhere; }
   main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 20px 20px 28px; }
 
   .empty { padding: 28px 0 8px; }
@@ -675,6 +686,8 @@
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
     <h3 id="sheet-title">Account</h3>
     <p id="sheet-user"></p>
+    <a class="btn quiet" id="sheet-profile" href="#workspace/profile">My public profile</a>
+    <a class="btn quiet" id="sheet-posts" href="#workspace/posts">My posts</a>
     <button class="btn quiet" id="logout-btn" type="button">Log out</button>
     <button class="btn quiet" id="sheet-close" type="button">Close</button>
   </div>
@@ -874,6 +887,7 @@ async function submitNewPassword(evt) {
 }
 
 async function logout() {
+  myProfile = null;
   closeDialog();
   closeSheet();
   closeViewer();
@@ -892,8 +906,10 @@ async function logout() {
 function enterApp(user) {
   currentUser = user;
   const name = usernameFrom(user);
+  myProfile = null;
   $('#who-btn').textContent = (name[0] || '?').toUpperCase();
   $('#sheet-user').textContent = 'Signed in as ' + name;
+  loadMyProfile(); // E25: swap in the chosen name/photo once it loads
   showScreen('app');
   route();
   initPlannerAlarms(); // D3
@@ -976,7 +992,7 @@ function parseHash() {
 function parentHash(ids) { return ids.length <= 1 ? '#subjects' : '#subjects/' + ids.slice(0, -1).join('/'); }
 // Hubs (Phase 3.1) are one or two segments deep under #workspace, e.g.
 // #workspace/planner or #workspace/wiki/<article>. Back always goes up one segment.
-function workspaceParentHash(ids) { return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0]; }
+function workspaceParentHash(ids) { if (ids[0] === 'people') return '#workspace/community'; return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0]; }
 // AI tools (Phase 3.2) follow the same shape: #ai/<tool>[/<chat id>]. Back always goes up one segment.
 function aiParentHash(ids) {
   if (ids.length <= 1) return '#ai';
@@ -1255,6 +1271,11 @@ function itemCard(scope, it) {
   const listenBtn = listenButton(
     () => [row.title, type === 'formula' ? row.expression : null, detail].filter(Boolean).join('. '),
     { iconOnly: true, stopPropagation: true });
+  // E26: notes, definitions and mnemonics can be shared as a post
+  const shareBtn = (type === 'note' || type === 'definition' || type === 'mnemonic') ? h('button', {
+    class: 'item-listen', type: 'button', 'aria-label': 'Share as a post',
+    onclick: e => { e.stopPropagation(); openShareDialog(postSrc(type, row)); }
+  }, shareIcon()) : null;
 
   // Flashcards behave like an actual flashcard even when just browsing: the
   // back stays hidden until tapped, same tap that expands other item types.
@@ -1263,7 +1284,7 @@ function itemCard(scope, it) {
     h('span', { class: 'item-head' },
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
-      listenBtn, editBtn),
+      listenBtn, shareBtn, editBtn),
     row.title ? h('strong', { text: row.title }) : null,
     type === 'formula' ? h('code', { class: 'expr', text: row.expression }) : null,
     detail ? h('span', { class: 'body', text: detail }) : null,
@@ -2582,6 +2603,18 @@ async function buildFullBackupZip(onStatus) {
   zip.file('scholarship_test_dates.json', JSON.stringify(schTestRes.error ? [] : schTestRes.data, null, 2));
   const schRoadRes = await sb.from('scholarship_roadmap').select('*').order('created_at', { ascending: true });
   zip.file('scholarship_roadmap.json', JSON.stringify(schRoadRes.error ? [] : schRoadRes.data, null, 2));
+  const pubProfRes = user ? await sb.from('user_profiles').select('*').eq('user_id', user.id) : { error: true };
+  zip.file('public_profile.json', JSON.stringify(pubProfRes.error ? [] : pubProfRes.data, null, 2));
+  const classesRes = await sb.from('scholarship_classes').select('*').order('created_at', { ascending: true });
+  zip.file('scholarship_classes.json', JSON.stringify(classesRes.error ? [] : classesRes.data, null, 2));
+  const tipsRes = await sb.from('scholarship_tips').select('*').order('created_at', { ascending: true });
+  zip.file('scholarship_tips.json', JSON.stringify(tipsRes.error ? [] : tipsRes.data, null, 2));
+  const cohortsRes = user ? await sb.from('scholarship_cohorts').select('*').eq('user_id', user.id).order('created_at', { ascending: true }) : { error: true };
+  zip.file('scholarship_cohorts.json', JSON.stringify(cohortsRes.error ? [] : cohortsRes.data, null, 2));
+  const outcomesRes = await sb.from('scholarship_outcomes').select('*').order('created_at', { ascending: true });
+  zip.file('scholarship_outcomes.json', JSON.stringify(outcomesRes.error ? [] : outcomesRes.data, null, 2));
+  const postsRes = user ? await sb.from('posts').select('*').eq('user_id', user.id).order('created_at', { ascending: true }) : { error: true };
+  zip.file('posts.json', JSON.stringify(postsRes.error ? [] : postsRes.data, null, 2));
 
   say('Reading your Mistake Vault…');
   const mistakeRes = await sb.from('mistake_vault').select('*').order('last_missed_at', { ascending: true });
@@ -2607,6 +2640,12 @@ async function buildFullBackupZip(onStatus) {
     '- scholarship_shortlist.json — your saved/followed scholarships\n' +
     '- scholarship_test_dates.json — the test dates on your application timeline\n' +
     '- scholarship_roadmap.json — your Scholarship Center roadmap checklist\n' +
+    '- scholarship_classes.json — your Scholarship Center live and online class links\n' +
+    '- scholarship_tips.json — the alumni tips you wrote on scholarship pages\n' +
+    '- scholarship_cohorts.json — the scholarship cohorts you joined (which scholarship, which year)\n' +
+    '- scholarship_outcomes.json — your "Did you get in?" results with the numbers you had at the time\n' +
+    '- posts.json — the notes, mnemonics and saved links you shared as posts, public and private\n' +
+    '- public_profile.json — your public profile: name, country, field of study and the path of your photo (export only; the photo itself is not included, so re-enter the profile after a restore)\n' +
     '- planner.json — your weekly routine, milestones, projects and ECAs\n' +
     '- progress/mistake_vault.json — your Mistake Vault entries\n' +
     '- ai/chats.json — every AI tool conversation, with its full message history\n\n' +
@@ -2745,6 +2784,14 @@ async function restoreBackupZip(file, onStatus) {
 
   report.scholarship_test_dates = await insertMappedRows('scholarship_test_dates', await readJSON('scholarship_test_dates.json', []));
   report.scholarship_roadmap = await insertMappedRows('scholarship_roadmap', await readJSON('scholarship_roadmap.json', []));
+  report.scholarship_classes = await insertMappedRows('scholarship_classes', await readJSON('scholarship_classes.json', []));
+  report.scholarship_tips = await insertMappedRows('scholarship_tips', await readJSON('scholarship_tips.json', []));
+  report.scholarship_outcomes = await insertMappedRows('scholarship_outcomes', await readJSON('scholarship_outcomes.json', []), row => {
+    const sid = row.shortlist_id ? report.scholarship_shortlist.idMap[row.shortlist_id] : null;
+    return sid ? { ...row, shortlist_id: sid } : null;   // a result belongs to a shortlisted scholarship
+  });
+  report.scholarship_cohorts = await insertMappedRows('scholarship_cohorts', await readJSON('scholarship_cohorts.json', []));
+  report.posts = await insertMappedRows('posts', await readJSON('posts.json', []), row => ({ ...row, source_table: null, source_id: null }));
 
   say('Restoring your planner and projects…');
   const plannerObj = await readJSON('planner.json', { planner_items: [], projects: [] });
@@ -2778,7 +2825,7 @@ const RESTORE_LABEL = {
   formulas: 'Formulas', mnemonics: 'Mnemonics', flashcards: 'Flashcards', info_boxes: 'Info boxes', traps: 'Traps',
   sources: 'Reference Vault entries', saved_simulations: 'Saved simulations', saved_videos: 'Saved videos',
   saved_library: 'Saved library items',
-  scholarship_shortlist: 'Shortlisted scholarships', scholarship_roadmap: 'Roadmap steps', scholarship_test_dates: 'Test dates',
+  scholarship_shortlist: 'Shortlisted scholarships', scholarship_roadmap: 'Roadmap steps', scholarship_test_dates: 'Test dates', scholarship_classes: 'Live classes', scholarship_tips: 'Alumni tips', scholarship_cohorts: 'Cohorts joined', scholarship_outcomes: 'Results reported', posts: 'Posts',
   planner_items: 'Planner items', projects: 'Projects', ai_chats: 'AI chats', ai_messages: 'AI messages',
   mistake_vault: 'Mistake Vault entries'
 };
@@ -2882,6 +2929,10 @@ function backupPanel() {
 function buildWorkspace(ids = []) {
   if (ids[0] === 'today')   return todayHub();
   if (ids[0] === 'scholarships') return scholarshipsHub(ids[1]);
+  if (ids[0] === 'profile')  return profilePage();
+  if (ids[0] === 'posts')    return postsPage();
+  if (ids[0] === 'community') return communityPage();
+  if (ids[0] === 'people')   return peoplePage(ids[1]);
   if (ids[0] === 'planner')  return plannerHub();
   if (ids[0] === 'projects') return projectsHub();
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
@@ -3691,7 +3742,7 @@ async function callAIYoutube(url, transcript) {
 // (YouTube's own /embed/ endpoint sends permissive frame headers, unlike most other sites — see section 14 of the blueprint.)
 function youtubeVideoId(url) {
   if (!url) return null;
-  const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
   return m ? m[1] : null;
 }
 function youtubePlayer(url) {
@@ -6421,7 +6472,9 @@ function openItemDialog(scope, existing) {
       if (res.error) throw res.error;
       route();
     },
-    extra: existing ? { label: 'Delete item', onClick: () => confirmDeleteItem(existing) } : null
+    extras: existing ? [
+      ...(['note', 'definition', 'mnemonic'].includes(existing.type) ? [{ label: 'Share as a post', danger: false, onClick: () => openShareDialog(postSrc(existing.type, row)) }] : []),
+      { label: 'Delete item', onClick: () => confirmDeleteItem(existing) }] : null
   });
 }
 
@@ -6716,6 +6769,8 @@ async function scholarshipsHub(sub) {
   if (sub === 'search') return schSearchPage();
   if (sub === 'roadmap') return schRoadmapPage();
   if (sub === 'timeline') return schTimelinePage();
+  if (sub === 'classes') return schClassesPage();
+  if (sub === 'peers') return schPeersPage();
   if (sub === 'gap') return schGapPage();
   if (sub === 'whatif') return schWhatIfPage();
   if (sub && sub.startsWith('bundle-')) return schBundlePage(sub.slice(7)); // bundle-<shortlist id>
@@ -6734,9 +6789,14 @@ async function scholarshipsHub(sub) {
     linkRow({ href: '#workspace/scholarships/roadmap', title: 'My roadmap', meta: 'Your step-by-step application checklist' }),
     linkRow({ href: '#workspace/scholarships/whatif', title: 'What-if simulator', meta: 'Change a score and see which scholarships open up' }),
     linkRow({ href: '#workspace/scholarships/gap', title: 'Gap analysis', meta: 'How you compare with admitted applicants, in numbers' }),
+    linkRow({ href: '#workspace/scholarships/peers', title: 'Peers', meta: 'Other students applying to the same scholarships this year' }),
+    linkRow({ href: '#workspace/scholarships/classes', title: 'Live classes', meta: 'Links to online and live classes \u2014 watch or join, with start times' }),
     linkRow({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines, test dates and prep milestones on one line' }),
     linkRow({ href: '#workspace/scholarships/search', title: 'Find scholarships', meta: 'Search by destination, level and funding type' }),
-    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }));
+    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }),
+    linkRow({ href: '#workspace/profile', title: 'Public profile', meta: 'Your name, photo, country and field of study' }),
+    linkRow({ href: '#workspace/community', title: 'Community posts', meta: 'Public notes, mnemonics and links from other students \u2014 save the ones you like' }),
+    linkRow({ href: '#workspace/posts', title: 'My posts', meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' }));
 
   let row = res.data || null;
   let mode = row ? 'summary' : 'wizard';
@@ -7214,8 +7274,12 @@ async function schDetailPage(ref) {
     ['Required tests', row.required_tests], ['Duration', row.duration]])) : null;
   const box = h('div'), status = h('p', { class: 'hint-line' }), err = h('p', { class: 'msg err', role: 'alert', hidden: true });
   const again = h('button', { class: 'btn quiet small', type: 'button', text: 'Read again', hidden: true });
+  let detailName = '';
+  const tips = schAlumniTips(url, () => (row && row.name) || detailName || '');
+  const cohort = schCohort(url, () => (row && row.name) || detailName || '', row && row.deadline ? Number(String(row.deadline).slice(0, 4)) : null);
 
   function paint(d) {
+    detailName = d.name || detailName;
     box.replaceChildren(section(d.name || (row && row.name) || 'Overview', null, null,
       d.summary ? h('p', { text: d.summary }) : h('p', { class: 'none', text: 'The page doesn\u2019t give a summary.' }),
       h('h3', { text: 'What it covers', style: 'margin:16px 0 8px;font-size:16px' }),
@@ -7251,7 +7315,7 @@ async function schDetailPage(ref) {
 
   if (url) load(false);
   else status.textContent = 'No link saved for this scholarship. Add one with the pencil icon in your Shortlist and its overview will be read here.';
-  return { title: (row && row.name) || 'Scholarship', nodes: [crumb, saved, status, err, box,
+  return { title: (row && row.name) || 'Scholarship', nodes: [crumb, saved, status, err, box, tips, cohort,
     url ? h('div', { class: 'actions' }, h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener noreferrer', text: 'Open the full page' }), again) : null] };
 }
 
@@ -7615,15 +7679,16 @@ function schTimeline(events) {
   return wrap;
 }
 
-const SCH_TEST_COLOR = '#8b7cf6', SCH_PREP_COLOR = '#4da3ff';
+const SCH_TEST_COLOR = '#8b7cf6', SCH_PREP_COLOR = '#4da3ff', SCH_CLASS_COLOR = '#ff8a5c';
 async function schTimelinePage() {
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
   const old = new Date(); old.setDate(old.getDate() - 30);
   const minDate = old.getFullYear() + '-' + String(old.getMonth() + 1).padStart(2, '0') + '-' + String(old.getDate()).padStart(2, '0');
-  const [res, tr, mr] = await Promise.all([
+  const [res, tr, mr, cr] = await Promise.all([
     sb.from('scholarship_shortlist').select('*').eq('followed', true).order('deadline', { ascending: true, nullsFirst: false }),
     sb.from('scholarship_test_dates').select('*').order('test_date', { ascending: true }),
-    sb.from('planner_items').select('id,title,milestone_date,done,scholarship_id').eq('kind', 'milestone')]);
+    sb.from('planner_items').select('id,title,milestone_date,done,scholarship_id').eq('kind', 'milestone'),
+    sb.from('scholarship_classes').select('id,title,starts_at,host').not('starts_at', 'is', null).order('starts_at', { ascending: true })]);
   if (res.error) return { title: 'Timeline', nodes: [crumb,
     h('div', { class: 'status bad' }, h('strong', { text: 'Timeline is not set up yet' }),
       'Run the Shortlist update SQL in Supabase (schema-update-E2 and E3), then reload. (' + res.error.message + ') ',
@@ -7631,7 +7696,8 @@ async function schTimelinePage() {
   const rows = res.data || [], testsOk = !tr.error;
   let tests = tr.data || [];
   const prep = (mr.data || []).filter(r => !r.scholarship_id && r.milestone_date && r.milestone_date >= minDate);
-  const layers = { deadlines: true, tests: true, prep: true };
+  const classes = (cr.error ? [] : (cr.data || [])).map(c => ({ ...c, day: schLocalDay(c.starts_at) })).filter(c => c.day >= minDate);
+  const layers = { deadlines: true, tests: true, prep: true, classes: true };
   const box = h('div'), msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
   const asked = [...new Set(rows.flatMap(r => String(r.required_tests || '').split(/[,;\n]+/).map(t => t.trim()).filter(Boolean)))];
 
@@ -7640,6 +7706,7 @@ async function schTimelinePage() {
     if (layers.deadlines) rows.filter(r => r.deadline).forEach(r => ev.push({ kind: 'deadline', date: r.deadline, title: r.name, href: '#workspace/scholarships/detail-' + r.id, sub: r.funding || '' }));
     if (layers.tests) tests.forEach(t => ev.push({ kind: 'test', color: SCH_TEST_COLOR, date: t.test_date, title: t.name, sub: 'Test date', href: '#workspace/scholarships/timeline' }));
     if (layers.prep) prep.forEach(r => ev.push({ kind: 'prep', color: SCH_PREP_COLOR, tone: r.done ? 'done' : '', date: r.milestone_date, title: r.title, sub: r.done ? 'Prep milestone \u00b7 done' : 'Prep milestone', href: '#workspace/planner' }));
+    if (layers.classes) classes.forEach(c => ev.push({ kind: 'class', color: SCH_CLASS_COLOR, date: c.day, title: c.title, sub: 'Live class \u00b7 ' + new Date(c.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }), href: '#workspace/scholarships/classes' }));
     return ev;
   }
   const chip = (key, label, color) => h('button', { class: 'chip-btn', type: 'button', 'aria-pressed': String(layers[key]),
@@ -7675,13 +7742,13 @@ async function schTimelinePage() {
     const ev = events(), undated = rows.filter(r => !r.deadline);
     const nodes = [
       section('Application timeline', null, null,
-        h('p', { class: 'hint-line', text: 'Your whole journey on one line. Scroll sideways; the dashed line is today. Deadlines are green, amber (within two weeks) or red (closed); tests and prep milestones have their own colours.' }),
-        h('div', { class: 'chips' }, chip('deadlines', 'Deadlines', '#3ecf8e'), chip('tests', 'Test dates', SCH_TEST_COLOR), chip('prep', 'Prep milestones', SCH_PREP_COLOR)),
-        ev.length ? schTimeline(ev) : h('p', { class: 'none', text: rows.length || tests.length || prep.length ? 'Nothing to show on the layers you have switched on.' : 'Nothing yet. Follow scholarships in your Shortlist, add test dates below, or add milestones in Planner.' })),
+        h('p', { class: 'hint-line', text: 'Your whole journey on one line. Scroll sideways; the dashed line is today. Deadlines are green, amber (within two weeks) or red (closed); tests, prep milestones and live classes have their own colours.' }),
+        h('div', { class: 'chips' }, chip('deadlines', 'Deadlines', '#3ecf8e'), chip('tests', 'Test dates', SCH_TEST_COLOR), chip('prep', 'Prep milestones', SCH_PREP_COLOR), chip('classes', 'Live classes', SCH_CLASS_COLOR)),
+        ev.length ? schTimeline(ev) : h('p', { class: 'none', text: rows.length || tests.length || prep.length || classes.length ? 'Nothing to show on the layers you have switched on.' : 'Nothing yet. Follow scholarships in your Shortlist, add test dates below, add milestones in Planner, or add a live class with a start time.' })),
       testsOk ? testForm() : h('div', { class: 'status bad' }, h('strong', { text: 'Test dates are not set up yet' }),
         'Run the update SQL in Supabase (schema-update-E20-scholarship-test-dates.sql), then reload.'),
       ev.length ? section('In date order', null, null, h('div', { class: 'list' }, ev.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).map(e =>
-        linkRow({ href: e.href, title: e.title, meta: fmtDate(parseLocalDate(e.date)) + ' \u00b7 ' + ({ deadline: 'Deadline', test: 'Test', prep: 'Prep milestone' })[e.kind] + (e.kind === 'deadline' && e.date < schToday() ? ' \u00b7 closed' : '') })))) : null,
+        linkRow({ href: e.href, title: e.title, meta: fmtDate(parseLocalDate(e.date)) + ' \u00b7 ' + ({ deadline: 'Deadline', test: 'Test', prep: 'Prep milestone', class: 'Live class' })[e.kind] + (e.kind === 'deadline' && e.date < schToday() ? ' \u00b7 closed' : '') })))) : null,
       undated.length ? section('Followed, no deadline yet', null, null,
         h('p', { class: 'hint-line', text: 'These can\u2019t be placed on the timeline. Add a deadline from the pencil icon in your Shortlist.' }),
         h('div', { class: 'list' }, undated.map(r => linkRow({ href: '#workspace/scholarships/detail-' + r.id, title: r.name, meta: 'No deadline set' })))) : null];
@@ -8095,6 +8162,10 @@ async function schShortlistPage() {
 
   const rows = res.data || [];
   const box = h('div');
+  // E31: "Did you get in?" results, one per shortlisted scholarship
+  const or = await sb.from('scholarship_outcomes').select('*').not('shortlist_id', 'is', null);
+  const outcomes = { ready: !or.error, byId: {}, onChange: () => paintList() };
+  (or.data || []).forEach(o => { outcomes.byId[o.shortlist_id] = o; });
   let mode = 'list';           // 'list' | 'select' | 'compare'
   const selected = new Set();
 
@@ -8102,7 +8173,7 @@ async function schShortlistPage() {
     const selecting = mode === 'select';
     const list = rows.length
       ? h('div', { class: 'list' }, rows.map(r => schShortlistRow(r, {
-          selecting, checked: selected.has(r.id),
+          selecting, checked: selected.has(r.id), outcome: outcomes,
           onToggleSelect: () => {
             if (selected.has(r.id)) selected.delete(r.id); else selected.add(r.id);
             paintList();
@@ -8123,7 +8194,13 @@ async function schShortlistPage() {
     box.replaceChildren(section('Shortlist', selecting ? null : '+ Add', () => schShortlistDialog(null),
       h('p', { class: 'hint-line', text: selecting ? 'Pick two or more scholarships to compare.' :
         'Scholarships you\u2019re saving or actively pursuing. Tap a scholarship for its document checklist, use the pencil to edit it, or Following to mark it as one you\u2019re actively working on.' }),
-      compareToggle, list, selectBar));
+      outcomeSummary(), compareToggle, list, selectBar));
+  }
+  function outcomeSummary() {
+    if (!outcomes.ready) return null;
+    const n = k => rows.filter(r => (outcomes.byId[r.id] || {}).outcome === k).length;
+    const bits = [['admitted', 'got in'], ['pending', 'waiting'], ['rejected', 'didn\u2019t get in']].filter(([k]) => n(k)).map(([k, l]) => n(k) + ' ' + l);
+    return bits.length ? h('p', { class: 'hint-line', text: 'Results: ' + bits.join(' \u00b7 ') + '.' }) : null;
   }
 
   function paintCompare() {
@@ -8166,9 +8243,12 @@ function schShortlistRow(r, opts) {
   opts = opts || {};
   let domain = '';
   if (r.link) { try { domain = new URL(r.link).hostname.replace(/^www\./, ''); } catch (e) { domain = r.link; } }
+  const oc = opts.outcome && opts.outcome.byId[r.id];
   const meta = h('div', { style: 'display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:2px' },
     r.deadline ? dueDateChip(r.deadline) : h('small', { text: 'No deadline set' }),
-    domain ? h('small', { text: domain }) : null);
+    domain ? h('small', { text: domain }) : null,
+    oc ? h('span', { class: 'chip' + (oc.outcome === 'admitted' ? ' pub' : ''), text: SCH_OUTCOME_LABEL[oc.outcome] })
+      : (opts.outcome && opts.outcome.ready && r.deadline && r.deadline < schToday() ? h('small', { text: 'Deadline passed \u2014 did you get in?' }) : null));
 
   if (opts.selecting) {
     return h('button', {
@@ -8251,6 +8331,7 @@ function schShortlistRow(r, opts) {
   const body = h('div', { class: 'check-body', hidden: !plannerOpenSlots.has('sch-' + r.id) },
     h('a', { class: 'link-btn', href: '#workspace/scholarships/detail-' + r.id, text: 'View details', style: 'display:inline-block;margin:0 14px 10px 0' }),
     h('a', { class: 'link-btn', href: '#workspace/scholarships/bundle-' + r.id, text: 'Application material', style: 'display:inline-block;margin-bottom:10px' }),
+    opts.outcome ? schOutcomeBlock(r, opts.outcome) : null,
     listBox, msg, h('div', { class: 'check-add' }, input, addBtn));
   const toggle = () => {
     const key = 'sch-' + r.id;
@@ -9654,7 +9735,8 @@ async function savedSimViewer(id) {
   const row = must(await sb.from('saved_simulations').select('*').eq('id', id).maybeSingle());
   if (!row) return go('#workspace/threed');
   const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSimDialog(row) });
-  return launchPage(row.title, row.url, SIM_CRUMBS, [edit], simCatLabel(row.category) + ' · saved simulation');
+  const share = h('button', { class: 'btn quiet small', type: 'button', text: 'Share', onclick: () => openShareDialog(postSrc('simulation', row)) });
+  return launchPage(row.title, row.url, SIM_CRUMBS, [edit, share], simCatLabel(row.category) + ' · saved simulation');
 }
 
 function openSimDialog(existing, presetCat) {
@@ -9870,8 +9952,9 @@ async function savedVideoViewer(id) {
   const row = must(await sb.from('saved_videos').select('*').eq('id', id).maybeSingle());
   if (!row) return go('#workspace/youtube');
   const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSaveVideoDialog(row) });
+  const share = h('button', { class: 'btn quiet small', type: 'button', text: 'Share', onclick: () => openShareDialog(postSrc('video', row)) });
   const sum = summarizeControl(row.url, row.title);
-  return { title: row.title, nodes: [crumbs(YT_CRUMBS), youtubePlayer(row.url), h('div', { class: 'dl-actions' }, edit, sum.btn), sum.out] };
+  return { title: row.title, nodes: [crumbs(YT_CRUMBS), youtubePlayer(row.url), h('div', { class: 'dl-actions' }, edit, share, sum.btn), sum.out] };
 }
 
 function openSaveVideoDialog(existing, presetUrl, presetTitle) {
@@ -10094,7 +10177,8 @@ async function savedLibraryViewer(id) {
   const row = must(await sb.from('saved_library').select('*').eq('id', id).maybeSingle());
   if (!row) return go('#workspace/library');
   const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openLibraryDialog(row) });
-  return launchPage(row.title, row.url, LIB_CRUMBS, [edit], libraryCatLabel(row.category) + ' · saved to My library');
+  const share = h('button', { class: 'btn quiet small', type: 'button', text: 'Share', onclick: () => openShareDialog(postSrc('library', row)) });
+  return launchPage(row.title, row.url, LIB_CRUMBS, [edit, share], libraryCatLabel(row.category) + ' · saved to My library');
 }
 
 function openLibraryDialog(existing, presetUrl, presetTitle, presetCat) {
@@ -10132,6 +10216,894 @@ function openLibraryDialog(existing, presetUrl, presetTitle, presetCat) {
   });
 }
 
+/* ---------- E25: customizable public profile ----------
+   #workspace/profile. One row per person in user_profiles (name, country, field of
+   study, avatar path); the photo lives in the public `avatars` bucket under the
+   user's own folder (schema-update-E25-profile.sql). The chosen name/photo also
+   replace the initial in the header button. Photos are centre-cropped to a square
+   and shrunk on this device before upload. */
+const AVATAR_BUCKET = 'avatars';
+let myProfile = null;
+const avatarUrl = path => (path ? sb.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl : '');
+const nameInitial = name => (Array.from(String(name || '').trim())[0] || '?').toUpperCase();
+function avatarFill(el, name, url) {
+  el.replaceChildren();
+  if (!url) { el.textContent = nameInitial(name); return; }
+  const img = h('img', { src: url, alt: '', decoding: 'async' });
+  img.addEventListener('error', () => { el.replaceChildren(); el.textContent = nameInitial(name); });
+  el.append(img);
+}
+function paintWho() {
+  const btn = $('#who-btn');
+  if (!btn || !currentUser) return;
+  avatarFill(btn, (myProfile && myProfile.display_name) || usernameFrom(currentUser), myProfile && avatarUrl(myProfile.avatar_path));
+}
+async function loadMyProfile() {
+  const uid = currentUser && currentUser.id;
+  try {
+    const r = await sb.from('user_profiles').select('*').eq('user_id', uid).maybeSingle();
+    if (!currentUser || currentUser.id !== uid) return;
+    myProfile = r.error ? null : r.data;
+  } catch (e) { myProfile = null; }
+  paintWho();
+}
+async function avatarBlob(file, dim = 384) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { bmp = await createImageBitmap(file); }
+  const side = Math.min(bmp.width, bmp.height), out = Math.min(dim, side);
+  const canvas = document.createElement('canvas'); canvas.width = out; canvas.height = out;
+  canvas.getContext('2d').drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, out, out);
+  if (bmp.close) bmp.close();
+  let q = 0.86, blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', q)), tries = 0;
+  while (blob && blob.size > 150000 && q > 0.4 && tries < 6) { q -= 0.1; blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', q)); tries++; }
+  if (!blob) throw new Error('Could not process that photo.');
+  return blob;
+}
+
+async function profilePage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  const [res, sp] = await Promise.all([
+    sb.from('user_profiles').select('*').eq('user_id', currentUser.id).maybeSingle(),
+    sb.from('scholarship_profiles').select('home_country,target_major').maybeSingle()]);
+  if (res.error) {
+    return { title: 'Public profile', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Profiles are not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-E25-profile.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+  let row = res.data || null;
+  myProfile = row;
+  const seed = (sp && !sp.error && sp.data) || {};
+  const st = { blob: null, previewUrl: '', remove: false };
+
+  const nameF = makeField('Name', { value: row ? row.display_name : usernameFrom(currentUser), maxlength: 50, placeholder: 'How other people see you' });
+  const countryF = makeField('Country', { value: row ? row.country : (seed.home_country || ''), maxlength: 60, placeholder: 'e.g. Bangladesh' });
+  const fieldF = makeField('Field of study', { value: row ? row.field_of_study : (seed.target_major || ''), maxlength: 80, placeholder: 'e.g. Aeronautical engineering' });
+  const dl = h('datalist', { id: 'prof-countries' }, SCH_COUNTRIES.filter(c => c !== 'Other').map(c => h('option', { value: c })));
+  countryF.input.setAttribute('list', 'prof-countries');
+  nameF.input.autocomplete = 'nickname'; nameF.input.enterKeyHint = 'done';
+
+  const bigAvatar = h('div', { class: 'avatar', 'aria-hidden': 'true', style: '--sz:72px' });
+  const previewName = h('strong'), previewMeta = h('small');
+  const shownAvatarUrl = () => st.previewUrl || (!st.remove && row && row.avatar_path ? avatarUrl(row.avatar_path) : '');
+  const hasPhoto = () => !!shownAvatarUrl();
+  const fileIn = h('input', { type: 'file', accept: 'image/*', hidden: true, 'aria-label': 'Choose a profile photo' });
+  const pickBtn = h('button', { class: 'btn quiet small', type: 'button' });
+  const removeBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo' });
+  const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const say = (text, kind) => { msg.className = 'msg ' + (kind || 'err'); msg.textContent = text; msg.hidden = !text; };
+
+  function paintPreview() {
+    const name = nameF.input.value.trim();
+    avatarFill(bigAvatar, name || usernameFrom(currentUser), shownAvatarUrl());
+    previewName.textContent = name || 'Your name';
+    previewMeta.textContent = [countryF.input.value.trim(), fieldF.input.value.trim()].filter(Boolean).join(' \u00b7 ') || 'Add your country and field of study';
+    pickBtn.textContent = hasPhoto() ? 'Change photo' : 'Choose photo';
+    removeBtn.hidden = !hasPhoto();
+  }
+  [nameF, countryF, fieldF].forEach(f => f.input.addEventListener('input', paintPreview));
+  pickBtn.addEventListener('click', () => fileIn.click());
+  removeBtn.addEventListener('click', () => {
+    if (st.previewUrl) URL.revokeObjectURL(st.previewUrl);
+    st.blob = null; st.previewUrl = ''; st.remove = true; fileIn.value = ''; paintPreview();
+  });
+  fileIn.addEventListener('change', async () => {
+    const f = fileIn.files && fileIn.files[0]; if (!f) return;
+    say('');
+    if (!/^image\//.test(f.type || '')) { say('Choose a photo (JPG, PNG or WebP).'); return; }
+    try {
+      const b = await avatarBlob(f);
+      if (st.previewUrl) URL.revokeObjectURL(st.previewUrl);
+      st.blob = b; st.previewUrl = URL.createObjectURL(b); st.remove = false; paintPreview();
+    } catch (e) { say((e && e.message) || 'Could not read that photo.'); }
+  });
+
+  const saveBtn = h('button', { class: 'btn', type: 'button', text: 'Save profile' });
+  async function save() {
+    say('');
+    const name = nameF.input.value.trim(), country = countryF.input.value.trim(), field = fieldF.input.value.trim();
+    if (!name) { say('Enter a name.'); nameF.input.focus(); return; }
+    if (name.length > 50 || country.length > 60 || field.length > 80) { say('One of the fields is too long.'); return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+    let path = row ? row.avatar_path : null, oldPath = null, newPath = null;
+    try {
+      if (st.blob) {
+        newPath = currentUser.id + '/' + crypto.randomUUID() + '.jpg';
+        const up = await sb.storage.from(AVATAR_BUCKET).upload(newPath, st.blob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
+        if (up.error) { newPath = null; throw up.error; }
+        oldPath = path; path = newPath;
+      } else if (st.remove && path) { oldPath = path; path = null; }
+      const r = await sb.from('user_profiles').upsert({ user_id: currentUser.id, display_name: name, country, field_of_study: field, avatar_path: path, updated_at: new Date().toISOString() }, { onConflict: 'user_id' }).select('*').single();
+      if (r.error) { if (newPath) { try { await sb.storage.from(AVATAR_BUCKET).remove([newPath]); } catch (e) {} } throw r.error; }
+      row = r.data; myProfile = row;
+      if (oldPath && oldPath !== path) { try { await sb.storage.from(AVATAR_BUCKET).remove([oldPath]); } catch (e) {} }
+      if (st.previewUrl) URL.revokeObjectURL(st.previewUrl);
+      st.blob = null; st.previewUrl = ''; st.remove = false; fileIn.value = '';
+      nameF.input.value = row.display_name; countryF.input.value = row.country; fieldF.input.value = row.field_of_study;
+      paintPreview(); paintWho();
+      say('Saved.', 'ok');
+    } catch (e) { say('Could not save: ' + ((e && e.message) || 'try again')); }
+    saveBtn.disabled = false; saveBtn.textContent = 'Save profile';
+  }
+  saveBtn.addEventListener('click', save);
+  [nameF, countryF, fieldF].forEach(f => f.input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } }));
+  paintPreview();
+
+  return { title: 'Public profile', nodes: [crumb,
+    h('div', { class: 'proj prof-card' }, bigAvatar, h('div', { style: 'min-width:0' }, previewName, previewMeta)),
+    h('div', { class: 'field' }, h('label', { text: 'Photo' }), h('div', { class: 'vault-actions' }, pickBtn, removeBtn), fileIn,
+      h('p', { class: 'hint', text: 'Square photos work best. It is cropped and shrunk on your device before it is uploaded.' })),
+    nameF.wrap, countryF.wrap, dl, fieldF.wrap, msg,
+    h('div', { class: 'actions' }, saveBtn),
+    h('a', { class: 'btn quiet', style: 'margin:12px 0', href: '#workspace/people/' + currentUser.id, text: 'See how others see it' }),
+    h('p', { class: 'hint-line', text: 'This is your public profile. Any signed-in Athenaeum user can see your name, photo, country and field of study \u2014 nothing else from your account is on it.' })] };
+}
+
+/* ---------- E26: create & share posts ----------
+   A post is a copy of a note, definition, mnemonic, saved simulation, saved video or
+   saved library item, taken when it is shared (schema-update-E26-posts.sql). Each has a
+   Public / Private choice; public posts can be read by any signed-in user (E27 shows
+   them). Sharing the same item again updates its post rather than adding a second one.
+   #workspace/posts (My posts) lists them, flips public/private and deletes. */
+const POST_KIND_LABEL = { note: 'Note', definition: 'Definition', mnemonic: 'Mnemonic', simulation: 'Simulation', video: 'Video', library: 'Library' };
+function postCatLabel(kind, cat) { return kind === 'simulation' ? simCatLabel(cat) : kind === 'library' ? libraryCatLabel(cat) : ''; }
+function shareIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>';
+  return t.content.firstChild;
+}
+function postSrc(kind, row) {
+  if (kind === 'simulation') return { kind, table: 'saved_simulations', id: row.id, title: row.title || '', body: '', url: row.url || null, category: row.category || null };
+  if (kind === 'video')      return { kind, table: 'saved_videos', id: row.id, title: row.title || '', body: '', url: row.url || null, category: null };
+  if (kind === 'library')    return { kind, table: 'saved_library', id: row.id, title: row.title || '', body: '', url: row.url || null, category: row.category || null };
+  return { kind, table: ITEM_TYPES[kind].table, id: row.id, title: row.title || '', body: row.body || '', url: null, category: null };
+}
+const safeHref = u => (/^https?:\/\//i.test(u || '') ? u : null);
+
+async function openShareDialog(src) {
+  const cur = await sb.from('posts').select('id,visibility').eq('user_id', currentUser.id).eq('source_table', src.table).eq('source_id', src.id).maybeSingle();
+  if (cur.error) {
+    showDialog({ title: 'Sharing is not set up yet', text: 'Run the update SQL in Supabase (schema-update-E26-posts.sql), then reload. (' + cur.error.message + ')', submitLabel: 'OK', onSubmit() {} });
+    return;
+  }
+  const existing = cur.data || null;
+  let vis = existing ? existing.visibility : 'private';
+  showDialog({
+    title: existing ? 'Update your post' : 'Share as a post',
+    submitLabel: existing ? 'Update post' : 'Post',
+    render(form) {
+      const preview = h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0' },
+        h('span', { class: 'chip', text: POST_KIND_LABEL[src.kind] }),
+        src.title ? h('strong', { style: 'overflow-wrap:anywhere', text: src.title }) : null,
+        src.body ? h('small', { class: 'post-body', style: 'cursor:default', text: src.body }) : null,
+        src.url ? h('small', { style: 'overflow-wrap:anywhere', text: src.url }) : null);
+      const hint = h('p');
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Who can see this post' },
+        [['public', 'Public'], ['private', 'Private']].map(([k, l]) => h('button', { type: 'button', 'data-vis': k, text: l, onclick: () => { vis = k; sync(); } })));
+      const sync = () => {
+        seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.vis === vis)));
+        hint.textContent = (vis === 'public' ? 'Any signed-in Athenaeum user can see this post and everything shown above.' : 'Only you can see this post. You can make it public later in My posts.') +
+          (existing ? ' Posting again refreshes it with the current version.' : '');
+      };
+      sync();
+      form.append(preview, h('div', { class: 'field' }, h('label', { text: 'Who can see it' }), seg), hint);
+      return () => ({});
+    },
+    async onSubmit() {
+      const payload = { kind: src.kind, title: src.title.slice(0, 200), body: src.body.slice(0, 20000), url: src.url, category: src.category, visibility: vis, source_table: src.table, source_id: src.id, updated_at: new Date().toISOString() };
+      const res = existing ? await sb.from('posts').update(payload).eq('id', existing.id) : await sb.from('posts').insert(payload);
+      if (res.error) throw res.error;
+      // showDialog closes itself right after this returns, so show the confirmation on the next tick
+      setTimeout(() => showDialog({
+        title: existing ? 'Post updated' : 'Posted',
+        text: vis === 'public' ? 'It is public: any signed-in user can see it.' : 'It is private: only you can see it.',
+        submitLabel: 'Done', onSubmit() {},
+        extras: [{ label: 'Open My posts', danger: false, onClick: () => { closeDialog(); go('#workspace/posts'); } }]
+      }), 0);
+    }
+  });
+}
+
+async function postsPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  const res = await sb.from('posts').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false });
+  if (res.error) {
+    return { title: 'My posts', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Posts are not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-E26-posts.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+  let rows = res.data || [], filter = 'all';
+  const box = h('div'), msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Filter posts' },
+    [['all', 'All'], ['public', 'Public'], ['private', 'Private']].map(([k, l]) => h('button', { type: 'button', 'data-f': k, text: l, onclick: () => { filter = k; paint(); } })));
+
+  function card(r) {
+    const href = safeHref(r.url), cat = postCatLabel(r.kind, r.category);
+    const body = r.body ? h('p', { class: 'post-body', text: r.body }) : null;
+    if (body) body.addEventListener('click', () => body.classList.toggle('open'));
+    return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        h('span', { class: 'chip', text: POST_KIND_LABEL[r.kind] || r.kind }),
+        h('span', { class: 'chip' + (r.visibility === 'public' ? ' pub' : ''), text: r.visibility === 'public' ? 'Public' : 'Private' }),
+        cat ? h('small', { text: cat }) : null),
+      r.title ? h('strong', { style: 'overflow-wrap:anywhere', text: r.title }) : null,
+      body,
+      r.url ? (href ? h('a', { href, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:14px', text: r.url }) : h('small', { text: r.url })) : null,
+      h('small', { text: 'Shared ' + fmtDate(new Date(r.created_at)) }),
+      h('div', { class: 'vault-actions', style: 'margin:0' },
+        h('button', { class: 'btn quiet small', type: 'button', text: r.visibility === 'public' ? 'Make private' : 'Make public', onclick: async e => {
+          const btn = e.currentTarget, next = r.visibility === 'public' ? 'private' : 'public';
+          btn.disabled = true;
+          const u = await sb.from('posts').update({ visibility: next, updated_at: new Date().toISOString() }).eq('id', r.id);
+          if (u.error) { msg.textContent = 'Could not change it: ' + u.error.message; msg.hidden = false; btn.disabled = false; return; }
+          msg.hidden = true; r.visibility = next; paint();
+        } }),
+        h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Delete post', onclick: () => showDialog({
+          title: 'Delete this post?', text: 'The post is removed for everyone. Your original ' + (POST_KIND_LABEL[r.kind] || 'item').toLowerCase() + ' is not touched.',
+          submitLabel: 'Delete', danger: true,
+          async onSubmit() {
+            const d = await sb.from('posts').delete().eq('id', r.id);
+            if (d.error) throw d.error;
+            rows = rows.filter(x => x.id !== r.id); paint();
+          } }) })));
+  }
+
+  function paint() {
+    seg.querySelectorAll('button').forEach(b => {
+      const n = b.dataset.f === 'all' ? rows.length : rows.filter(r => r.visibility === b.dataset.f).length;
+      b.textContent = { all: 'All', public: 'Public', private: 'Private' }[b.dataset.f] + ' (' + n + ')';
+      b.setAttribute('aria-pressed', String(b.dataset.f === filter));
+    });
+    const shown = rows.filter(r => filter === 'all' || r.visibility === filter);
+    box.replaceChildren(shown.length ? h('div', { class: 'list' }, shown.map(card))
+      : emptyBlock(rows.length ? 'Nothing here' : 'No posts yet', rows.length ? 'No ' + filter + ' posts.' : 'Open a note, definition, mnemonic, saved video, simulation or library item and tap Share. Notes and mnemonics have a share button on the card.'));
+  }
+  paint();
+  return { title: 'My posts', nodes: [crumb, seg, msg, box,
+    h('p', { class: 'hint-line', text: 'A post is a copy made when you share. Editing or deleting the original later does not change it \u2014 share it again to refresh the post.' })] };
+}
+
+/* ---------- E27: public profiles & saving posts ----------
+   #workspace/community: the feed of other people's PUBLIC posts (E26), newest first,
+   filterable by kind, 20 at a time. #workspace/people/<user id>: one person's public
+   profile (E25) with their public posts. Each post from someone else has a Save
+   button: notes, definitions and mnemonics ask which subject/chapter/topic to go into
+   (like "Save as a note"); simulations, videos and library links go straight into the
+   matching hub. Saving copies the content -- it never changes the original -- and is
+   recorded in post_saves so the card shows "Saved" (schema-update-E27-community.sql). */
+const POST_PAGE = 20;
+const POST_FILTERS = [['all', 'All', null], ['notes', 'Notes', ['note', 'definition']], ['mnemonics', 'Mnemonics', ['mnemonic']], ['links', 'Links', ['simulation', 'video', 'library']]];
+
+async function savePostCopy(post, dest) {
+  const title = String(post.title || '').trim().slice(0, 120), body = String(post.body || '').slice(0, 20000);
+  let res, where;
+  if (post.kind === 'note' || post.kind === 'definition') {
+    const t = dest && dest.title != null ? dest.title : title;
+    if (post.kind === 'definition' && !t) throw new Error('Enter a term.');
+    res = await sb.from('notes').insert({ ...scopeCols(dest), title: t || null, body: body.trim() ? body : (t || 'Untitled'), kind: post.kind === 'definition' ? 'definition' : 'short_note', updated_at: new Date().toISOString() });
+    where = 'your notes';
+  } else if (post.kind === 'mnemonic') {
+    const t = dest && dest.title != null ? dest.title : title;
+    res = await sb.from('mnemonics').insert({ ...scopeCols(dest), title: t || 'Untitled', body });
+    where = 'your mnemonics';
+  } else {
+    const url = normalizeUrl(post.url);           // https only; throws a readable message otherwise
+    if (post.kind === 'simulation') {
+      res = await sb.from('saved_simulations').insert({ title: title || url, url, category: SIM_CATS.some(c => c.key === post.category) ? post.category : 'other' });
+      where = 'your simulations';
+    } else if (post.kind === 'video') {
+      if (!youtubeVideoId(url)) throw new Error('This post does not have a valid YouTube link.');
+      res = await sb.from('saved_videos').insert({ title: title || url, url });
+      where = 'your saved videos';
+    } else if (post.kind === 'library') {
+      res = await sb.from('saved_library').insert({ title: title || url, url, category: LIBRARY_CATS.some(c => c.key === post.category) ? post.category : 'books' });
+      where = 'My library';
+    } else throw new Error('This kind of post cannot be saved.');
+  }
+  if (res.error) throw res.error;
+  try { await sb.from('post_saves').upsert({ user_id: currentUser.id, post_id: post.id, saved_at: new Date().toISOString() }, { onConflict: 'user_id,post_id' }); } catch (e) { /* the copy is saved; only the "Saved" mark is missing */ }
+  return where;
+}
+
+async function openSavePostDialog(post, onSaved) {
+  let subjects = [];
+  try { subjects = must(await ordered(sb.from('subjects').select('*'))); } catch (e) { /* handled below */ }
+  if (!subjects.length) {
+    showDialog({ title: 'Create a subject first', text: 'Notes and mnemonics are saved inside a subject, chapter or topic. Create a subject, then save this post.', submitLabel: 'Go to Subjects', onSubmit() { go('#subjects'); } });
+    return;
+  }
+  let names = {};
+  showDialog({
+    title: 'Save to your workspace',
+    text: 'A copy of this ' + POST_KIND_LABEL[post.kind].toLowerCase() + ' goes into the place you choose. The original stays as it is.',
+    submitLabel: 'Save',
+    render(form) {
+      const noneC = '\u2014 none (save at subject level) \u2014', noneT = '\u2014 none (save at chapter level) \u2014';
+      const fTitle = makeField(post.kind === 'definition' ? 'Term' : post.kind === 'mnemonic' ? 'Title' : 'Title (optional)', { value: post.title || '', maxlength: 120 });
+      const fSubject = h('select', { class: 'control' }, h('option', { value: '', text: 'Choose a subject\u2026' }), subjects.map(x => h('option', { value: x.id, text: x.name })));
+      const fChapter = h('select', { class: 'control', disabled: true }, h('option', { value: '', text: noneC }));
+      const fTopic = h('select', { class: 'control', disabled: true }, h('option', { value: '', text: noneT }));
+      const last = (() => { try { return JSON.parse(store.get('aw.postDest') || '{}'); } catch (e) { return {}; } })();
+      if (last.s && subjects.some(x => x.id === last.s)) fSubject.value = last.s;
+      const fillChapters = async () => {
+        fChapter.replaceChildren(h('option', { value: '', text: noneC })); fTopic.replaceChildren(h('option', { value: '', text: noneT }));
+        fTopic.disabled = true; fChapter.disabled = !fSubject.value;
+        if (!fSubject.value) return;
+        const r = await ordered(sb.from('chapters').select('id, title').eq('subject_id', fSubject.value));
+        (r.data || []).forEach(c => { names[c.id] = c.title; fChapter.append(h('option', { value: c.id, text: c.title })); });
+      };
+      fSubject.addEventListener('change', fillChapters);
+      fChapter.addEventListener('change', async () => {
+        fTopic.replaceChildren(h('option', { value: '', text: noneT }));
+        fTopic.disabled = !fChapter.value;
+        if (!fChapter.value) return;
+        const r = await ordered(sb.from('topics').select('id, title').eq('chapter_id', fChapter.value));
+        (r.data || []).forEach(t => { names[t.id] = t.title; fTopic.append(h('option', { value: t.id, text: t.title })); });
+      });
+      if (fSubject.value) fillChapters();
+      form.append(fTitle.wrap,
+        h('div', { class: 'field' }, h('label', { text: 'Subject' }), fSubject),
+        h('div', { class: 'field' }, h('label', { text: 'Chapter' }), fChapter),
+        h('div', { class: 'field' }, h('label', { text: 'Topic' }), fTopic));
+      return () => {
+        if (!fSubject.value) throw new Error('Choose a subject.');
+        const title = fTitle.input.value.trim();
+        if ((post.kind === 'definition' || post.kind === 'mnemonic') && !title) throw new Error('Enter a ' + (post.kind === 'definition' ? 'term' : 'title') + '.');
+        return { title, subjectId: fSubject.value, chapterId: fChapter.value || null, topicId: fTopic.value || null,
+          label: (subjects.find(x => x.id === fSubject.value) || {}).name };
+      };
+    },
+    async onSubmit(v) {
+      const where = await savePostCopy(post, v);
+      store.set('aw.postDest', JSON.stringify({ s: v.subjectId }));
+      if (onSaved) onSaved(where + ' in \u201c' + (v.topicId ? names[v.topicId] : v.chapterId ? names[v.chapterId] : v.label) + '\u201d');
+    }
+  });
+}
+
+async function communityFeed({ userId, emptyTitle, emptyBody }) {
+  const me = currentUser.id;
+  let filter = 'all', rows = [], done = false, loading = false;
+  const authors = {}, saved = new Set();
+  const list = h('div', { class: 'list' }), empty = h('div'), msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const more = h('button', { class: 'btn quiet', type: 'button', text: 'Load more', onclick: () => loadMore(false).catch(showErr) });
+  const seg = h('div', { class: 'seg seg-mini', role: 'group', 'aria-label': 'Filter posts' },
+    POST_FILTERS.map(([k, l]) => h('button', { type: 'button', 'data-f': k, text: l, onclick: () => { if (filter === k) return; filter = k; loadMore(true).catch(showErr); } })));
+  const showErr = e => { msg.textContent = 'Could not load posts: ' + ((e && e.message) || 'try again'); msg.hidden = false; loading = false; paint(); };
+
+  async function loadMore(reset) {
+    if (loading) return;
+    loading = true; msg.hidden = true; more.disabled = true;
+    const from = reset ? 0 : rows.length;
+    let q = sb.from('posts').select('*').eq('visibility', 'public').order('created_at', { ascending: false }).range(from, from + POST_PAGE - 1);
+    q = userId ? q.eq('user_id', userId) : q.neq('user_id', me);
+    const ks = (POST_FILTERS.find(f => f[0] === filter) || [])[2];
+    if (ks) q = q.in('kind', ks);
+    const r = await q;
+    if (r.error) { loading = false; throw r.error; }
+    const got = r.data || [];
+    const ids = got.map(x => x.id), uids = [...new Set(got.map(x => x.user_id))].filter(u => !(u in authors));
+    const [pr, sv] = await Promise.all([
+      uids.length ? sb.from('user_profiles').select('*').in('user_id', uids) : { data: [] },
+      ids.length ? sb.from('post_saves').select('post_id').in('post_id', ids) : { data: [] }]);
+    if (sv.error) { loading = false; throw sv.error; }
+    uids.forEach(u => { authors[u] = null; });
+    ((pr && pr.data) || []).forEach(a => { authors[a.user_id] = a; });
+    (sv.data || []).forEach(x => saved.add(x.post_id));
+    rows = reset ? got : rows.concat(got.filter(x => !rows.some(y => y.id === x.id)));
+    done = got.length < POST_PAGE;
+    loading = false;
+    paint();
+  }
+
+  function card(post) {
+    const a = authors[post.user_id], name = (a && a.display_name) || 'Athenaeum user', mine = post.user_id === me;
+    const isSaved = saved.has(post.id), href = safeHref(post.url), cat = postCatLabel(post.kind, post.category);
+    const av = h('div', { class: 'avatar', 'aria-hidden': 'true', style: '--sz:36px' });
+    avatarFill(av, name, a && avatarUrl(a.avatar_path));
+    const body = post.body ? h('p', { class: 'post-body', text: post.body }) : null;
+    if (body) body.addEventListener('click', () => body.classList.toggle('open'));
+    const err = h('p', { class: 'msg err', role: 'alert', hidden: true, style: 'margin:0' });
+    const saveBtn = h('button', { class: 'btn small' + (isSaved ? ' quiet' : ''), type: 'button', text: isSaved ? 'Save again' : 'Save' });
+    const markSaved = () => { saved.add(post.id); paint(); };
+    saveBtn.addEventListener('click', async () => {
+      err.hidden = true;
+      if (post.kind === 'note' || post.kind === 'definition' || post.kind === 'mnemonic') { openSavePostDialog(post, markSaved); return; }
+      saveBtn.disabled = true;
+      try { await savePostCopy(post, null); markSaved(); }
+      catch (e) { err.textContent = 'Could not save: ' + ((e && e.message) || 'try again'); err.hidden = false; saveBtn.disabled = false; }
+    });
+    return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
+      userId ? null : h('a', { href: '#workspace/people/' + post.user_id, style: 'display:flex;gap:10px;align-items:center;text-decoration:none;color:inherit;min-width:0' }, av,
+        h('span', { style: 'min-width:0' }, h('strong', { style: 'display:block;font-size:15px;overflow-wrap:anywhere', text: name }),
+          h('small', { text: [a && a.country, a && a.field_of_study].filter(Boolean).join(' \u00b7 ') || 'Athenaeum user' }))),
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        h('span', { class: 'chip', text: POST_KIND_LABEL[post.kind] || post.kind }),
+        isSaved && !mine ? h('span', { class: 'chip pub', text: 'Saved \u2713' }) : null,
+        cat ? h('small', { text: cat }) : null,
+        h('small', { text: fmtDate(new Date(post.created_at)) })),
+      post.title ? h('strong', { style: 'overflow-wrap:anywhere', text: post.title }) : null,
+      body,
+      post.url ? (href ? h('a', { href, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:14px', text: post.url }) : h('small', { text: post.url })) : null,
+      err,
+      mine ? h('small', { text: 'Your post' }) : h('div', { class: 'vault-actions', style: 'margin:0' }, saveBtn));
+  }
+
+  function paint() {
+    seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.f === filter)));
+    list.replaceChildren(...rows.map(card));
+    empty.replaceChildren(rows.length ? '' : emptyBlock(filter === 'all' ? emptyTitle : 'Nothing here', filter === 'all' ? emptyBody : 'No public posts of this kind yet.'));
+    more.hidden = done || !rows.length; more.disabled = false;
+  }
+
+  await loadMore(true);
+  return h('div', {}, seg, msg, list, empty, more);
+}
+
+const communitySetupCard = e => h('div', { class: 'status bad' }, h('strong', { text: 'Community is not set up yet' }),
+  'Run the update SQL in Supabase (schema-update-E26-posts.sql, then schema-update-E27-community.sql), then reload. (' + ((e && e.message) || e) + ') ',
+  h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
+
+async function communityPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  try {
+    const feed = await communityFeed({ emptyTitle: 'No public posts yet', emptyBody: 'When other people share notes, mnemonics or links publicly, they show up here. You can share your own from any note, mnemonic or saved link.' });
+    return { title: 'Community', nodes: [crumb, h('p', { class: 'hint-line', text: 'Public posts from other students. Tap a name to see their profile, and Save to copy a post into your own workspace.' }), feed] };
+  } catch (e) { return { title: 'Community', nodes: [crumb, communitySetupCard(e)] }; }
+}
+
+async function peoplePage(uid) {
+  if (!UUID.test(uid || '')) return go('#workspace/community');
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community', href: '#workspace/community' }]);
+  const mine = uid === currentUser.id;
+  try {
+    const pr = await sb.from('user_profiles').select('*').eq('user_id', uid).maybeSingle();
+    if (pr.error) throw pr.error;
+    const row = pr.data, name = (row && row.display_name) || (mine ? usernameFrom(currentUser) : 'Athenaeum user');
+    const av = h('div', { class: 'avatar', 'aria-hidden': 'true', style: '--sz:72px' });
+    avatarFill(av, name, row && avatarUrl(row.avatar_path));
+    const feed = await communityFeed({ userId: uid,
+      emptyTitle: mine ? 'No public posts yet' : 'No public posts',
+      emptyBody: mine ? 'Share a note, mnemonic or saved link and choose Public \u2014 it will show up here.' : 'This person has not shared anything publicly yet.' });
+    return { title: name, nodes: [crumb,
+      h('div', { class: 'proj prof-card' }, av, h('div', { style: 'min-width:0' }, h('strong', { text: name }),
+        h('small', { text: [row && row.country, row && row.field_of_study].filter(Boolean).join(' \u00b7 ') || (row ? 'No country or field added' : 'No profile yet') }))),
+      mine ? h('p', { class: 'hint-line', text: 'This is how other people see your profile.' }) : null,
+      mine ? h('a', { class: 'btn quiet', style: 'margin-bottom:16px', href: '#workspace/profile', text: 'Edit profile' }) : null,
+      section('Public posts', null, null, feed)] };
+  } catch (e) { return { title: 'Profile', nodes: [crumb, communitySetupCard(e)] }; }
+}
+
+/* ---------- E28: live classes ----------
+   #workspace/scholarships/classes. A personal list of online / live class links
+   (scholarship_classes; schema-update-E28-scholarship-classes.sql): name, https link,
+   type, host, optional start time and length, notes. Grouped into Live now, Upcoming,
+   Anytime / recorded and Past. YouTube links (videos and live streams) play inside the
+   card, Google Drive / OneDrive files open in the in-app viewer, and everything else
+   (Meet, Zoom, Teams...) opens in a browser tab with Join. Classes with a start time
+   also appear on the Application timeline. */
+const SCH_CLASS_CATS = [{ key: 'tests', label: 'Test prep' }, { key: 'applications', label: 'Applications & SOP' }, { key: 'language', label: 'Language' },
+  { key: 'scholarships', label: 'Scholarship info' }, { key: 'other', label: 'Other' }];
+const schClassCatLabel = k => (SCH_CLASS_CATS.find(c => c.key === k) || { label: 'Other' }).label;
+const schPad = n => String(n).padStart(2, '0');
+const schLocalDay = iso => { const d = new Date(iso); return d.getFullYear() + '-' + schPad(d.getMonth() + 1) + '-' + schPad(d.getDate()); };
+const schLocalInput = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : schLocalDay(iso) + 'T' + schPad(d.getHours()) + ':' + schPad(d.getMinutes()); };
+function schClassState(c, now = Date.now()) {
+  if (!c.starts_at) return 'anytime';
+  const s = new Date(c.starts_at).getTime(), e = s + (c.duration_min || 60) * 60000;
+  return now < s ? 'upcoming' : now < e ? 'live' : 'past';
+}
+const schClassWhen = c => new Date(c.starts_at).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + (c.duration_min ? ' \u00b7 ' + c.duration_min + ' min' : '');
+function schClassEmbed(url) {
+  if (youtubeVideoId(url)) return { kind: 'yt' };
+  const i = parseExternalLink(url);
+  return i.embed ? { kind: 'viewer', embed: i.embed } : null;
+}
+
+function openSchClassDialog(existing) {
+  const row = existing || {};
+  showDialog({
+    title: existing ? 'Edit class' : 'Add a class',
+    submitLabel: 'Save',
+    render(form) {
+      const fTitle = makeField('Class name', { value: row.title || '', maxlength: 120, placeholder: 'e.g. IELTS writing masterclass' });
+      const fUrl = makeField('Class link', { value: row.url || '', placeholder: 'Meet, Zoom, YouTube live or a recording' });
+      fUrl.input.type = 'url'; fUrl.input.setAttribute('autocapitalize', 'none');
+      const cat = h('select', { class: 'control', 'aria-label': 'Type' }, SCH_CLASS_CATS.map(c => h('option', { value: c.key, text: c.label })));
+      cat.value = SCH_CLASS_CATS.some(c => c.key === row.category) ? row.category : 'other';
+      const fHost = makeField('Teacher or host (optional)', { value: row.host || '', maxlength: 80 });
+      const when = h('input', { class: 'control', type: 'datetime-local', 'aria-label': 'Starts' }); when.value = schLocalInput(row.starts_at);
+      const dur = h('input', { class: 'control', type: 'number', min: 5, max: 720, step: 5, inputmode: 'numeric', placeholder: 'e.g. 90', 'aria-label': 'Length in minutes' }); dur.value = row.duration_min || '';
+      const fNotes = makeField('Notes (optional)', { value: row.notes || '', multiline: true, rows: 3, maxlength: 1000 });
+      const fld = (label, el) => h('div', { class: 'field' }, h('label', { text: label }), el);
+      form.append(fTitle.wrap, fUrl.wrap, fld('Type', cat), fHost.wrap,
+        fld('Starts (leave empty for a recording or anytime class)', when), fld('Length in minutes (optional)', dur), fNotes.wrap);
+      return () => {
+        const title = fTitle.input.value.trim();
+        if (!title) throw new Error('Enter the class name.');
+        const url = normalizeUrl(fUrl.input.value);
+        let starts_at = null;
+        if (when.value) { const d = new Date(when.value); if (isNaN(d)) throw new Error('Enter a valid start time.'); starts_at = d.toISOString(); }
+        let duration_min = null;
+        if (dur.value.trim()) { duration_min = Math.round(Number(dur.value)); if (!(duration_min >= 5 && duration_min <= 720)) throw new Error('Length must be between 5 and 720 minutes.'); }
+        return { title, url, category: cat.value, host: fHost.input.value.trim(), starts_at, duration_min, notes: fNotes.input.value.trim() };
+      };
+    },
+    async onSubmit(payload) {
+      const res = existing ? await sb.from('scholarship_classes').update(payload).eq('id', row.id) : await sb.from('scholarship_classes').insert(payload);
+      if (res.error) throw res.error;
+      route();
+    },
+    extra: existing ? { label: 'Delete class', onClick: () => confirmDeleteRow('scholarship_classes', row, 'class') } : null
+  });
+}
+
+async function schClassesPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  const res = await sb.from('scholarship_classes').select('*');
+  if (res.error) {
+    return { title: 'Live classes', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Live classes are not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-E28-scholarship-classes.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+  const rows = res.data || [];
+  let cat = 'all';
+  const box = h('div'), chips = h('div', { class: 'chips' });
+
+  function card(c, state) {
+    const href = safeHref(c.url), emb = schClassEmbed(c.url), player = h('div');
+    let watching = false;
+    const watch = emb ? h('button', { class: 'btn quiet small', type: 'button', text: emb.kind === 'yt' ? 'Watch here' : 'View here', onclick: e => {
+      if (emb.kind === 'viewer') { openViewer(c.title, emb.embed, c.url); return; }
+      watching = !watching;
+      player.replaceChildren(...(watching ? [youtubePlayer(c.url)] : []));
+      e.currentTarget.textContent = watching ? 'Hide player' : 'Watch here';
+    } }) : null;
+    const notes = c.notes ? h('p', { class: 'post-body', text: c.notes }) : null;
+    if (notes) notes.addEventListener('click', () => notes.classList.toggle('open'));
+    return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        h('span', { class: 'chip' + (state === 'live' ? ' pub' : ''), text: { live: 'Live now', upcoming: 'Upcoming', anytime: 'Anytime', past: 'Ended' }[state] }),
+        h('small', { text: schClassCatLabel(c.category) })),
+      h('strong', { style: 'overflow-wrap:anywhere', text: c.title }),
+      c.host ? h('small', { text: c.host }) : null,
+      c.starts_at ? h('small', { text: schClassWhen(c) }) : null,
+      notes, player,
+      h('div', { class: 'vault-actions', style: 'margin:0' },
+        href ? h('a', { class: 'btn small', href, target: '_blank', rel: 'noopener noreferrer', text: state === 'live' || state === 'upcoming' ? 'Join' : 'Open link' }) : null,
+        watch,
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSchClassDialog(c) })));
+  }
+
+  function paint() {
+    const now = Date.now(), shown = rows.filter(c => cat === 'all' || c.category === cat);
+    const st = c => schClassState(c, now), at = c => new Date(c.starts_at).getTime();
+    const groups = [
+      ['Live now', shown.filter(c => st(c) === 'live').sort((a, b) => at(a) - at(b)), 'live'],
+      ['Upcoming', shown.filter(c => st(c) === 'upcoming').sort((a, b) => at(a) - at(b)), 'upcoming'],
+      ['Anytime and recordings', shown.filter(c => st(c) === 'anytime').sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))), 'anytime'],
+      ['Ended', shown.filter(c => st(c) === 'past').sort((a, b) => at(b) - at(a)), 'past']].filter(g => g[1].length);
+    chips.replaceChildren(...[{ key: 'all', label: 'All' }, ...SCH_CLASS_CATS].map(c => h('button', { class: 'chip-btn', type: 'button', text: c.label, 'aria-pressed': String(cat === c.key), onclick: () => { cat = c.key; paint(); } })));
+    chips.hidden = !rows.length;
+    box.replaceChildren(...(groups.length ? groups.map(([title, list, state]) => section(title, null, null, h('div', { class: 'list' }, list.map(c => card(c, state)))))
+      : [emptyBlock(rows.length ? 'Nothing here' : 'No classes yet', rows.length ? 'No classes of this type.' : 'Save the links to online and live classes you plan to join \u2014 test prep, SOP workshops, scholarship webinars. Add a start time and the class appears on your timeline.')]));
+  }
+  paint();
+  return { title: 'Live classes', nodes: [crumb,
+    h('p', { class: 'hint-line', text: 'Your own list of class links. YouTube classes play right here; Meet, Zoom and similar open in your browser with Join.' }),
+    h('div', { class: 'actions', style: 'margin-bottom:12px' }, h('button', { class: 'btn', type: 'button', text: '+ Add a class', onclick: () => openSchClassDialog(null) })),
+    chips, box] };
+}
+
+/* ---------- E29: alumni tips on each scholarship page ----------
+   A section at the bottom of the scholarship detail page where people who RECEIVED the
+   scholarship leave tips for future applicants (schema-update-E29-alumni-tips.sql).
+   Scholarships are matched across users by schScholarshipKey(link): host + path + the
+   query string minus tracking parameters. Posting means declaring you received it and the
+   year; that is self-reported, not verified. One tip per person per scholarship (posting
+   again edits it). Tips are read through the scholarship_tips_public view, which never
+   sends the author of an anonymous tip. Non-anonymous tips show the author's E25 profile. */
+function schScholarshipKey(url) {
+  try {
+    const u = new URL(url);
+    const q = [...u.searchParams.entries()].filter(([k]) => !/^(utm_|fbclid$|gclid$|ref$|mc_)/i.test(k)).sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]));
+    return (u.hostname.replace(/^www\./i, '') + u.pathname.replace(/\/+$/, '') + (q.length ? '?' + q.map(([k, v]) => k + '=' + v).join('&') : '')).toLowerCase().slice(0, 400);
+  } catch (e) { return ''; }
+}
+
+function schAlumniTips(url, getName) {
+  const key = schScholarshipKey(url), wrap = h('div');
+  if (!key) {
+    wrap.append(section('Alumni tips', null, null, h('p', { class: 'none', text: 'Add a link to this scholarship (pencil icon in your Shortlist) so alumni tips can be matched to it.' })));
+    return wrap;
+  }
+  let tips = [], state = 'loading', errText = '';
+  const authors = {};
+
+  async function load() {
+    state = 'loading'; paint();
+    const r = await sb.from('scholarship_tips_public').select('*').eq('scholarship_key', key).order('created_at', { ascending: false }).limit(50);
+    if (r.error) { state = 'error'; errText = r.error.message; paint(); return; }
+    tips = r.data || [];
+    const ids = [...new Set(tips.map(t => t.author_id).filter(Boolean))].filter(id => !(id in authors));
+    if (ids.length) {
+      ids.forEach(id => { authors[id] = null; });
+      const pr = await sb.from('user_profiles').select('*').in('user_id', ids);
+      ((pr && pr.data) || []).forEach(a => { authors[a.user_id] = a; });
+    }
+    state = 'ok'; paint();
+  }
+
+  function openTipDialog(existing) {
+    showDialog({
+      title: existing ? 'Edit your tip' : 'Leave an alumni tip',
+      text: 'For people who received this scholarship. Your tip is visible to every signed-in user, and it is not checked \u2014 by posting you confirm you received it.',
+      submitLabel: existing ? 'Save tip' : 'Post tip',
+      render(form) {
+        const year = h('input', { class: 'control', type: 'number', min: 1990, max: new Date().getFullYear(), step: 1, inputmode: 'numeric', placeholder: 'e.g. ' + (new Date().getFullYear() - 1), 'aria-label': 'Year you received it' });
+        year.value = existing ? existing.year_received : '';
+        const body = makeField('', { value: existing ? existing.body : '', multiline: true, rows: 6, maxlength: 1500, placeholder: 'What helped you? Interview, essay, timeline, documents, mistakes to avoid\u2026' });
+        const anon = h('input', { type: 'checkbox', class: 'dl-check' }); anon.checked = !!(existing && existing.anonymous);
+        form.append(
+          h('div', { class: 'field' }, h('label', { text: 'Year you received it' }), year),
+          h('div', { class: 'field' }, h('label', { text: 'Your tip' }), body.input),
+          h('div', { style: 'margin-bottom:16px' }, h('label', { class: 'check-lab' }, anon, h('span', { text: 'Post anonymously (your name and photo are not shown)' }))));
+        return () => {
+          const y = Math.round(Number(year.value)), text = body.input.value.trim();
+          if (!(y >= 1990 && y <= new Date().getFullYear())) throw new Error('Enter the year you received it (1990 to this year).');
+          if (text.length < 10) throw new Error('Write a little more \u2014 at least 10 characters.');
+          if (text.length > 1500) throw new Error('Keep it under 1500 characters.');
+          return { year_received: y, body: text, anonymous: anon.checked };
+        };
+      },
+      async onSubmit(v) {
+        const payload = { scholarship_key: key, scholarship_name: String(getName() || '').slice(0, 200), ...v, updated_at: new Date().toISOString() };
+        const res = existing ? await sb.from('scholarship_tips').update(payload).eq('id', existing.id) : await sb.from('scholarship_tips').insert(payload);
+        if (res.error) throw new Error(/duplicate|unique/i.test(res.error.message) ? 'You already left a tip here \u2014 reload to edit it.' : res.error.message);
+        load();
+      },
+      extra: existing ? { label: 'Delete my tip', onClick: () => confirmDeleteRow('scholarship_tips', existing, 'tip', { after: load }) } : null
+    });
+  }
+
+  function card(t) {
+    const a = t.author_id ? authors[t.author_id] : null;
+    const name = t.author_id ? ((a && a.display_name) || 'Athenaeum user') : 'Anonymous alum';
+    const av = h('div', { class: 'avatar', 'aria-hidden': 'true', style: '--sz:32px' });
+    avatarFill(av, name, a && avatarUrl(a.avatar_path));
+    const who = h(t.author_id ? 'a' : 'div', { ...(t.author_id ? { href: '#workspace/people/' + t.author_id } : {}), style: 'display:flex;gap:10px;align-items:center;text-decoration:none;color:inherit;min-width:0' }, av,
+      h('span', { style: 'min-width:0' }, h('strong', { style: 'display:block;font-size:15px;overflow-wrap:anywhere', text: name + (t.mine ? ' (you)' : '') }),
+        h('small', { text: [a && a.country, a && a.field_of_study].filter(Boolean).join(' \u00b7 ') })));
+    return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
+      who,
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        h('span', { class: 'chip pub', text: 'Alumni \u00b7 ' + t.year_received }), h('small', { text: fmtDate(new Date(t.created_at)) })),
+      h('p', { style: 'margin:0;white-space:pre-wrap;overflow-wrap:anywhere', text: t.body }),
+      t.mine ? h('div', { class: 'vault-actions', style: 'margin:0' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Edit my tip', onclick: () => openTipDialog(t) })) : null);
+  }
+
+  function paint() {
+    const mine = tips.find(t => t.mine);
+    wrap.replaceChildren(section('Alumni tips', null, null,
+      h('p', { class: 'hint-line', text: 'Tips from people who received this scholarship. They are self-reported and not checked \u2014 confirm anything important on the official page.' }),
+      state === 'loading' ? h('p', { class: 'hint-line', text: 'Loading tips\u2026' })
+      : state === 'error' ? h('div', { class: 'status bad' }, h('strong', { text: 'Alumni tips are not set up yet' }),
+          'Run the update SQL in Supabase (schema-update-E29-alumni-tips.sql), then reload. (' + errText + ') ',
+          h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: load }))
+      : tips.length ? h('div', { class: 'list' }, tips.map(card))
+      : h('p', { class: 'none', text: 'No tips yet. If you received this scholarship, be the first to leave one.' }),
+      state === 'ok' && !mine ? h('div', { class: 'actions', style: 'margin-top:12px' }, h('button', { class: 'btn quiet', type: 'button', text: 'I received this \u2014 add a tip', onclick: () => openTipDialog(null) })) : null));
+  }
+  load();
+  return wrap;
+}
+
+/* ---------- E30: cohort matching ----------
+   People who are applying to the same scholarship in the same year (the "cycle").
+   Joining is opt-in and needs a public profile (E25): peers then see your name, photo,
+   country and field of study, and can open your public profile (E27) -- nothing from
+   your shortlist. There is deliberately no messaging (see G7-G9). scholarship_cohorts,
+   schema-update-E30-cohorts.sql. Scholarships are matched by schScholarshipKey (E29).
+   Two places: an "Applying this year" section on the scholarship detail page, and
+   #workspace/scholarships/peers, which lists the cohorts you joined with peer counts. */
+function schCohortPeerCard(r, a) {
+  const name = (a && a.display_name) || 'Athenaeum user';
+  const av = h('div', { class: 'avatar', 'aria-hidden': 'true', style: '--sz:40px' });
+  avatarFill(av, name, a && avatarUrl(a.avatar_path));
+  return h('a', { class: 'row', href: '#workspace/people/' + r.user_id, style: 'text-decoration:none' }, av,
+    h('span', { class: 'grow' }, h('strong', { text: name }),
+      h('small', { text: [a && a.country, a && a.field_of_study].filter(Boolean).join(' \u00b7 ') || 'Athenaeum user' })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' }));
+}
+async function schCohortAuthors(rows, authors) {
+  const ids = [...new Set(rows.map(r => r.user_id))].filter(id => !(id in authors));
+  if (!ids.length) return;
+  ids.forEach(id => { authors[id] = null; });
+  const pr = await sb.from('user_profiles').select('*').in('user_id', ids);
+  ((pr && pr.data) || []).forEach(a => { authors[a.user_id] = a; });
+}
+const schCohortSetup = e => h('div', { class: 'status bad' }, h('strong', { text: 'Cohorts are not set up yet' }),
+  'Run the update SQL in Supabase (schema-update-E30-cohorts.sql), then reload. (' + ((e && e.message) || e) + ') ',
+  h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
+
+function schCohort(url, getName, deadlineYear) {
+  const key = schScholarshipKey(url), me = currentUser.id, wrap = h('div');
+  if (!key) {
+    wrap.append(section('Applying this year', null, null, h('p', { class: 'none', text: 'Add a link to this scholarship (pencil icon in your Shortlist) to see and join the people applying to it.' })));
+    return wrap;
+  }
+  const thisYear = new Date().getFullYear(), authors = {};
+  let rows = [], state = 'loading', errText = '';
+
+  async function load() {
+    state = 'loading'; paint();
+    const r = await sb.from('scholarship_cohorts').select('*').eq('scholarship_key', key).order('cycle', { ascending: false }).order('created_at', { ascending: true }).limit(200);
+    if (r.error) { state = 'error'; errText = r.error.message; paint(); return; }
+    rows = r.data || [];
+    await schCohortAuthors(rows.filter(x => x.user_id !== me), authors);
+    state = 'ok'; paint();
+  }
+
+  async function join() {
+    const pr = await sb.from('user_profiles').select('user_id').eq('user_id', me).maybeSingle();
+    if (!pr.error && !pr.data) {
+      showDialog({ title: 'Set up your profile first', text: 'Peers see your name, photo, country and field of study, so create your public profile, then come back and join.', submitLabel: 'Open my profile', onSubmit() { go('#workspace/profile'); } });
+      return;
+    }
+    const have = new Set(rows.filter(x => x.user_id === me).map(x => x.cycle));
+    const years = [thisYear - 1, thisYear, thisYear + 1, thisYear + 2].filter(y => !have.has(y));
+    if (!years.length) { showDialog({ title: 'Already in every cohort', text: 'You have joined all the years you can pick here.', submitLabel: 'OK', onSubmit() {} }); return; }
+    showDialog({
+      title: 'Join this cohort',
+      text: 'Other signed-in users applying to this scholarship in the same year will see your name, photo, country and field of study, and can open your public profile. Nothing from your shortlist is shared. You can leave any time.',
+      submitLabel: 'Join',
+      render(form) {
+        const sel = h('select', { class: 'control', 'aria-label': 'Application year' }, years.map(y => h('option', { value: y, text: String(y) })));
+        sel.value = String(years.includes(deadlineYear) ? deadlineYear : years.includes(thisYear) ? thisYear : years[0]);
+        form.append(h('div', { class: 'field' }, h('label', { text: 'Which year are you applying?' }), sel));
+        return () => ({ cycle: Number(sel.value) });
+      },
+      async onSubmit(v) {
+        const res = await sb.from('scholarship_cohorts').insert({ scholarship_key: key, scholarship_name: String(getName() || '').slice(0, 200), scholarship_url: /^https?:\/\//i.test(url) ? url.slice(0, 1000) : '', cycle: v.cycle });
+        if (res.error) throw new Error(/row-level security|policy/i.test(res.error.message) ? 'Create your public profile first, then join.' : /duplicate|unique/i.test(res.error.message) ? 'You already joined that year.' : res.error.message);
+        load();
+      }
+    });
+  }
+
+  function paint() {
+    const mine = rows.filter(x => x.user_id === me), others = rows.filter(x => x.user_id !== me);
+    const cycles = [...new Set(rows.map(x => x.cycle))].sort((a, b) => b - a);
+    wrap.replaceChildren(section('Applying this year', null, null,
+      h('p', { class: 'hint-line', text: 'People who joined the cohort for this scholarship. Joining is optional and shows your public profile to other signed-in users.' }),
+      state === 'loading' ? h('p', { class: 'hint-line', text: 'Loading\u2026' })
+      : state === 'error' ? schCohortSetup({ message: errText })
+      : h('div', { style: 'display:grid;gap:14px' },
+          mine.length ? h('div', { style: 'display:grid;gap:8px' }, mine.map(m => h('div', { class: 'proj', style: 'padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
+            h('span', { class: 'chip pub', text: 'You \u00b7 ' + m.cycle }), h('span', { style: 'flex:1;min-width:0', text: 'You\u2019re in the ' + m.cycle + ' cohort.' }),
+            h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Leave', onclick: () => confirmDeleteRow('scholarship_cohorts', m, 'cohort membership', { after: load }) })))) : null,
+          cycles.length && others.length ? cycles.map(c => {
+            const list = others.filter(x => x.cycle === c);
+            return list.length ? h('div', { style: 'display:grid;gap:8px' }, h('strong', { text: c + ' \u00b7 ' + plural(list.length, 'other applicant', 'other applicants') }),
+              h('div', { class: 'list' }, list.map(x => schCohortPeerCard(x, authors[x.user_id])))) : null;
+          }) : h('p', { class: 'none', text: mine.length ? 'No one else has joined yet.' : 'No one has joined yet.' }),
+          h('div', { class: 'actions' }, h('button', { class: 'btn quiet', type: 'button', text: mine.length ? 'Join another year' : 'I\u2019m applying \u2014 join this cohort', onclick: join })))));
+  }
+  load();
+  return wrap;
+}
+
+async function schPeersPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  try {
+    const me = currentUser.id;
+    const mr = await sb.from('scholarship_cohorts').select('*').eq('user_id', me).order('cycle', { ascending: false }).order('created_at', { ascending: false });
+    if (mr.error) throw mr.error;
+    const mine = mr.data || [];
+    let counts = {};
+    if (mine.length) {
+      const orr = await sb.from('scholarship_cohorts').select('scholarship_key,cycle').neq('user_id', me).in('scholarship_key', [...new Set(mine.map(m => m.scholarship_key))]).limit(1000);
+      if (orr.error) throw orr.error;
+      (orr.data || []).forEach(x => { const k = x.scholarship_key + '|' + x.cycle; counts[k] = (counts[k] || 0) + 1; });
+    }
+    return { title: 'Peers', nodes: [crumb,
+      h('p', { class: 'hint-line', text: 'The cohorts you joined \u2014 students applying to the same scholarship in the same year. Open one to see who they are. Join from any scholarship\u2019s page.' }),
+      mine.length ? h('div', { class: 'list' }, mine.map(m => {
+        const n = counts[m.scholarship_key + '|' + m.cycle] || 0;
+        return linkRow({ href: m.scholarship_url ? '#workspace/scholarships/detail-u-' + encodeURIComponent(m.scholarship_url) : '#workspace/scholarships/shortlist',
+          title: m.scholarship_name || m.scholarship_key, meta: m.cycle + ' \u00b7 ' + (n ? plural(n, 'other applicant', 'other applicants') : 'no one else yet') });
+      }))
+      : emptyBlock('No cohorts yet', 'Open a scholarship from your Shortlist or Find scholarships, scroll to \u201cApplying this year\u201d and join it to meet the others applying.'),
+      h('a', { class: 'btn quiet', style: 'margin-top:16px', href: '#workspace/scholarships/shortlist', text: 'Go to my Shortlist' })] };
+  } catch (e) { return { title: 'Peers', nodes: [crumb, schCohortSetup(e)] }; }
+}
+
+/* ---------- E31: outcome tracking ("Did you get in?") ----------
+   Each shortlisted scholarship gets a Got in / Didn't get in / Still waiting choice
+   (inside its expanded card in the Shortlist). Choosing writes one row per scholarship to
+   scholarship_outcomes (E21's table; schema-update-E31-scholarship-outcomes.sql) together
+   with a snapshot of the person's numbers at that moment -- academic %, IELTS band, ECA
+   and project counts, level, destination, major -- the same numbers Gap analysis compares.
+   Rows whose "share" box is ticked and whose result is "got in" feed the anonymous
+   community averages that replace the AI estimate once 5 people have reported. */
+const SCH_OUTCOME_LABEL = { admitted: 'Got in', rejected: 'Didn\u2019t get in', pending: 'Still waiting' };
+async function schOutcomeSnapshot() {
+  const [pr, rr, jr] = await Promise.all([sb.from('scholarship_profiles').select('*').maybeSingle(), sb.from('scholarship_roadmap').select('stage,text,done'),
+    sb.from('projects').select('title').eq('kind', 'project')]);
+  const p = pr.data;
+  if (!p) return {};
+  const you = schGapYou(p, rr.data || [], (jr.data || []).map(x => x.title));
+  return { level: p.target_level || null, destination: (p.destinations || []).find(d => d && d !== 'Open to anywhere') || null, major: p.target_major || null,
+    gpa_pct: you.gpa_pct, english_ielts: you.english_ielts, eca_count: you.eca_count, project_count: you.project_count };
+}
+function schOutcomeBlock(r, ctx) {
+  const box = h('div', { style: 'display:grid;gap:8px;margin:0 0 12px' }), err = h('p', { class: 'msg err', role: 'alert', hidden: true, style: 'margin:0' });
+  let busy = false;
+  const fail = e => { err.textContent = 'Could not save: ' + ((e && e.message) || 'try again'); err.hidden = false; busy = false; paint(); };
+  async function choose(outcome) {
+    const o = ctx.byId[r.id];
+    if (busy || (o && o.outcome === outcome)) return;
+    busy = true; err.hidden = true; paint();
+    try {
+      const payload = { scholarship_name: r.name, scholarship_key: r.link ? schScholarshipKey(r.link) || null : null, outcome, updated_at: new Date().toISOString(), ...(await schOutcomeSnapshot()) };
+      const res = o ? await sb.from('scholarship_outcomes').update(payload).eq('id', o.id).select('*').single()
+                    : await sb.from('scholarship_outcomes').insert({ ...payload, shortlist_id: r.id, share: true }).select('*').single();
+      if (res.error) throw res.error;
+      ctx.byId[r.id] = res.data; busy = false; ctx.onChange();
+    } catch (e) { fail(e); }
+  }
+  async function setShare(v) {
+    const o = ctx.byId[r.id]; if (!o || busy) return;
+    busy = true; err.hidden = true;
+    const res = await sb.from('scholarship_outcomes').update({ share: v, updated_at: new Date().toISOString() }).eq('id', o.id).select('*').single();
+    if (res.error) return fail(res.error);
+    ctx.byId[r.id] = res.data; busy = false; paint();
+  }
+  async function clear() {
+    const o = ctx.byId[r.id]; if (!o || busy) return;
+    busy = true;
+    const res = await sb.from('scholarship_outcomes').delete().eq('id', o.id);
+    if (res.error) return fail(res.error);
+    delete ctx.byId[r.id]; busy = false; ctx.onChange();
+  }
+  function paint() {
+    const o = ctx.byId[r.id];
+    if (!ctx.ready) { box.replaceChildren(h('strong', { text: 'Did you get in?' }), h('small', { text: 'Run the update SQL in Supabase (schema-update-E31-scholarship-outcomes.sql), then reload, to record results.' })); return; }
+    const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Did you get in?', style: 'margin-bottom:0' },
+      ['admitted', 'pending', 'rejected'].map(k => h('button', { type: 'button', text: SCH_OUTCOME_LABEL[k], disabled: busy, 'aria-pressed': String(!!o && o.outcome === k), onclick: () => choose(k) })));
+    const cb = h('input', { type: 'checkbox', class: 'dl-check', disabled: busy }); cb.checked = !!(o && o.share);
+    cb.addEventListener('change', () => setShare(cb.checked));
+    box.replaceChildren(h('strong', { text: 'Did you get in?' }), seg,
+      o ? h('label', { class: 'check-lab', style: 'min-height:36px' }, cb, h('span', { style: 'font-size:14px', text: 'Add my numbers to the anonymous community averages' })) : null,
+      o ? h('small', { text: 'Saved with your numbers from ' + fmtDate(new Date(o.updated_at || o.created_at)) + '. Averages only appear once 5 people who got in have reported, and never show who.' }) : h('small', { text: 'Tell us how it went. It helps the Gap analysis get more accurate for everyone.' }),
+      o ? h('button', { class: 'link-btn', type: 'button', style: 'justify-self:start', text: 'Clear my result', onclick: clear }) : null, err);
+  }
+  paint();
+  return box;
+}
+
 function openSheet()  { $('#sheet').hidden = false; $('#logout-btn').focus(); }
 function closeSheet() { $('#sheet').hidden = true; }
 
@@ -10157,6 +11129,8 @@ async function boot() {
 
   $('#who-btn').addEventListener('click', openSheet);
   $('#sheet-close').addEventListener('click', closeSheet);
+  $('#sheet-profile').addEventListener('click', closeSheet);
+  $('#sheet-posts').addEventListener('click', closeSheet);
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   $('#viewer-close').addEventListener('click', closeViewer);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closeSheet(); } });
