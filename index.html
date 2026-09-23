@@ -303,6 +303,9 @@
   .item-edit:active, .item-listen:active { color: var(--chalk); }
   .item-edit svg, .item-listen svg { width: 16px; height: 16px; }
   .item-listen[data-speaking="true"] { color: var(--marker); border-color: var(--marker); }
+  /* D3: planner alarm toggle — lit up (marker colour) once the alarm is on */
+  .alarm-toggle[aria-pressed="true"] { color: var(--marker); border-color: var(--marker); }
+  .alarm-field .check-lab { min-height: 32px; }
   .chip {
     justify-self: start; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
@@ -453,8 +456,32 @@
   .proj-head strong { font-weight: 600; overflow-wrap: anywhere; }
   .proj-head small { color: var(--dim); font-size: 14px; }
   .proj-head .chev { color: var(--dim); font-size: 24px; line-height: 1; }
+  .chip.overdue { color: var(--err); background: rgba(255,154,154,.12); }
+  .chip.ongoing-chip { color: var(--ok); background: rgba(127,209,160,.12); }
+  .chip-slot:empty { display: none; }
   .progress { height: 6px; margin-top: 6px; background: var(--paper-hi); border-radius: 999px; overflow: hidden; }
   .progress i { display: block; height: 100%; background: var(--marker); border-radius: 999px; }
+  /* D4: progress tab -- pie chart + long-term goal rows */
+  .sub-head { margin: 18px 0 8px; font-size: 15px; color: var(--dim); }
+  .sub-head:first-of-type { margin-top: 4px; }
+  .pie-wrap { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .pie { width: 120px; height: 120px; border-radius: 50%; flex: none; }
+  .pie-legend { flex: 1; min-width: 160px; display: grid; gap: 8px; }
+  .pie-row { display: flex; align-items: center; gap: 10px; }
+  .pie-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .pie-row small { color: var(--dim); }
+  .row-link { display: inline-block; margin-top: 14px; font-size: 14px; color: var(--marker); }
+  /* D6: weekly/monthly review */
+  .review-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .review-row:last-child { border-bottom: 0; }
+  .review-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .review-ai { margin-top: 16px; }
+  .ai-suggestion { margin-top: 10px; padding: 12px 14px; background: var(--paper-hi); border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.5; }
+  .goal-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; text-decoration: none; color: inherit; }
+  .goal-row .grow { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .goal-row strong { font-weight: 600; overflow-wrap: anywhere; }
+  .goal-row small { color: var(--dim); font-size: 13px; }
+  .goal-pct { flex: none; font-weight: 700; color: var(--marker); }
   .check-body { border-top: 1px solid var(--line); padding: 8px 16px 14px; display: grid; gap: 4px; }
   .check-list { display: grid; }
   .check-row { display: flex; align-items: center; gap: 4px; min-height: 44px; }
@@ -856,6 +883,7 @@ function enterApp(user) {
   $('#sheet-user').textContent = 'Signed in as ' + name;
   showScreen('app');
   route();
+  initPlannerAlarms(); // D3
 }
 
 /* =====================================================================
@@ -1135,6 +1163,13 @@ function confirmDeleteChat(chatId) {
 function pencilIcon() {
   const t = document.createElement('template');
   t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  return t.content.firstChild;
+}
+
+// D3: bell icon for the per-slot alarm toggle.
+function bellIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6H4c.5-.5 2-2 2-6Z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>';
   return t.content.firstChild;
 }
 
@@ -6366,6 +6401,58 @@ function confirmDeleteItem(existing) {
   });
 }
 
+/* ---------- D3: Planner alarms ----------
+   A slot with its alarm turned on fires a browser Notification at its
+   start time, for as long as the app/tab stays open. Re-armed whenever
+   the Planner screen is opened, whenever a slot is saved or its alarm
+   toggled, and on a 30-minute background check so a fresh day's slots
+   still get armed even if the Planner tab isn't the one open.
+   This is foreground-only: there is no push server behind Athenaeum, so
+   it cannot wake a closed app or a locked phone the way a native OS
+   alarm can — it rings for as long as Athenaeum is open somewhere. */
+const plannerAlarmTimers = new Map(); // planner_item_id -> setTimeout id
+
+function armPlannerAlarms(todaySlots) {
+  plannerAlarmTimers.forEach(id => clearTimeout(id));
+  plannerAlarmTimers.clear();
+  const now = new Date();
+  (todaySlots || []).forEach(r => {
+    if (!r.alarm_enabled || !r.start_time) return;
+    const [hh, mm] = r.start_time.slice(0, 5).split(':').map(Number);
+    if (Number.isNaN(hh) || Number.isNaN(mm)) return;
+    const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+    const ms = at - now;
+    if (ms < 0 || ms > 24 * 60 * 60 * 1000) return; // already passed today, or setTimeout can't reliably hold this long anyway
+    plannerAlarmTimers.set(r.id, setTimeout(() => firePlannerAlarm(r), ms));
+  });
+}
+
+function firePlannerAlarm(r) {
+  if (!(window.Notification && Notification.permission === 'granted')) return;
+  const time = (r.start_time || '').slice(0, 5);
+  try { new Notification(r.title, { body: (time ? time + ' · ' : '') + 'time to start', tag: 'planner-' + r.id }); } catch (e) {}
+}
+
+// Re-reads today's alarm-on slots from the server and re-arms timers for
+// them. Cheap enough to call after any slot save/toggle, not just on a
+// timer, so a change takes effect immediately.
+async function refreshPlannerAlarms() {
+  if (!currentUser || !sb) return;
+  const res = await sb.from('planner_items').select('id,title,weekday,start_time,alarm_enabled')
+    .eq('kind', 'slot').eq('alarm_enabled', true);
+  if (res.error) return; // most likely: alarm_enabled column not migrated in yet — fail quiet, no alarms this session
+  const today = new Date().getDay();
+  armPlannerAlarms(res.data.filter(r => r.weekday === today));
+}
+
+async function initPlannerAlarms() {
+  if (window.Notification && Notification.permission === 'default') {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  refreshPlannerAlarms();
+  setInterval(refreshPlannerAlarms, 30 * 60 * 1000);
+}
+
 /* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -6419,13 +6506,205 @@ async function plannerHub() {
       h('div', { class: 'inner' }, dayList(i)));
   });
 
+  // D4/D6: one 30-day fetch of logged session minutes, reused by the
+  // Progress pie (last 7 days) and the Review section (week or month).
+  const monthAgoISO = todayISOOffset(-29);
+  const monthSessionRows = must(await sb.from('planner_sessions').select('*')
+    .gte('session_date', monthAgoISO).not('actual_minutes', 'is', null));
+
+  // D4: pie chart of the last 7 days' logged study time, by slot title
+  // (each recurring slot title stands in for a "subject" -- e.g. every
+  // "Physics" block across the week is summed into one Physics slice).
+  const weekAgoISO = todayISOOffset(-6); // last 7 days inclusive of today
+  const weekSessionRows = monthSessionRows.filter(s => s.session_date >= weekAgoISO);
+  const minutesByTitle = {};
+  weekSessionRows.forEach(s => {
+    const item = rows.find(r => r.id === s.planner_item_id);
+    if (!item) return; // slot since deleted
+    const key = item.title;
+    if (!minutesByTitle[key]) minutesByTitle[key] = { label: key, color: item.color, minutes: 0 };
+    minutesByTitle[key].minutes += s.actual_minutes || 0;
+  });
+  const pieSegments = Object.values(minutesByTitle).sort((a, b) => b.minutes - a.minutes);
+
+  // D4: long-term goal progress -- reuses the same "Learning tracker" items
+  // from the Projects hub (kind: 'learning'), just surfaced here with a
+  // percent-complete bar per active goal, so Planner is the one place to
+  // check on everything without leaving it.
+  const goalRows = must(await sb.from('projects').select('*').eq('kind', 'learning').order('created_at', { ascending: false }));
+  const activeGoals = goalRows.filter(g => g.status !== 'done');
+
+  // D6: planned-vs-actual review, week or month, built fresh on every open
+  // (there's nothing to schedule -- this app has no server-side cron -- so
+  // rather than trying to pop the card only "at the end of" a period, it's
+  // simply always here whenever the person wants to check in on it).
+  const reviewNode = reviewSection(rows, slots, monthSessionRows);
+
   return { title: 'Planner', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     section('Weekly routine', '+ Add slot', () => openPlannerDialog('slot', null), todayBlock, otherDays),
+    section('Progress', null, null,
+      h('h4', { class: 'sub-head', text: 'Time this week' }),
+      pieChart(pieSegments),
+      h('h4', { class: 'sub-head', text: 'Long-term goals' }),
+      activeGoals.length
+        ? h('div', { class: 'list' }, activeGoals.map(g => goalProgressRow(g)))
+        : h('p', { class: 'none', text: 'No active learning goals yet.' }),
+      h('a', { class: 'row-link', href: '#workspace/projects', text: 'Manage learning goals →' })),
+    section('Review', null, null, reviewNode),
     section('Milestones', '+ Add milestone', () => openPlannerDialog('milestone', null),
       milestones.length ? h('div', { class: 'list' }, milestones.map(r => milestoneRow(r)))
                          : h('p', { class: 'none', text: 'No milestones yet.' }))
   ] };
+}
+
+// D4: local-date ISO string offset by `days` (negative = past), used to
+// bound the pie chart to the last 7 calendar days.
+function todayISOOffset(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// D4: a CSS conic-gradient donut, no charting library needed. Segments:
+// [{ label, color, minutes }], pre-sorted largest first.
+function pieChart(segments) {
+  const total = segments.reduce((sum, s) => sum + s.minutes, 0);
+  if (!total) return h('p', { class: 'none', text: 'No study time logged this week yet -- start a slot from Weekly routine to begin tracking.' });
+
+  let acc = 0;
+  const stops = segments.map(s => {
+    const from = (acc / total * 360).toFixed(2);
+    acc += s.minutes;
+    const to = (acc / total * 360).toFixed(2);
+    return colorOf(s.color) + ' ' + from + 'deg ' + to + 'deg';
+  }).join(', ');
+
+  const pie = h('div', { class: 'pie', role: 'img', 'aria-label': 'Study time by subject this week' });
+  pie.style.background = 'conic-gradient(' + stops + ')';
+
+  const legend = h('div', { class: 'pie-legend' }, segments.map(s => {
+    const dot = h('span', { class: 'dot-c', 'aria-hidden': 'true' });
+    dot.style.setProperty('--c', colorOf(s.color));
+    const pct = Math.round(s.minutes / total * 100);
+    return h('div', { class: 'pie-row' }, dot,
+      h('span', { class: 'grow', text: s.label }),
+      h('small', { text: fmtMinutes(s.minutes) + ' · ' + pct + '%' }));
+  }));
+
+  return h('div', { class: 'pie-wrap' }, pie, legend);
+}
+
+// D4: condensed progress row for a learning goal -- same checklist shape
+// and percent math as projectCard() in the Projects hub, just read-only
+// here (edit the checklist from the Projects hub itself).
+function goalProgressRow(g) {
+  const list = Array.isArray(g.checklist) ? g.checklist : [];
+  const done = list.filter(x => x.done).length;
+  const pct = list.length ? Math.round(done / list.length * 100) : 0;
+  const bar = h('i'); bar.style.width = pct + '%';
+  return h('a', { class: 'proj goal-row', href: '#workspace/projects' },
+    h('span', { class: 'grow' },
+      h('strong', { text: g.title }),
+      h('small', { text: list.length ? done + ' of ' + list.length + ' steps done' : 'No steps added yet' }),
+      h('div', { class: 'progress' }, bar)),
+    h('small', { class: 'goal-pct', text: pct + '%' }));
+}
+
+/* ---------- D6: Weekly / monthly review ----------
+   Planned-vs-actual by subject (slot title), for the last 7 or last 30
+   days. "Planned" for a title is the sum of its recurring slots' own
+   durations (each occurs once a week by design), scaled up for the
+   30-day view since a weekly slot lands roughly 30/7 times in a month.
+   Nothing here is stored -- it's recomputed from planner_items and
+   planner_sessions every time the Planner screen opens. */
+let plannerReviewPeriod = 'week'; // kept across re-renders, like the other planner UI state above
+
+function buildReviewData(rows, slots, sessionRows, periodDays) {
+  const cutoff = todayISOOffset(-(periodDays - 1));
+  const actualByTitle = {};
+  sessionRows.filter(s => s.session_date >= cutoff).forEach(s => {
+    const item = rows.find(r => r.id === s.planner_item_id);
+    if (!item) return;
+    actualByTitle[item.title] = (actualByTitle[item.title] || 0) + (s.actual_minutes || 0);
+  });
+  const plannedWeekly = {};
+  slots.forEach(r => {
+    const mins = plannedMinutesOf(r);
+    if (mins) plannedWeekly[r.title] = (plannedWeekly[r.title] || 0) + mins;
+  });
+  const scale = periodDays / 7;
+  const titles = new Set([...Object.keys(plannedWeekly), ...Object.keys(actualByTitle)]);
+  return [...titles].map(title => {
+    const planned = Math.round((plannedWeekly[title] || 0) * scale);
+    const actual = actualByTitle[title] || 0;
+    const diffPct = planned > 0 ? Math.round((actual - planned) / planned * 100) : (actual > 0 ? 100 : 0);
+    return { title, planned, actual, diffPct };
+  }).sort((a, b) => Math.abs(b.diffPct) - Math.abs(a.diffPct));
+}
+
+function reviewRow(item) {
+  const big = Math.abs(item.diffPct) >= 25 && (item.planned > 0 || item.actual > 0);
+  const chip = big ? statusChip((item.diffPct > 0 ? '+' : '') + item.diffPct + '%', item.diffPct > 0 ? 'ongoing' : 'ended') : null;
+  return h('div', { class: 'pie-row review-row' },
+    h('span', { class: 'grow' },
+      h('strong', { text: item.title }),
+      h('small', { text: 'Planned ' + fmtMinutes(item.planned) + ' · Actual ' + fmtMinutes(item.actual) })),
+    chip);
+}
+
+function reviewSection(rows, slots, monthSessionRows) {
+  const periodDays = plannerReviewPeriod === 'month' ? 30 : 7;
+  const data = buildReviewData(rows, slots, monthSessionRows, periodDays);
+  const withPlan = data.filter(d => d.planned > 0 || d.actual > 0);
+
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Review period' },
+    ['week', 'month'].map(p => h('button', {
+      type: 'button', text: p === 'week' ? 'This week' : 'Last 30 days',
+      'aria-pressed': String(plannerReviewPeriod === p),
+      onclick: () => { plannerReviewPeriod = p; route(); }
+    })));
+
+  if (!withPlan.length) {
+    return h('div', {}, seg, h('p', { class: 'none', text: 'Nothing planned or logged yet for this period.' }));
+  }
+
+  const list = h('div', { class: 'list' }, withPlan.map(reviewRow));
+
+  // The two furthest-off subjects -- one over, one under -- so "apply a
+  // rebalance" has a concrete, one-tap action even without waiting on the
+  // AI call below: jump straight to that subject's slot and adjust its time.
+  const over = withPlan.filter(d => d.diffPct >= 25).sort((a, b) => b.diffPct - a.diffPct)[0];
+  const under = withPlan.filter(d => d.diffPct <= -25).sort((a, b) => a.diffPct - b.diffPct)[0];
+  const quickActions = (over || under) ? h('div', { class: 'review-actions' },
+    over ? h('button', { class: 'btn quiet small', type: 'button', text: 'Trim ' + over.title + ' →',
+                          onclick: () => openPlannerDialog('slot', slots.find(r => r.title === over.title)) }) : null,
+    under ? h('button', { class: 'btn quiet small', type: 'button', text: 'Grow ' + under.title + ' →',
+                           onclick: () => openPlannerDialog('slot', slots.find(r => r.title === under.title)) }) : null
+  ) : null;
+
+  const aiBtn = h('button', { class: 'btn small', type: 'button', text: 'Suggest a rebalance' });
+  const aiMsg = h('p', { class: 'msg err', hidden: true });
+  const aiOut = h('p', { class: 'ai-suggestion', hidden: true });
+  aiBtn.addEventListener('click', async () => {
+    aiMsg.hidden = true; aiOut.hidden = true;
+    aiBtn.disabled = true; aiBtn.textContent = 'Thinking…';
+    try {
+      const lines = withPlan.map(d => '- ' + d.title + ': planned ' + fmtMinutes(d.planned) + ', actually studied ' + fmtMinutes(d.actual) + ' (' + (d.diffPct > 0 ? '+' : '') + d.diffPct + '%)').join('\n');
+      const system = 'You are a study planning assistant inside a student\'s planner app. Given planned-vs-actual study minutes by subject for a period, write one short, encouraging paragraph (3-4 sentences max, no markdown headers, no bullet list) suggesting a concrete rebalance for next ' + (plannerReviewPeriod === 'month' ? 'month' : 'week') + ' -- which subject(s) to trim time from and which to give more time to, based only on the numbers given.';
+      const reply = await callAI(system, [{ role: 'user', content: lines }]);
+      aiOut.textContent = reply;
+      aiOut.hidden = false;
+    } catch (e) {
+      aiMsg.textContent = e.message || 'Could not get a suggestion.';
+      aiMsg.hidden = false;
+    } finally {
+      aiBtn.disabled = false; aiBtn.textContent = 'Suggest a rebalance';
+    }
+  });
+
+  return h('div', {}, seg, list, quickActions,
+    h('div', { class: 'review-ai' }, aiBtn, aiMsg, aiOut));
 }
 
 // D1: a slot is a time block that holds its own checklist of sub-tasks
@@ -6507,6 +6786,31 @@ function slotBlock(r, ctx = {}) {
     body.hidden = !plannerOpenSlots.has(r.id);
   };
 
+  // D3: a quick alarm on/off toggle right on the block header, so turning
+  // a reminder on or off doesn't require opening the full edit dialog.
+  // (The same setting is also editable from that dialog, for anyone who
+  // prefers to set it while filling in the rest of the slot.)
+  const alarmBtn = h('button', {
+    class: 'item-edit alarm-toggle', type: 'button',
+    'aria-pressed': String(!!r.alarm_enabled),
+    'aria-label': (r.alarm_enabled ? 'Turn off alarm for ' : 'Turn on alarm for ') + r.title,
+    onclick: async e => {
+      e.stopPropagation();
+      const next = !r.alarm_enabled;
+      alarmBtn.setAttribute('aria-pressed', String(next));
+      const res = await sb.from('planner_items').update({ alarm_enabled: next }).eq('id', r.id);
+      if (res.error) {
+        alarmBtn.setAttribute('aria-pressed', String(!next));
+        msg.textContent = 'Could not update the alarm: ' + res.error.message;
+        msg.hidden = false;
+      } else {
+        r.alarm_enabled = next;
+        msg.hidden = true;
+        refreshPlannerAlarms();
+      }
+    }
+  }, bellIcon());
+
   const editBtn = h('button', {
     class: 'item-edit', type: 'button', 'aria-label': 'Edit ' + r.title,
     onclick: e => { e.stopPropagation(); openPlannerDialog('slot', r); }
@@ -6520,6 +6824,7 @@ function slotBlock(r, ctx = {}) {
     h('button', { class: 'proj-head', type: 'button', onclick: toggle },
       dot,
       h('span', { class: 'grow' }, titleEl, sub, count, track),
+      alarmBtn,
       editBtn,
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
     sessionSection,
@@ -6730,48 +7035,136 @@ function fmtMinutes(m) {
   return (hrs ? hrs + 'h ' : '') + (mins || !hrs ? mins + 'm' : '');
 }
 
+// D5: same day-math as before, now also returning a `tone` so the caller
+// can badge it clearly (upcoming / ongoing / ended) instead of plain text.
 function milestoneStatus(r, now = new Date()) {
-  if (!r.milestone_date) return { line: 'No date set', range: '' };
+  if (!r.milestone_date) return { line: 'No date set', range: '', tone: 'none' };
   const start = parseLocalDate(r.milestone_date);
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const count = Number(r.day_count) > 0 ? Number(r.day_count) : 0;
   const untilStart = daysBetween(start, today);          // > 0: still to come
 
   if (!count) {
-    const line = untilStart > 0 ? 'Starts in ' + plural(untilStart, 'day', 'days')
+    const line = untilStart > 0 ? plural(untilStart, 'day', 'days') + ' left'
                : untilStart === 0 ? 'Today'
-               : plural(-untilStart, 'day', 'days') + ' ago';
-    return { line, range: fmtDate(start) };
+               : 'Ended ' + plural(-untilStart, 'day', 'days') + ' ago';
+    return { line, range: fmtDate(start), tone: untilStart > 0 ? 'upcoming' : untilStart === 0 ? 'ongoing' : 'ended' };
   }
   const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + count - 1);
   const range = fmtDate(start) + (count > 1 ? ' to ' + fmtDate(end) : '') + ' · ' + plural(count, 'day', 'days');
-  if (untilStart > 0) return { line: 'Starts in ' + plural(untilStart, 'day', 'days'), range };
+  if (untilStart > 0) return { line: 'Starts in ' + plural(untilStart, 'day', 'days'), range, tone: 'upcoming' };
   const dayNo = -untilStart + 1;
   if (dayNo <= count) {
     const left = count - dayNo;
-    return { line: 'Day ' + dayNo + ' of ' + count + (left ? ' · ' + plural(left, 'day', 'days') + ' left' : ' · last day'), range };
+    return { line: 'Day ' + dayNo + ' of ' + count + (left ? ' · ' + plural(left, 'day', 'days') + ' left' : ' · last day'), range, tone: 'ongoing' };
   }
-  return { line: 'Ended ' + plural(dayNo - count, 'day', 'days') + ' ago', range };
+  return { line: 'Ended ' + plural(dayNo - count, 'day', 'days') + ' ago', range, tone: 'ended' };
 }
 
+// D5: countdown chip shared by milestones and project/assignment due dates.
+// tone drives the colour: upcoming/ongoing read neutral-to-good, ended/overdue reads as needing attention.
+function statusChip(text, tone) {
+  const cls = 'chip' + (tone === 'ended' ? ' overdue' : tone === 'ongoing' ? ' ongoing-chip' : '');
+  return h('span', { class: cls, text });
+}
+
+// D5: countdown chip straight from a due_date (project/assignment cards) --
+// same day-math as milestoneStatus, simpler since there's no day_count range.
+function dueDateChip(dueDate) {
+  if (!dueDate) return null;
+  const target = parseLocalDate(dueDate);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = daysBetween(target, today);
+  if (diff > 0) return statusChip(plural(diff, 'day', 'days') + ' left', 'upcoming');
+  if (diff === 0) return statusChip('Due today', 'ongoing');
+  return statusChip('Overdue by ' + plural(-diff, 'day', 'days'), 'ended');
+}
+
+// D5: milestones now carry their own checklist (planner_items.checklist,
+// same column D1 gave weekly slots) and expand in place the same way a
+// slot's task list does -- tap the card to open/close it, pencil to edit
+// the milestone's own title/date/day-count.
 function milestoneRow(r) {
+  let list = Array.isArray(r.checklist) ? r.checklist.slice() : [];
+  let chain = Promise.resolve();
+  const st = milestoneStatus(r);
+
   const cb = h('input', { type: 'checkbox', class: 'dl-check', 'aria-label': 'Mark ' + r.title + ' done' });
   cb.checked = !!r.done;
   cb.addEventListener('click', e => e.stopPropagation());
   cb.addEventListener('change', async () => {
     const res = await sb.from('planner_items').update({ done: cb.checked }).eq('id', r.id);
-    if (!res.error) route();
+    if (!res.error) { r.done = cb.checked; titleEl.style.textDecoration = cb.checked ? 'line-through' : ''; titleEl.style.opacity = cb.checked ? '.6' : ''; }
   });
-  const st = milestoneStatus(r);
-  return h('div', { class: 'row', role: 'button', tabindex: '0',
-                     onclick: () => openPlannerDialog('milestone', r),
-                     onkeydown: e => { if (e.key === 'Enter') openPlannerDialog('milestone', r); } },
-    cb,
-    h('span', { class: 'grow' },
-      h('strong', { text: r.title, style: r.done ? 'text-decoration:line-through;opacity:.6' : '' }),
-      h('small', { text: st.line }),
-      st.range ? h('small', { text: st.range }) : null),
-    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+
+  const titleEl = h('strong', { text: r.title, style: r.done ? 'text-decoration:line-through;opacity:.6' : '' });
+  const chip = statusChip(st.line, st.tone);
+  const range = st.range ? h('small', { text: st.range }) : null;
+  const count = h('small');
+  const bar = h('i');
+  const track = h('div', { class: 'progress', 'aria-hidden': 'true' }, bar);
+  const listBox = h('div', { class: 'check-list' });
+  const msg = h('p', { class: 'msg err', hidden: true });
+
+  const paint = () => {
+    const done = list.filter(x => x.done).length;
+    count.textContent = list.length ? done + ' of ' + list.length + ' steps done' : 'No checklist yet';
+    bar.style.width = (list.length ? Math.round(done / list.length * 100) : 0) + '%';
+    track.hidden = !list.length;
+    listBox.replaceChildren(...list.map(item => {
+      const icb = h('input', { type: 'checkbox', class: 'dl-check' });
+      icb.checked = !!item.done;
+      icb.addEventListener('change', () => save(list.map(x => x.id === item.id ? { ...x, done: icb.checked } : x)));
+      return h('div', { class: 'check-row' + (item.done ? ' done' : '') },
+        h('label', { class: 'check-lab' }, icb, h('span', { text: item.text })),
+        h('button', { class: 'check-del', type: 'button', 'aria-label': 'Remove ' + item.text, text: '×',
+                      onclick: () => save(list.filter(x => x.id !== item.id)) }));
+    }));
+  };
+
+  function save(next) {
+    list = next;
+    paint();
+    chain = chain.then(async () => {
+      const res = await sb.from('planner_items').update({ checklist: list }).eq('id', r.id);
+      if (res.error) { msg.textContent = 'Could not save the checklist: ' + res.error.message; msg.hidden = false; }
+      else { r.checklist = list; msg.hidden = true; }
+    });
+  }
+
+  const input = h('input', { class: 'control', type: 'text', maxlength: 200, placeholder: 'Add a step', 'aria-label': 'New step', enterkeyhint: 'done' });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
+  const add = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    save([...list, { id: crypto.randomUUID(), text, done: false }]);
+    input.focus({ preventScroll: true });
+  };
+  addBtn.addEventListener('click', add);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+
+  const body = h('div', { class: 'check-body', hidden: !plannerOpenSlots.has('m-' + r.id) },
+    listBox, msg, h('div', { class: 'check-add' }, input, addBtn));
+  const toggle = () => {
+    const key = 'm-' + r.id;
+    if (plannerOpenSlots.has(key)) plannerOpenSlots.delete(key); else plannerOpenSlots.add(key);
+    body.hidden = !plannerOpenSlots.has(key);
+  };
+
+  const editBtn = h('button', {
+    class: 'item-edit', type: 'button', 'aria-label': 'Edit ' + r.title,
+    onclick: e => { e.stopPropagation(); openPlannerDialog('milestone', r); }
+  }, pencilIcon());
+
+  paint();
+  return h('div', { class: 'proj' },
+    h('button', { class: 'proj-head', type: 'button', onclick: toggle },
+      cb,
+      h('span', { class: 'grow' }, titleEl, chip, range, count, track),
+      editBtn,
+      h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    body);
 }
 
 function openPlannerDialog(kind, existing) {
@@ -6779,6 +7172,7 @@ function openPlannerDialog(kind, existing) {
   const activeKind = existing ? (existing.kind === 'milestone' ? 'milestone' : 'slot') : kind;
   let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
   let weekday = existing && existing.weekday != null ? existing.weekday : new Date().getDay();
+  let alarmOn = existing ? !!existing.alarm_enabled : false; // D3
 
   showDialog({
     title: existing ? ('Edit ' + (activeKind === 'milestone' ? 'milestone' : 'slot'))
@@ -6798,6 +7192,13 @@ function openPlannerDialog(kind, existing) {
       const fEnd   = makeField('End time',   { value: (row.end_time   || '').slice(0, 5) }); fEnd.input.type   = 'time';
       const timeRow = h('div', { class: 'two-col' }, fStart.wrap, fEnd.wrap);
 
+      // D3: optional alarm at the slot's start time.
+      const alarmCb = h('input', { type: 'checkbox', id: 'fld-alarm' });
+      alarmCb.checked = alarmOn;
+      alarmCb.addEventListener('change', () => { alarmOn = alarmCb.checked; });
+      const alarmWrap = h('div', { class: 'field alarm-field' },
+        h('label', { class: 'check-lab', for: 'fld-alarm' }, alarmCb, h('span', { text: 'Ring an alarm at start time' })));
+
       const swGroup = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Colour' });
       const syncColor = () => swGroup.querySelectorAll('.swatch').forEach(b => b.setAttribute('aria-checked', String(b.dataset.hex === color)));
       PALETTE.forEach(p => {
@@ -6815,10 +7216,10 @@ function openPlannerDialog(kind, existing) {
       fCount.input.setAttribute('inputmode', 'numeric');
       const dateRow = h('div', { class: 'two-col' }, fDate.wrap, fCount.wrap);
 
-      wdWrap.hidden = timeRow.hidden = colorWrap.hidden = activeKind !== 'slot';
+      wdWrap.hidden = timeRow.hidden = colorWrap.hidden = alarmWrap.hidden = activeKind !== 'slot';
       dateRow.hidden = activeKind !== 'milestone';
 
-      form.append(wdWrap, timeRow, colorWrap, dateRow);
+      form.append(wdWrap, timeRow, alarmWrap, colorWrap, dateRow);
 
       return () => {
         const title = fTitle.input.value.trim();
@@ -6838,12 +7239,13 @@ function openPlannerDialog(kind, existing) {
     },
     async onSubmit(v) {
       const payload = { kind: activeKind, title: v.title };
-      if (activeKind === 'slot') { payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time; payload.color = color; }
+      if (activeKind === 'slot') { payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time; payload.color = color; payload.alarm_enabled = alarmOn; }
       else { payload.milestone_date = v.milestone_date; payload.day_count = v.day_count; }
       const res = existing
         ? await sb.from('planner_items').update(payload).eq('id', row.id)
         : await sb.from('planner_items').insert(payload);
       if (res.error) throw res.error;
+      refreshPlannerAlarms();
       route();
     },
     extra: existing ? { label: 'Delete', onClick: () => confirmDeleteRow('planner_items', row, activeKind === 'milestone' ? 'milestone' : 'slot') } : null
@@ -6884,6 +7286,7 @@ function projectCard(p) {
   let chain = Promise.resolve();
 
   const sub = h('small');
+  const chipSlot = h('span', { class: 'chip-slot' });
   const count = h('small');
   const bar = h('i');
   const track = h('div', { class: 'progress', 'aria-hidden': 'true' }, bar);
@@ -6892,7 +7295,9 @@ function projectCard(p) {
 
   const paint = () => {
     const done = list.filter(x => x.done).length;
-    sub.textContent = (STATUS_LABEL[p.status] || p.status || '') + (p.due_date ? ' · due ' + p.due_date : '');
+    sub.textContent = (STATUS_LABEL[p.status] || p.status || '') + (p.due_date ? ' · due ' + fmtDate(parseLocalDate(p.due_date)) : '');
+    // D5: a clear days-left/overdue chip next to the status line, so a due date doesn't require doing the maths yourself.
+    chipSlot.replaceChildren(...(p.status !== 'done' ? [dueDateChip(p.due_date)].filter(Boolean) : []));
     count.textContent = list.length ? done + ' of ' + list.length + ' done' : 'No checklist items yet';
     bar.style.width = (list.length ? Math.round(done / list.length * 100) : 0) + '%';
     track.hidden = !list.length;
@@ -6939,7 +7344,7 @@ function projectCard(p) {
   paint();
   return h('div', { class: 'proj' },
     h('button', { class: 'proj-head', type: 'button', onclick: () => openProjectDialog(p.kind, p) },
-      h('span', { class: 'grow' }, h('strong', { text: p.title }), sub, count, track),
+      h('span', { class: 'grow' }, h('strong', { text: p.title }), sub, chipSlot, count, track),
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
     h('div', { class: 'check-body' }, listBox, msg, h('div', { class: 'check-add' }, input, addBtn)));
 }
