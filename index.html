@@ -6704,6 +6704,8 @@ function schSummaryFacts(row) {
 
 async function scholarshipsHub(sub) {
   if (sub === 'shortlist') return schShortlistPage();
+  if (sub === 'search') return schSearchPage();
+  if (sub && sub.startsWith('detail-')) return schDetailPage(sub.slice(7)); // detail-<shortlist id> or detail-u-<encoded page url>
 
   const res = await sb.from('scholarship_profiles').select('*').maybeSingle();
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
@@ -6715,6 +6717,7 @@ async function scholarshipsHub(sub) {
   }
 
   const shortlistLink = h('div', { class: 'list', style: 'margin-bottom:16px' },
+    linkRow({ href: '#workspace/scholarships/search', title: 'Find scholarships', meta: 'Search by destination, level and funding type' }),
     linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }));
 
   let row = res.data || null;
@@ -6871,6 +6874,324 @@ async function scholarshipsHub(sub) {
   return { title: 'Scholarship Center', nodes: [crumb, shortlistLink, box] };
 }
 
+/* ---------- E7: Scholarship Center -- filtered search ----------------------
+   Nationality / destination / level / funding-type filters over ScholarshipsAds
+   (scholarshipsads.com), returning a plain list of scholarship cards.
+   Each filter combination maps to one of the site's own listing pages
+   (e.g. /fully-funded-masters-scholarships-in-germany). The page is fetched
+   straight from the browser and parsed; if the site blocks that (CORS), the
+   same page is read through Gemini's url_context tool instead. If the exact
+   combination has no page, progressively broader pages are tried and the
+   cards filtered down to match. Nothing is stored -- E9 adds Save to shortlist. */
+const SCH_SRC = 'https://www.scholarshipsads.com/';
+const SCH_LEVEL_SLUGS = { 'Bachelor\u2019s': 'bachelor', 'Master\u2019s': 'masters', 'PhD': 'phd' };
+const SCH_DEST_RE = { USA: /usa|united states/i, UK: /\buk\b|united kingdom|england|scotland/i };
+// [use funding, use level, use destination, use nationality] -- tried in order until one has cards.
+const SCH_COMBOS = [[1, 1, 1, 1], [1, 0, 1, 1], [0, 0, 1, 1], [1, 1, 0, 1], [1, 1, 1, 0], [1, 0, 1, 0], [0, 0, 1, 0], [1, 1, 0, 0]];
+const SCH_DEST_SLUGS = { USA: 'united-states', UK: 'united-kingdom' };
+const schSlug = t => String(t).toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, '');
+
+function schSearchUrl(f, page, combo) {
+  const [uf, ul, ud, un] = combo;
+  const fully = uf && f.funding === 'fully', lvl = ul && f.level, dest = ud && f.dest;
+  let path;
+  if (un && f.nat) {
+    // the site's own filter URL: /search/nationality/<country>/country/<scholarships-in-x>/degree/<level>/funding/<type>
+    path = 'search/nationality/' + schSlug(f.nat) + '/country/' + (dest ? 'scholarships-in-' + (SCH_DEST_SLUGS[f.dest] || schSlug(f.dest)) : '') +
+      '/degree' + (lvl ? '/' + lvl : '') + (fully ? (lvl ? '' : '/') + '/funding/fully-funded' : '');
+  } else {
+    const slug = (fully ? 'fully-funded-' : '') + (lvl ? f.level + '-' : '') + 'scholarships' + (dest ? '-in-' + schSlug(f.dest) : '');
+    path = slug === 'scholarships' ? 'latest-scholarships' : slug;
+  }
+  return SCH_SRC + path + (page > 1 ? '?page=' + page : '');
+}
+
+function schMatches(c, f, usedDest) {
+  const lvl = { bachelor: /bachelor|undergraduate/i, masters: /master/i, phd: /phd|doctor/i }[f.level];
+  if (lvl && !lvl.test(c.levels || '')) return false;
+  const fund = { fully: /fully/i, partial: /partial/i, tuition: /tuition/i }[f.funding];
+  if (fund && !fund.test(c.funding || '')) return false;
+  if (!usedDest && f.dest && !(SCH_DEST_RE[f.dest] || new RegExp(f.dest, 'i')).test(c.country || '')) return false;
+  return true;
+}
+
+// Card fields are read by position, not class name: each card is an <h3> link
+// followed by a short list [funding, provider, levels, subjects, audience, country].
+function schParseListing(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const out = []; let cur = null;
+  doc.querySelectorAll('h3, li').forEach(el => {
+    if (el.tagName === 'H3') {
+      const a = el.querySelector('a[href]');
+      let url = ''; try { url = a ? new URL(a.getAttribute('href'), SCH_SRC).href : ''; } catch (e) { /* skip */ }
+      cur = url.startsWith(SCH_SRC) ? { name: a.textContent.trim(), url, tags: [] } : null;
+      if (cur) out.push(cur);
+    } else if (cur && cur.tags.length < 6) {
+      const t = el.textContent.trim();
+      if (!t || t.length > 120 || /^(\u00ab|\u00bb|\d+)$/.test(t)) cur = null; else cur.tags.push(t);
+    }
+  });
+  return out.filter(c => c.tags.length >= 3).map(c => ({ name: c.name, url: c.url, funding: c.tags[0], provider: c.tags[1],
+    levels: c.tags[2], subjects: c.tags[3] || '', country: c.tags[c.tags.length - 1] }));
+}
+
+async function schFetchListing(url) {
+  try {
+    const res = await fetch(url);
+    if (res.status === 404) return [];
+    if (res.ok) { const cards = schParseListing(await res.text()); if (cards.length) return cards; }
+  } catch (e) { /* blocked by CORS or offline -- read it through Gemini instead */ }
+  const s = aiSettings();
+  if (!s.geminiKey || !s.geminiModel) throw new Error('Search reads ScholarshipsAds through Gemini here \u2014 add your Gemini key and model in AI Settings.');
+  const prompt = 'Open this ScholarshipsAds listing page and reply with ONLY a JSON array (no prose, no markdown) of every scholarship card on it, ' +
+    'in page order. Each item: {"name","url","funding","provider","levels","subjects","country"}, copied from what the card shows. ' +
+    'Never invent anything. If the page has no scholarship cards or does not exist, reply [].\n' + url;
+  const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
+  try {
+    const arr = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
+    return arr.filter(c => c && c.name && String(c.url || '').startsWith(SCH_SRC)).map(c => ({
+      name: String(c.name), url: c.url, funding: c.funding || '', provider: c.provider || '', levels: c.levels || '',
+      subjects: c.subjects || '', country: c.country || '' }));
+  } catch (e) { return []; }
+}
+
+async function schLoadResults(f, page, from) {
+  const tried = new Set();
+  for (let i = from; i < SCH_COMBOS.length; i++) {
+    const url = schSearchUrl(f, page, SCH_COMBOS[i]);
+    if (tried.has(url)) continue; tried.add(url);
+    const cards = (await schFetchListing(url)).filter(c => schMatches(c, f, SCH_COMBOS[i][2]));
+    if (cards.length || page > 1) return { cards, combo: i };
+  }
+  return { cards: [], combo: SCH_COMBOS.length - 1 };
+}
+
+// E8: fit score (0-100) from what the profile and a result card both carry:
+// level (35), subject (40) and destination (25). GPA and test scores can't be
+// judged yet -- requirements aren't on search cards (E12 adds them).
+const SCH_LEVEL_RE = { 'Bachelor\u2019s': /bachelor|undergrad/i, 'Master\u2019s': /master/i, 'PhD': /phd|doctor/i };
+function schFit(c, p) {
+  const parts = []; let score = 0;
+  const lre = SCH_LEVEL_RE[p.target_level];
+  if (!lre || !c.levels) { score += 15; parts.push('Level ~'); }
+  else if (lre.test(c.levels)) { score += 35; parts.push('Level \u2713'); } else parts.push('Level \u2717');
+
+  const stop = /^(and|of|the|in|for|science|sciences|studies)$/i;
+  const stems = t => String(t || '').toLowerCase().split(/[^a-z]+/).filter(w => w.length > 2 && !stop.test(w)).map(w => w.slice(0, 5));
+  const want = stems(p.target_major), have = stems(c.subjects);
+  if (/all subjects/i.test(c.subjects || '')) { score += 25; parts.push('Subject ~ all subjects'); }
+  else if (!want.length || !have.length) { score += 20; parts.push('Subject ~'); }
+  else if (want.some(w => have.includes(w))) { score += 40; parts.push('Subject \u2713'); } else parts.push('Subject \u2717');
+
+  const dests = p.destinations || [];
+  if (dests.includes('Open to anywhere') || !dests.length) { score += 25; parts.push('Destination ~ open'); }
+  else if (dests.some(d => (SCH_DEST_RE[d] || new RegExp(d, 'i')).test(c.country || ''))) { score += 25; parts.push('Destination \u2713'); }
+  else parts.push('Destination \u2717');
+
+  return { score, label: score >= 75 ? 'Strong fit' : score >= 45 ? 'Possible fit' : 'Weak fit', parts };
+}
+
+// E9: deadlines aren't on ScholarshipsAds' listing cards, so sorting by deadline
+// asks Gemini to read them off the scholarship pages (url_context), a few pages
+// per call. c.deadline: undefined = not read yet, null = no single clear date.
+const schToday = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+async function schLoadDeadlines(cards, onProgress) {
+  const todo = cards.filter(c => c.deadline === undefined), s = aiSettings();
+  if (todo.length && (!s.geminiKey || !s.geminiModel)) throw new Error('Reading deadlines uses Gemini \u2014 add your key and model in AI Settings.');
+  for (let i = 0; i < todo.length; i += 6) {
+    const batch = todo.slice(i, i + 6); onProgress(i, todo.length);
+    const prompt = 'Open each scholarship page below and find its current application deadline. Reply with ONLY a JSON array, one item per URL: ' +
+      '{"url": "<the url>", "deadline": "YYYY-MM-DD"}. Use null when the page gives no single clear date (rolling, varies, or reopens later). Never guess.\n' + batch.map(c => c.url).join('\n');
+    const found = {}; let ok = false;
+    try {
+      const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
+      JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1)).forEach(x => {
+        if (x && /^\d{4}-\d{2}-\d{2}$/.test(x.deadline || '') && !isNaN(Date.parse(x.deadline))) found[x.url] = x.deadline; });
+      ok = true;
+    } catch (e) { if (isQuotaError(e)) throw e; }
+    if (ok) batch.forEach(c => { c.deadline = found[c.url] || null; }); // a failed batch stays unread so it can be retried
+  }
+}
+
+function schResultCard(c, isSaved, onSave) {
+  return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px' },
+    h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer', style: 'font-weight:700', text: c.name }),
+    h('div', { class: 'chips', style: 'margin:0' }, [c.funding, c.levels].filter(Boolean).map(t => h('span', { class: 'chip', text: t }))),
+    h('small', { text: [c.provider, c.subjects, c.country].filter(Boolean).join(' \u00b7 ') }),
+    c.fit ? h('small', { style: 'font-weight:600;color:' + (c.fit.score >= 75 ? '#3ecf8e' : c.fit.score >= 45 ? 'var(--marker)' : '#ef6b6b'),
+      text: c.fit.label + ' \u00b7 ' + c.fit.parts.join(' \u00b7 ') }) : null,
+    c.deadline ? h('small', { text: 'Deadline: ' + fmtDate(parseLocalDate(c.deadline)) + (c.deadline < schToday() ? ' (closed)' : '') }) : null,
+    h('button', { class: 'btn quiet small', type: 'button', style: 'justify-self:start', text: isSaved ? 'Saved \u2713' : 'Save to shortlist',
+      disabled: isSaved, onclick: e => onSave(c, e.currentTarget) }),
+    h('a', { class: 'link-btn', href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url), text: 'View details', style: 'justify-self:start' }));
+}
+
+async function schSearchPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  const pr = await sb.from('scholarship_profiles').select('destinations,target_level,target_major,home_country').maybeSingle();
+  const p = pr.data || {};
+  const dests = SCH_DESTINATIONS.filter(d => d !== 'Open to anywhere');
+  const nats = SCH_COUNTRIES.filter(c => c !== 'Other');
+  const f = { nat: nats.includes(p.home_country) ? p.home_country : '', dest: (p.destinations || []).find(d => dests.includes(d)) || '', level: SCH_LEVEL_SLUGS[p.target_level] || '', funding: 'fully' };
+  let st = { cards: [], page: 1, combo: 0 }, sort = 'fit';
+  const saved = new Set();
+  const sl = await sb.from('scholarship_shortlist').select('link');
+  (sl.data || []).forEach(r => { if (r.link) saved.add(r.link); });
+
+  const sel = (label, opts, key) => {
+    const s = h('select', { class: 'control', 'aria-label': label }, opts.map(([v, t]) => h('option', { value: v, text: t })));
+    s.value = f[key]; s.addEventListener('change', () => { f[key] = s.value; });
+    return h('div', { class: 'field' }, h('label', { text: label }), s);
+  };
+  const goBtn = h('button', { class: 'btn', type: 'button', text: 'Search' });
+  const moreBtn = h('button', { class: 'btn quiet', type: 'button', text: 'Show more', hidden: true });
+  const err = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const out = h('div');
+  const status = h('p', { class: 'hint-line', hidden: true });
+  const sortSel = h('select', { class: 'control', 'aria-label': 'Sort results' },
+    [['fit', 'Best fit'], ['deadline', 'Deadline (soonest)']].map(([v, t]) => h('option', { value: v, text: t })));
+  const sortBox = h('div', { class: 'field', hidden: true }, h('label', { text: 'Sort results' }), sortSel);
+
+  function sorted() {
+    const fitOf = c => (c.fit ? c.fit.score : 0);
+    if (sort !== 'deadline') return st.cards.slice().sort((a, b) => fitOf(b) - fitOf(a));
+    const now = schToday(), rank = c => (c.deadline ? (c.deadline >= now ? 0 : 2) : 1); // upcoming, unknown, closed
+    return st.cards.slice().sort((a, b) => rank(a) - rank(b) || (a.deadline && b.deadline ? (a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0) : 0) || fitOf(b) - fitOf(a));
+  }
+  async function saveResult(c, btn) {
+    err.hidden = true; btn.disabled = true; btn.textContent = 'Saving\u2026';
+    const ins = await sb.from('scholarship_shortlist').insert({ name: c.name.slice(0, 150), link: c.url, deadline: c.deadline || null,
+      funding: (c.funding || '').slice(0, 150) || null, followed: true, updated_at: new Date().toISOString() }).select('id').single();
+    if (ins.error) { btn.disabled = false; btn.textContent = 'Save to shortlist'; err.textContent = 'Could not save: ' + ins.error.message; err.hidden = false; return; }
+    saved.add(c.url); btn.textContent = 'Saved \u2713';
+    await syncScholarshipDeadline({ id: ins.data.id, name: c.name, deadline: c.deadline || null, followed: true }); // E4: deadline reaches Planner
+  }
+  // Sorting by deadline first reads any deadlines not read yet, then repaints.
+  async function applySort() {
+    err.hidden = true; status.hidden = true;
+    if (sort === 'deadline') {
+      sortSel.disabled = goBtn.disabled = moreBtn.disabled = true; status.hidden = false;
+      try { await schLoadDeadlines(st.cards, (i, n) => { status.textContent = 'Reading deadlines from the scholarship pages\u2026 ' + i + ' of ' + n; }); }
+      catch (e) { err.textContent = (e && e.message) || 'Could not read deadlines right now.'; err.hidden = false; }
+      sortSel.disabled = goBtn.disabled = moreBtn.disabled = false; status.hidden = true;
+    }
+    paint();
+  }
+  sortSel.addEventListener('change', () => { sort = sortSel.value; applySort(); });
+
+  function paint() {
+    out.replaceChildren(
+      st.combo > 0 ? h('p', { class: 'hint-line', text: 'ScholarshipsAds has no page for this exact combination, so these come from a broader list, filtered to match.' }) : null,
+      f.nat && !SCH_COMBOS[st.combo][3] ? h('p', { class: 'hint-line', text: 'Your country couldn\u2019t be applied to these results, so check each scholarship\u2019s eligibility for ' + f.nat + ' students.' }) : null,
+      h('p', { class: 'hint-line', text: st.cards.length + ' scholarship' + (st.cards.length === 1 ? '' : 's') + ' shown. Details and deadlines are on each scholarship\u2019s own page \u2014 always confirm there before applying.' }),
+      pr.data ? h('p', { class: 'hint-line', text: 'Fit compares each result\u2019s level, subject and destination with your profile (\u2713 match, \u2717 no match, ~ open or unknown). Your GPA and test scores can\u2019t be checked yet \u2014 requirements aren\u2019t on these cards.' })
+        : h('p', { class: 'hint-line', text: 'Set up your profile in Scholarship Center to see how well each result fits you.' }),
+      sort === 'deadline' ? h('p', { class: 'hint-line', text: 'Deadlines are read from each scholarship\u2019s page by Gemini \u2014 scholarships with no single clear date go after the dated ones, closed ones last. Confirm on the page.' }) : null,
+      h('div', { class: 'list', style: 'display:grid;gap:10px' }, sorted().map(c => schResultCard(c, saved.has(c.url), saveResult))));
+  }
+  async function run(more) {
+    err.hidden = true; goBtn.disabled = moreBtn.disabled = true;
+    const label = more ? moreBtn : goBtn, old = label.textContent; label.textContent = 'Searching\u2026';
+    try {
+      const r = await schLoadResults(f, more ? st.page + 1 : 1, more ? st.combo : 0);
+      const seen = new Set(more ? st.cards.map(c => c.url) : []);
+      const fresh = r.cards.filter(c => !seen.has(c.url));
+      fresh.forEach(c => { c.fit = pr.data ? schFit(c, p) : null; });
+      st = { cards: (more ? st.cards : []).concat(fresh), page: more ? st.page + 1 : 1, combo: r.combo };
+      if (!st.cards.length) out.replaceChildren(h('p', { class: 'none', text: 'No scholarships found for those filters. Try a wider level or funding type, or another destination.' }));
+      else { sortBox.hidden = false; await applySort(); }
+      moreBtn.hidden = !fresh.length;
+    } catch (e) { err.textContent = (e && e.message) || 'Could not search right now. Try again.'; err.hidden = false; }
+    finally { label.textContent = old; goBtn.disabled = moreBtn.disabled = false; }
+  }
+  goBtn.addEventListener('click', () => run(false));
+  moreBtn.addEventListener('click', () => run(true));
+
+  return { title: 'Find scholarships', nodes: [crumb, section('Find scholarships', null, null,
+    h('p', { class: 'hint-line', text: 'Filters start from your profile. Results come live from ScholarshipsAds; tap Save to shortlist on any result to keep it.' }),
+    sel('Your country (nationality)', [['', 'Any country'], ...nats.map(c => [c, c])], 'nat'),
+    sel('Study destination', [['', 'Any destination'], ...dests.map(d => [d, d])], 'dest'),
+    sel('Level', [['', 'Any level'], ['bachelor', 'Bachelor\u2019s'], ['masters', 'Master\u2019s'], ['phd', 'PhD']], 'level'),
+    sel('Scholarship type', [['', 'Any funding'], ['fully', 'Fully funded'], ['partial', 'Partial funding'], ['tuition', 'Full tuition fee']], 'funding'),
+    h('div', { class: 'actions' }, goBtn), err, sortBox, status, out, h('div', { class: 'actions' }, moreBtn))] };
+}
+
+/* ---------- E10: Scholarship Center -- detail page & overview ---------------
+   One page per scholarship, opened from a search result (#...detail-u-<encoded
+   page url>) or a shortlist item (#...detail-<shortlist id>). The overview --
+   what it covers, programme length, subjects -- is read off the scholarship's
+   own page by Gemini (url_context), so it works for ScholarshipsAds pages and
+   for any link saved by hand. Cached on this device for a week so reopening
+   doesn't spend another Gemini call. E11 added When/How to apply; E12-E13 add more. */
+async function schReadDetail(url, force) {
+  const key = 'sch-detail2:' + url; // 2: E11 added applyWindow/steps, so older cached overviews are re-read
+  if (!force) { try { const c = JSON.parse(store.get(key) || 'null'); if (c && c.at > Date.now() - 7 * 864e5) return c.d; } catch (e) { /* re-read */ } }
+  const s = aiSettings();
+  if (!s.geminiKey || !s.geminiModel) throw new Error('Reading a scholarship page uses Gemini \u2014 add your key and model in AI Settings.');
+  const prompt = 'Open this scholarship page and reply with ONLY a JSON object (no prose, no markdown): ' +
+    '{"name":"","provider":"","country":"","levels":"","subjects":"","duration":"","summary":"","covers":[],"applyWindow":"","steps":[]}. ' +
+    'summary: 2-3 plain sentences on what the scholarship is. covers: short items for everything it pays for or gives (tuition, monthly stipend with the amount, flights, insurance, accommodation, etc.). ' +
+    'duration: how long the funding or programme lasts. subjects: the fields of study it is open to. ' +
+    'applyWindow: when applications open and close and how often (for example yearly), worded as the page states it. steps: the application procedure as short ordered steps (register, documents, submit, interview, results\u2026), in the order the page gives them. Use "" or [] for anything the page does not state. Never guess.\n' + url;
+  const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
+  let o; try { o = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); } catch (e) { throw new Error('Could not read that page. Try again in a moment.'); }
+  const str = v => (typeof v === 'string' ? v.trim() : '');
+  const d = { name: str(o.name), provider: str(o.provider), country: str(o.country), levels: str(o.levels), subjects: str(o.subjects),
+    duration: str(o.duration), summary: str(o.summary), applyWindow: str(o.applyWindow),
+    steps: (Array.isArray(o.steps) ? o.steps : []).map(str).filter(Boolean).slice(0, 15), covers: (Array.isArray(o.covers) ? o.covers : []).map(str).filter(Boolean).slice(0, 12) };
+  store.set(key, JSON.stringify({ at: Date.now(), d }));
+  return d;
+}
+
+async function schDetailPage(ref) {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  let row = null, url = '';
+  if (ref.startsWith('u-')) { try { url = decodeURIComponent(ref.slice(2)); } catch (e) { url = ''; } }
+  else {
+    const res = await sb.from('scholarship_shortlist').select('*').eq('id', ref).maybeSingle();
+    row = res.data;
+    if (!row) return { title: 'Scholarship', nodes: [crumb, emptyBlock('Scholarship not found', 'It may have been removed from your shortlist.')] };
+    url = row.link || '';
+  }
+  if (!/^https?:\/\//i.test(url)) url = '';
+  const facts = pairs => h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:12px' }, pairs.map(([k, v]) =>
+    h('div', {}, h('small', { text: k }), h('strong', { style: 'display:block;white-space:pre-line;font-weight:600', text: v || '\u2014' }))));
+
+  const saved = row ? section('Your saved details', null, null, facts([
+    ['Deadline', row.deadline ? fmtDate(parseLocalDate(row.deadline)) : ''], ['Funding', row.funding],
+    ['Required tests', row.required_tests], ['Duration', row.duration]])) : null;
+  const box = h('div'), status = h('p', { class: 'hint-line' }), err = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const again = h('button', { class: 'btn quiet small', type: 'button', text: 'Read again', hidden: true });
+
+  function paint(d) {
+    box.replaceChildren(section(d.name || (row && row.name) || 'Overview', null, null,
+      d.summary ? h('p', { text: d.summary }) : h('p', { class: 'none', text: 'The page doesn\u2019t give a summary.' }),
+      h('h3', { text: 'What it covers', style: 'margin:16px 0 8px;font-size:16px' }),
+      d.covers.length ? h('ul', { style: 'margin:0;padding-left:20px;display:grid;gap:6px' }, d.covers.map(t => h('li', { text: t })))
+        : h('p', { class: 'none', text: 'The page doesn\u2019t list what it covers.' }),
+      h('h3', { text: 'Programme', style: 'margin:16px 0 8px;font-size:16px' }),
+      facts([['Duration', d.duration], ['Available subjects', d.subjects], ['Levels', d.levels], ['Provider', d.provider], ['Country', d.country]]),
+      h('h3', { text: 'When to apply', style: 'margin:16px 0 8px;font-size:16px' }),
+      d.applyWindow ? h('p', { text: d.applyWindow }) : h('p', { class: 'none', text: 'The page doesn\u2019t say when applications open and close.' }),
+      h('h3', { text: 'How to apply', style: 'margin:16px 0 8px;font-size:16px' }),
+      (d.steps || []).length ? h('ol', { style: 'margin:0;padding-left:22px;display:grid;gap:8px' }, d.steps.map(t => h('li', { text: t })))
+        : h('p', { class: 'none', text: 'The page doesn\u2019t list the application steps.' }),
+      h('p', { class: 'hint-line', text: 'Read from the scholarship\u2019s own page by Gemini \u2014 confirm the details there before applying.' })));
+  }
+  async function load(force) {
+    err.hidden = true; again.hidden = true; status.hidden = false; status.textContent = 'Reading the scholarship page\u2026';
+    try { paint(await schReadDetail(url, force)); again.hidden = false; }
+    catch (e) { err.textContent = (e && e.message) || 'Could not read that page.'; err.hidden = false; again.hidden = false; }
+    status.hidden = true;
+  }
+  again.addEventListener('click', () => load(true));
+
+  if (url) load(false);
+  else status.textContent = 'No link saved for this scholarship. Add one with the pencil icon in your Shortlist and its overview will be read here.';
+  return { title: (row && row.name) || 'Scholarship', nodes: [crumb, saved, status, err, box,
+    url ? h('div', { class: 'actions' }, h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener noreferrer', text: 'Open the full page' }), again) : null] };
+}
+
 /* ---------- E2/E3/E5: Scholarship Center -- shortlist, compare & documents --
    E2: a follow/unfollow list, separate from search results (which don't
    exist yet -- E7). Until then, scholarships are added manually. E3: pick
@@ -6934,7 +7255,7 @@ async function schShortlistPage() {
             paintList();
           }
         })))
-      : h('p', { class: 'none', text: 'No scholarships saved yet. Add one manually below \u2014 once search (coming soon) is built, you\u2019ll be able to save results here in one tap instead.' });
+      : h('p', { class: 'none', text: 'No scholarships saved yet. Add one manually below \u2014 you can also find scholarships in Find scholarships and save them here in one tap.' });
 
     const compareToggle = !selecting && rows.length >= 2
       ? h('button', { class: 'link-btn', type: 'button', text: 'Compare scholarships', onclick: () => { mode = 'select'; paintList(); } })
@@ -7075,6 +7396,7 @@ function schShortlistRow(r, opts) {
   // milestones/slots keep (see plannerOpenSlots), namespaced with 'sch-'
   // the same way milestones already namespace theirs with 'm-'.
   const body = h('div', { class: 'check-body', hidden: !plannerOpenSlots.has('sch-' + r.id) },
+    h('a', { class: 'link-btn', href: '#workspace/scholarships/detail-' + r.id, text: 'View details', style: 'display:inline-block;margin-bottom:10px' }),
     listBox, msg, h('div', { class: 'check-add' }, input, addBtn));
   const toggle = () => {
     const key = 'sch-' + r.id;
