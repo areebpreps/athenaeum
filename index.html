@@ -255,6 +255,21 @@
   .yt-embed { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; margin: 10px 0; background: #000; }
   .yt-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 
+  /* YouTube hub (C2): in-app search results grid */
+  .yt-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+  .yt-card {
+    display: grid; gap: 0; text-align: left; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 14px; overflow: hidden; color: var(--chalk); text-decoration: none;
+  }
+  .yt-card:active { background: var(--paper-hi); }
+  .yt-card img, .yt-card-noimg { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: var(--paper-hi); }
+  .yt-card-body { padding: 8px 10px 10px; display: grid; gap: 3px; }
+  .yt-card strong {
+    font-size: 14px; font-weight: 600; overflow-wrap: anywhere; line-height: 1.3;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .yt-card small { color: var(--dim); font-size: 12px; }
+
   .item {
     display: grid; gap: 6px; width: 100%; text-align: left; padding: 14px 16px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 16px; color: var(--chalk);
@@ -2800,7 +2815,7 @@ function hubsSection() {
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
       linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Question banks — Bangladesh & international' }),
       linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
-      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Browse YouTube, save videos to watch in-app' })));
+      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' })));
 }
 
 async function buildWorkspaceRoot() {
@@ -3017,7 +3032,7 @@ function buildAIRoot() {
         linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }),
         linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, checked against live info' }),
         linkRow({ href: '#ai/ocr', title: 'OCR (image to text)', meta: 'Photos of handwriting and equations, turned into editable text' }),
-        linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or a pasted transcript' }),
+        linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or transcript — or one tap from the YouTube hub' }),
         linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
         linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
         linkRow({ href: '#ai/flashgen', title: 'Flashcard Generator', meta: 'Turn notes into spaced-repetition flashcards' }),
@@ -3073,12 +3088,12 @@ function aiSettingsPage() {
     fGeminiModel.wrap,
     h('p', { class: 'hint-line', text: 'Free at Google AI Studio. Paste the model id exactly as it appears on the model list — no spaces, no "models/" prefix.' }),
     h('hr', { class: 'divider' }),
-    h('p', { class: 'hint-line', text: 'Optional: add a Programmable Search Engine so Fact Checker can look up current info directly (100 free searches/day), instead of relying on Gemini\'s own search grounding, which is often unavailable on free-tier keys.' }),
+    h('p', { class: 'hint-line', text: 'Optional: add a Programmable Search Engine so Fact Checker can look up current info directly (100 free searches/day), instead of relying on Gemini\'s own search grounding, which is often unavailable on free-tier keys. The same API key also powers in-app search in the YouTube hub — just enable "YouTube Data API v3" alongside "Custom Search API" in that Google Cloud project; the search engine ID below is only used for Fact Checker.' }),
     h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://programmablesearchengine.google.com/controlpanel/create', text: 'Create a search engine ↗' }),
     fSearchCx.wrap,
     h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://console.cloud.google.com/apis/credentials', text: 'Get an API key ↗' }),
     fSearchKey.wrap,
-    h('p', { class: 'hint-line', text: 'When creating the search engine, turn on "Search the entire web". The API key needs the Custom Search API enabled in the same Google Cloud project.' }),
+    h('p', { class: 'hint-line', text: 'When creating the search engine, turn on "Search the entire web". The API key needs the Custom Search API (and, for the YouTube hub, YouTube Data API v3) enabled in the same Google Cloud project.' }),
     msg,
     h('button', { class: 'btn', type: 'submit', text: 'Save' }));
 
@@ -6947,26 +6962,148 @@ function openSimDialog(existing, presetCat) {
   });
 }
 
-/* ---------- YouTube hub: browse YouTube itself, and save your favourites ----------
-   Only YouTube's single-video /embed/ endpoint sends permissive frame headers —
-   youtube.com itself blocks framing just like the other sites in the 3D sim hub
-   and Portals (see section 14 of the blueprint), so exploring/browsing YouTube
-   opens the real site with direct same-tab navigation, same as those hubs. A
-   saved video's own player still plays right inside the app, since that part
-   IS embeddable. */
+/* ---------- YouTube hub (C2): in-app search, browse, and playback ----------
+   Search and video lookups use the YouTube Data API v3, called with the same
+   Google Cloud "Search API key" already set in AI Settings for Fact Checker's
+   Custom Search — just enable "YouTube Data API v3" on that same key/project,
+   no separate key needed. Without that key the hub still works for saved
+   videos and pasting a link to save one manually (its previous, key-free
+   path). Tapping any video — a search result or a saved one — plays it right
+   in-app via the /embed/ endpoint (the one YouTube endpoint that sends
+   permissive frame headers, unlike youtube.com itself — see section 14 of
+   the blueprint), and a "Summarize this video" button runs it straight
+   through the existing YouTube summarizer (callAIYoutube), saved to the same
+   AI tools history as before — folding that tool into this hub rather than
+   leaving it reachable only from AI tools. */
 const YT_CRUMBS = [{ text: 'Workspace', href: '#workspace' }, { text: 'YouTube hub', href: '#workspace/youtube' }];
-const YOUTUBE_SITE_URL = 'https://www.youtube.com/';
+const YT_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+let ytSearchState = { query: '', results: [], error: null };
 
-async function ytHub(itemKey) {
-  if (itemKey === 'browse') return youtubeSiteViewer();
+// null = no search key configured (distinct from [] = "no results"); throws on a real API error.
+async function youtubeApiSearch(query) {
+  const s = aiSettings();
+  if (!s.searchKey) return null;
+  const url = 'https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=16&q=' +
+              encodeURIComponent(query) + '&key=' + encodeURIComponent(s.searchKey);
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data.error && data.error.message) || 'YouTube search failed.');
+  return (data.items || []).filter(it => it.id && it.id.videoId).map(it => ({
+    id: it.id.videoId,
+    title: stripHtml(it.snippet.title),
+    channel: it.snippet.channelTitle,
+    thumb: ((it.snippet.thumbnails && (it.snippet.thumbnails.medium || it.snippet.thumbnails.default)) || {}).url
+  }));
+}
+
+// Best-effort title/channel lookup for a bare video id (deep link, saved row missing details, etc).
+// Returns null on any failure — callers fall back to a generic label rather than blocking playback.
+async function youtubeApiVideoDetails(id) {
+  const s = aiSettings();
+  if (!s.searchKey) return null;
+  try {
+    const url = 'https://www.googleapis.com/youtube/v3/videos?part=snippet&id=' + encodeURIComponent(id) + '&key=' + encodeURIComponent(s.searchKey);
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    const item = res.ok && data.items && data.items[0];
+    return item ? { title: item.snippet.title, channel: item.snippet.channelTitle } : null;
+  } catch (e) { return null; }
+}
+
+function ytCard(href, title, meta, thumb) {
+  return h('a', { class: 'yt-card', href },
+    thumb ? h('img', { src: thumb, alt: '', loading: 'lazy' }) : h('div', { class: 'yt-card-noimg' }),
+    h('div', { class: 'yt-card-body' }, h('strong', { text: title }), meta ? h('small', { text: meta }) : null));
+}
+
+// Shared "Summarize this video" control: a button plus the (initially empty) area
+// its result/error render into, kept separate so callers can place the button
+// alongside other actions and the output below them.
+function summarizeControl(url, title) {
+  const btn = h('button', { class: 'btn quiet small', type: 'button', text: 'Summarize this video' });
+  const err = h('p', { class: 'msg err', hidden: true });
+  const result = h('div');
+  btn.addEventListener('click', async () => {
+    if (!aiConfigured()) { go('#ai/settings'); return; }
+    err.hidden = true; result.replaceChildren();
+    btn.disabled = true; btn.textContent = 'Summarizing…';
+    try {
+      const summary = await callAIYoutube(url, '');
+      result.replaceChildren(h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: summary })));
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'youtube', title: (title || url).slice(0, 60) }).select('id').single();
+      if (!chatIns.error) {
+        await sb.from('ai_messages').insert(
+          [{ chat_id: chatIns.data.id, role: 'user', content: '[YouTube] ' + url },
+           { chat_id: chatIns.data.id, role: 'assistant', content: summary }]);
+      }
+    } catch (e) {
+      err.textContent = (e && e.message) ? e.message : 'Could not summarize that. Try again.';
+      err.hidden = false;
+    } finally {
+      btn.disabled = false; btn.textContent = 'Summarize this video';
+    }
+  });
+  return { btn, out: h('div', {}, err, result) };
+}
+
+function ytHub(itemKey) {
+  if (itemKey && itemKey.startsWith('w-')) return youtubeWatchViewer(itemKey.slice(2));
   if (itemKey) {
     if (UUID.test(itemKey)) return savedVideoViewer(itemKey);
     return go('#workspace/youtube');
   }
+  return youtubeHubHome();
+}
 
+async function youtubeHubHome() {
   let saved = [], savedError = null;
   try { saved = must(await sb.from('saved_videos').select('*').order('created_at', { ascending: false })); }
   catch (e) { savedError = e; }
+
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search YouTube, e.g. Newton’s third law', 'aria-label': 'Search YouTube', enterkeyhint: 'search' });
+  input.value = ytSearchState.query;
+  const btn = h('button', { class: 'btn small', type: 'button', text: 'Search' });
+  const status = h('p', { class: 'none' });
+  const grid = h('div', { class: 'yt-grid' });
+
+  function paintResults() {
+    grid.replaceChildren();
+    if (ytSearchState.error) {
+      status.hidden = false; status.textContent = ytSearchState.error;
+    } else if (ytSearchState.results.length) {
+      status.hidden = true;
+      ytSearchState.results.forEach(r => grid.append(ytCard('#workspace/youtube/w-' + r.id, r.title, r.channel, r.thumb)));
+    } else {
+      status.hidden = false;
+      status.textContent = ytSearchState.query ? 'No results.' : 'Search to browse videos in-app — tap one to watch, save, or summarize it.';
+    }
+  }
+
+  async function doSearch() {
+    const q = input.value.trim();
+    ytSearchState.query = q; ytSearchState.error = null;
+    if (!q) { ytSearchState.results = []; paintResults(); return; }
+    if (!aiSettings().searchKey) {
+      ytSearchState.results = [];
+      ytSearchState.error = 'Add a Search API key in AI Settings to search YouTube in-app (same key as Fact Checker — just enable YouTube Data API v3 on it too).';
+      paintResults(); return;
+    }
+    btn.disabled = true; status.hidden = false; status.textContent = 'Searching…';
+    try {
+      ytSearchState.results = await youtubeApiSearch(q);
+      paintResults();
+    } catch (e) {
+      ytSearchState.results = [];
+      ytSearchState.error = (e && e.message) || 'Could not search YouTube. Check your connection and key, then try again.';
+      paintResults();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', doSearch);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+  paintResults();
 
   const mineBox = saved.length
     ? h('div', { class: 'list' }, saved.map(r => linkRow({ href: '#workspace/youtube/' + r.id, title: r.title, meta: 'Saved video' })))
@@ -6974,30 +7111,41 @@ async function ytHub(itemKey) {
 
   return { title: 'YouTube hub', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
-    section('Explore', null, null,
-      h('div', { class: 'list' }, linkRow({ href: '#workspace/youtube/browse', title: 'Open YouTube', meta: 'Search and browse, then save a link below' }))),
-    section('My videos', '+ Save a video', () => openSaveVideoDialog(null),
+    h('div', { class: 'search-row' }, input, btn),
+    status, grid,
+    section('My videos', '+ Save a link', () => openSaveVideoDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
                      'Run the update SQL in Supabase (schema-update-3.2-youtube.sql), then reload.') : null,
       mineBox)
   ] };
 }
 
-function youtubeSiteViewer() {
-  const save = h('button', { class: 'btn small', type: 'button', text: '+ Save a video', onclick: () => openSaveVideoDialog(null) });
-  return launchPage('YouTube', YOUTUBE_SITE_URL, [{ text: 'Workspace', href: '#workspace' }], [save],
-    'Found a video you like? Copy its link from YouTube, come back and save it here to watch it in-app next time.');
+async function youtubeWatchViewer(id) {
+  if (!YT_ID_RE.test(id)) return go('#workspace/youtube');
+  const url = 'https://www.youtube.com/watch?v=' + id;
+  const details = await youtubeApiVideoDetails(id);
+  const title = (details && details.title) || 'Video';
+  const save = h('button', { class: 'btn small', type: 'button', text: 'Save to My videos', onclick: () => openSaveVideoDialog(null, url, title) });
+  const sum = summarizeControl(url, title);
+  return { title, nodes: [
+    crumbs(YT_CRUMBS),
+    youtubePlayer(url),
+    details && details.channel ? h('p', { class: 'hint-line', text: details.channel }) : null,
+    h('div', { class: 'dl-actions' }, save, sum.btn),
+    sum.out
+  ] };
 }
 
 async function savedVideoViewer(id) {
   const row = must(await sb.from('saved_videos').select('*').eq('id', id).maybeSingle());
   if (!row) return go('#workspace/youtube');
   const edit = h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSaveVideoDialog(row) });
-  return { title: row.title, nodes: [crumbs(YT_CRUMBS), youtubePlayer(row.url), edit] };
+  const sum = summarizeControl(row.url, row.title);
+  return { title: row.title, nodes: [crumbs(YT_CRUMBS), youtubePlayer(row.url), h('div', { class: 'dl-actions' }, edit, sum.btn), sum.out] };
 }
 
-function openSaveVideoDialog(existing, presetUrl) {
-  const row = existing || { url: presetUrl || '' };
+function openSaveVideoDialog(existing, presetUrl, presetTitle) {
+  const row = existing || { url: presetUrl || '', title: presetTitle || '' };
   showDialog({
     title: existing ? 'Edit video' : 'Save a video',
     submitLabel: 'Save',
