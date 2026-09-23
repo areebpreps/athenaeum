@@ -23,6 +23,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.core.content.FileProvider;
 
 import java.io.ByteArrayOutputStream;
@@ -43,7 +44,8 @@ import java.nio.charset.StandardCharsets;
  * GitHub repo for a newer index.html and swaps it in, so editing the site
  * on GitHub updates the installed app without a rebuild in most cases.
  * Camera uploads and blob downloads go through native bridges since a
- * file:// page can't do either on its own.
+ * file:// page can't do either on its own. External links open in a
+ * Chrome Custom Tab so the user never fully leaves the app.
  */
 public class MainActivity extends Activity {
 
@@ -249,7 +251,10 @@ public class MainActivity extends Activity {
 
     private void openExternally(Uri uri) {
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+            CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
+            builder.setShowTitle(true);
+            CustomTabsIntent customTabsIntent = builder.build();
+            customTabsIntent.launchUrl(this, uri);
         } catch (Exception e) {
             Toast.makeText(this, "Couldn't open that link.", Toast.LENGTH_SHORT).show();
         }
