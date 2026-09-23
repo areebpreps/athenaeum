@@ -7263,6 +7263,29 @@ async function schDetailPage(ref) {
    remove steps. One row per step in scholarship_roadmap (schema-update-E14).
    `key` marks a seeded step; E15-E18 add suggestions and auto-updating. */
 const SCH_ROAD_STAGES = ['Tests', 'Documents', 'Applications', 'Universities', 'ECAs', 'Projects', 'My tasks'];
+/* E14: starter steps, chosen from the intake profile. Deterministic (no AI call).
+   Each seeded step has a `key` so E18 (schRoadmapSync) can tick, drop or reword it. */
+function schRoadmapStarter(p) {
+  p = p || {};
+  const tests = (p.test_scores || []).map(t => String(t.test === 'Other' ? t.name || '' : t.test).toLowerCase());
+  const has = re => tests.some(t => re.test(t));
+  const hasEng = has(/ielts|toefl|duolingo|pte/), hasSat = has(/sat|act/), hasGre = has(/gre|gmat/);
+  const lvl = String(p.target_level || ''), bach = /bachelor/i.test(lvl), grad = /master|phd/i.test(lvl);
+  const dests = (p.destinations || []).filter(d => d && d !== 'Open to anywhere');
+  const major = String(p.target_major || '').trim();
+  const where = dests.length ? ' in ' + (dests.length > 2 ? dests.slice(0, 2).join(', ') + ' and more' : dests.join(' and ')) : '';
+  const out = [];
+  if (!hasEng) out.push({ key: 'eng-test', stage: 'Tests', text: 'Book an English test (IELTS, TOEFL or Duolingo) \u2014 no English score is on your profile' });
+  if (bach && !hasSat) out.push({ key: 'sat', stage: 'Tests', text: 'Check whether your target schools need the SAT, and plan to take it' });
+  if (grad && !hasGre) out.push({ key: 'gre', stage: 'Tests', text: 'Check whether your programmes need the GRE or GMAT, and plan to take it' });
+  out.push({ key: 'transcripts', stage: 'Documents', text: 'Get your academic transcripts and certificates ready' });
+  out.push({ key: 'passport', stage: 'Documents', text: 'Make sure your passport is valid for at least two more years' });
+  out.push({ key: 'recs', stage: 'Documents', text: 'Ask two teachers or mentors who know you well for recommendation letters' });
+  out.push({ key: 'statement', stage: 'Documents', text: 'Draft a personal statement or statement of purpose' });
+  out.push({ key: 'shortlist', stage: 'Applications', text: 'Shortlist at least 5 scholarships' + (major ? ' for ' + major : '') + where });
+  out.push({ key: 'follow', stage: 'Applications', text: 'Follow a scholarship to track its deadline' });
+  return out;
+}
 // E15/E16: Gemini suggests extracurriculars and projects fitted to the
 // profile, each with a one-sentence reason. Kinds of activities/projects only
 // (no named organisations or links, which it could invent). Kept on this
