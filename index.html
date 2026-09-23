@@ -157,6 +157,17 @@
     overflow: hidden; padding: 0;
   }
   .who img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tb-right { display: flex; align-items: center; gap: 6px; flex: none; }
+  .bell {
+    position: relative; min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
+    background: transparent; border: 0; color: var(--chalk); padding: 0;
+  }
+  .bell:active { background: var(--paper-hi); }
+  .bell svg { width: 24px; height: 24px; }
+  .bell-dot {
+    position: absolute; top: 4px; right: 4px; min-width: 16px; height: 16px; padding: 0 3px; border-radius: 8px;
+    background: var(--err); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  }
   .avatar { --sz: 44px; width: var(--sz); height: var(--sz); border-radius: 50%; overflow: hidden; flex: none; display: grid; place-items: center;
     background: var(--paper-hi); border: 1px solid var(--line); color: var(--chalk); font-weight: 700; font-size: calc(var(--sz) * .42); }
   .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -653,7 +664,13 @@
       </button>
       <h2 id="page-title">General workspace</h2>
     </div>
-    <button class="who" id="who-btn" aria-label="Account" aria-haspopup="dialog"></button>
+    <div class="tb-right">
+      <button class="bell" id="bell-btn" type="button" aria-label="Notifications">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
+        <span class="bell-dot" id="bell-dot" hidden></span>
+      </button>
+      <button class="who" id="who-btn" aria-label="Account" aria-haspopup="dialog"></button>
+    </div>
   </header>
 
   <main id="view" tabindex="-1"></main>
@@ -892,6 +909,7 @@ async function logout() {
   closeDialog();
   closeSheet();
   closeViewer();
+  stopNotifications(); // G12
   lastHash = null;
   $('#view').replaceChildren();
   history.replaceState(null, '', location.pathname + location.search);
@@ -914,6 +932,7 @@ function enterApp(user) {
   showScreen('app');
   route();
   initPlannerAlarms(); // D3
+  initNotifications(); // G12
 }
 
 /* =====================================================================
@@ -2948,13 +2967,17 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'threed')   return simHub(ids[1]);
   if (ids[0] === 'youtube')  return ytHub(ids[1]);
   if (ids[0] === 'library')  return libraryHub(ids[1]);
+  if (ids[0] === 'notifications') return notificationsPage();
+  if (ids[0] === 'search')   return globalSearchPage();
   return buildWorkspaceRoot();
 }
 
 function hubsSection() {
   return section('Hubs', null, null,
     h('div', { class: 'list' },
+      linkRow({ href: '#workspace/search',   title: 'Search everything',  meta: 'One search across notes, posts, courses, Q&A, scholarships and subjects' }),
       linkRow({ href: '#workspace/today',    title: 'Today',              meta: 'Everything due or scheduled today, in one place' }),
+      linkRow({ href: '#workspace/notifications', title: 'Notifications', meta: 'Answers, deadlines, decisions and requests, in one inbox' }),
       linkRow({ href: '#workspace/scholarships', title: 'Scholarship Center', meta: 'Your profile and scholarship planning' }),
       linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
       linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
@@ -6619,6 +6642,8 @@ async function todayHub() {
   const activeAll = projects.filter(p => p.status !== 'done');
   const overdueWork = activeAll.filter(p => p.due_date && daysBetween(parseLocalDate(p.due_date), todayMidnight) < 0);
   const overdueCount = overdueMilestones.length + overdueWork.length;
+  const dueTodayForNotify = milestones.filter(r => milestoneStatus(r).tone === 'ongoing'); // computed again below as dueTodayMilestones
+  generateDeadlineNotifications(overdueMilestones, dueTodayForNotify); // G12, fire-and-forget
 
   // "Due soon" = currently ongoing, or starting within the next 7 days.
   const dueSoon = milestones.filter(r => {
@@ -11644,6 +11669,186 @@ function reportBtn(type, id, ownerId, excerpt) {
   return h('button', { class: 'btn quiet small', type: 'button', text: 'Report', 'aria-label': 'Report this', onclick: () => reportDialog(type, id, ownerId, excerpt) });
 }
 
+/* ---------- G12: notifications center ----------
+   One inbox (a bell in the header, badge with the unread count, #workspace/notifications)
+   for things that happen to you elsewhere: a new Q&A answer, your teacher application
+   being decided, a consult booking changing status, someone requesting to join or being
+   approved into your study group, and someone answering a request you posted in a group.
+   Those are all written by database triggers on the relevant tables (running as the
+   recipient, not the actor, since the two differ). Scholarship deadlines are the one kind
+   the app writes itself: Today's "due soon"/"overdue" scholarship milestones (E4/D8) are
+   date-based, not row-events, so generateDeadlineNotifications() upserts them (deduped by
+   milestone + due/overdue state) whenever Today loads. Updates arrive live through Supabase
+   Realtime with a 30s poll as a fallback, same pattern as G9's chat. notifications table
+   and triggers on qa_answers / teacher_applications / consult_bookings / group_members /
+   group_items; schema-update-G12-notifications.sql (run after G1, G4, G6, G7 and G8). */
+let notifChannel = null, notifPollTimer = null;
+async function refreshNotifBadge() {
+  const dot = $('#bell-dot');
+  if (!currentUser || !dot) return;
+  try {
+    const r = await sb.from('notifications').select('id', { count: 'exact', head: true }).eq('user_id', currentUser.id).eq('read', false);
+    if (r.error) { dot.hidden = true; return; }
+    const n = r.count || 0;
+    dot.hidden = !n;
+    dot.textContent = n > 9 ? '9+' : String(n);
+  } catch (e) { dot.hidden = true; }
+}
+function initNotifications() {
+  refreshNotifBadge();
+  try {
+    notifChannel = sb.channel('notif-' + currentUser.id)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: 'user_id=eq.' + currentUser.id }, refreshNotifBadge)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications', filter: 'user_id=eq.' + currentUser.id }, refreshNotifBadge)
+      .subscribe();
+  } catch (e) { notifChannel = null; }
+  clearInterval(notifPollTimer);
+  notifPollTimer = setInterval(refreshNotifBadge, 30000);
+}
+function stopNotifications() {
+  clearInterval(notifPollTimer); notifPollTimer = null;
+  if (notifChannel) { try { sb.removeChannel(notifChannel); } catch (e) {} notifChannel = null; }
+  const dot = $('#bell-dot'); if (dot) dot.hidden = true;
+}
+// Called from Today (D8/E4/E6) with the scholarship deadlines it already computed as
+// overdue or due today. Fails quiet if the table isn't migrated yet — Today itself still
+// works either way, it just won't also drop a notification.
+async function generateDeadlineNotifications(overdueMilestones, dueTodayMilestones) {
+  const rows = [
+    ...overdueMilestones.filter(r => r.scholarship_id).map(r => ({ state: 'overdue', title: '\u201c' + r.title + '\u201d is overdue', r })),
+    ...dueTodayMilestones.filter(r => r.scholarship_id).map(r => ({ state: 'due_today', title: '\u201c' + r.title + '\u201d is due today', r }))
+  ];
+  if (!rows.length) return;
+  const payload = rows.map(({ state, title, r }) => ({
+    user_id: currentUser.id, type: 'deadline', title, body: null, link: '#workspace/scholarships/shortlist',
+    source_type: 'planner_item', source_id: r.id, dedup_key: 'deadline:' + r.id + ':' + state
+  }));
+  try { await sb.from('notifications').upsert(payload, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true }); } catch (e) {}
+}
+async function notificationsPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  const r = await sb.from('notifications').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false }).limit(100);
+  if (r.error) return { title: 'Notifications', nodes: [crumb, h('div', { class: 'status bad' }, h('strong', { text: 'Notifications are not set up yet' }),
+    'Run the update SQL in Supabase (schema-update-G12-notifications.sql), then reload. (' + r.error.message + ') ',
+    h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  const rows = r.data || [], unread = rows.filter(x => !x.read);
+  const markOne = async n => { if (n.read) return; n.read = true; refreshNotifBadge(); const u = await sb.from('notifications').update({ read: true }).eq('id', n.id); if (u.error) refreshNotifBadge(); };
+  const markAll = unread.length ? h('button', { class: 'btn quiet small', type: 'button', text: 'Mark all read', onclick: async () => {
+    const u = await sb.from('notifications').update({ read: true }).eq('user_id', currentUser.id).eq('read', false);
+    if (u.error) return alert('Could not update: ' + u.error.message);
+    refreshNotifBadge(); route();
+  } }) : null;
+  const row = n => h('a', { class: 'row', href: n.link || '#workspace/notifications', style: n.read ? '' : 'background:var(--paper-hi)', onclick: () => markOne(n) },
+    h('span', { class: 'grow' },
+      h('strong', { text: n.title }),
+      h('small', { text: [n.body, whenTxt(n.created_at)].filter(Boolean).join(' \u00b7 ') })),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' }));
+  return { title: 'Notifications', nodes: [crumb,
+    unread.length || rows.length ? h('div', { class: 'edit-row' }, markAll) : null,
+    rows.length ? h('div', { class: 'list' }, rows.map(row))
+                : emptyBlock('Nothing yet', 'Q&A answers, teacher application decisions, consult updates, group requests and scholarship deadlines will show up here.')] };
+}
+
+/* ---------- G13: global search ----------
+   #workspace/search (also the first link under Hubs). One search box across the things
+   people asked to find in one place: subjects/chapters/topics, your notes/definitions/
+   formulas/mnemonics/flashcards, posts (yours and other people's public ones), courses
+   (published, plus your own drafts), Q&A questions and your shortlisted scholarships.
+   This is a client-side fan-out of plain `ilike` queries (Promise.all, one per table) —
+   no new tables or schema needed, since every table already carries the RLS rules from
+   its own phase (own-only for study items and the shortlist, public-or-mine for posts,
+   published-or-mine for courses), and those apply here exactly as everywhere else. The
+   per-feature search boxes already built in earlier phases (groups, book reviews) are
+   unchanged; this adds the one search that spans everything, it doesn't replace them. */
+const GLOBAL_SEARCH_MIN = 2;
+async function globalSearchRun(term) {
+  const me = currentUser.id;
+  const clean = term.replace(/[,()]/g, ' ').trim();     // PostgREST's or() splits on , and ( )
+  const q = '%' + clean + '%';
+  const [subR, chR, topR, noteR, formR, mnemR, flashR, postR, courseR, qaR, schR] = await Promise.all([
+    sb.from('subjects').select('id,name').ilike('name', q).limit(8),
+    sb.from('chapters').select('id,subject_id,title').ilike('title', q).limit(8),
+    sb.from('topics').select('id,chapter_id,title').ilike('title', q).limit(8),
+    sb.from('notes').select('id,title,body,kind,subject_id,chapter_id,topic_id').or('title.ilike.' + q + ',body.ilike.' + q).limit(15),
+    sb.from('formulas').select('id,title,body,subject_id,chapter_id,topic_id').or('title.ilike.' + q + ',body.ilike.' + q).limit(10),
+    sb.from('mnemonics').select('id,title,body,subject_id,chapter_id,topic_id').or('title.ilike.' + q + ',body.ilike.' + q).limit(10),
+    sb.from('flashcards').select('id,title,body,subject_id,chapter_id,topic_id').or('title.ilike.' + q + ',body.ilike.' + q).limit(10),
+    sb.from('posts').select('id,title,body,kind,visibility,user_id').or('title.ilike.' + q + ',body.ilike.' + q).limit(15),
+    sb.from('courses').select('id,title,description,subject,teacher_id,published').or('title.ilike.' + q + ',description.ilike.' + q).limit(10),
+    sb.from('qa_questions').select('id,title,body,subject').or('title.ilike.' + q + ',body.ilike.' + q).limit(10),
+    sb.from('scholarship_shortlist').select('id,name,funding').or('name.ilike.' + q + ',funding.ilike.' + q).limit(10)
+  ]);
+  const all = [subR, chR, topR, noteR, formR, mnemR, flashR, postR, courseR, qaR, schR];
+  if (all.every(r => r.error)) throw (all[0].error || new Error('Could not search right now.'));
+
+  const chapters = chR.data || [], subjects = subR.data || [], topics = topR.data || [];
+  const chById = {}; chapters.forEach(c => { chById[c.id] = c; });
+  // Topics don't carry their own subject_id, so look up the subject for any matched
+  // topic's chapter that wasn't already pulled in by the chapter search above.
+  const missingChIds = [...new Set(topics.map(t => t.chapter_id).filter(id => !chById[id]))];
+  if (missingChIds.length) {
+    const extra = await sb.from('chapters').select('id,subject_id').in('id', missingChIds);
+    (extra.data || []).forEach(c => { chById[c.id] = c; });
+  }
+
+  const subjectRows = [
+    ...subjects.map(s => linkRow({ href: '#subjects/' + s.id, title: s.name, meta: 'Subject' })),
+    ...chapters.map(c => linkRow({ href: '#subjects/' + c.subject_id + '/' + c.id, title: c.title, meta: 'Chapter' })),
+    ...topics.map(t => { const c = chById[t.chapter_id]; return c ? linkRow({ href: '#subjects/' + c.subject_id + '/' + c.id + '/' + t.id, title: t.title, meta: 'Topic' }) : null; }).filter(Boolean)
+  ];
+
+  const itemHref = r => '#subjects/' + r.subject_id + (r.chapter_id ? '/' + r.chapter_id : '') + (r.topic_id ? '/' + r.topic_id : '');
+  const itemRows = [
+    ...(noteR.data || []).filter(r => r.subject_id).map(r => linkRow({ href: itemHref(r), title: r.title || (r.body || '').slice(0, 60) || 'Untitled', meta: r.kind === 'definition' ? 'Definition' : 'Note' })),
+    ...(formR.data || []).filter(r => r.subject_id).map(r => linkRow({ href: itemHref(r), title: r.title || 'Untitled', meta: 'Formula' })),
+    ...(mnemR.data || []).filter(r => r.subject_id).map(r => linkRow({ href: itemHref(r), title: r.title || 'Untitled', meta: 'Mnemonic' })),
+    ...(flashR.data || []).filter(r => r.subject_id).map(r => linkRow({ href: itemHref(r), title: r.title || 'Untitled', meta: 'Flashcard' }))
+  ];
+
+  const postRows = (postR.data || []).map(p => linkRow({
+    href: p.user_id === me ? '#workspace/posts' : '#workspace/community',
+    title: p.title || (p.body || '').slice(0, 60) || 'Untitled',
+    meta: (POST_KIND_LABEL[p.kind] || p.kind) + (p.visibility === 'public' ? ' \u00b7 Public' : ' \u00b7 Private')
+  }));
+  const courseRows = (courseR.data || []).map(c => linkRow({
+    href: c.published ? '#workspace/market/' + c.id : '#workspace/courses/' + c.id,
+    title: c.title, meta: [c.subject, c.published ? 'Published' : 'Draft'].filter(Boolean).join(' \u00b7 ')
+  }));
+  const qaRows = (qaR.data || []).map(q2 => linkRow({ href: '#workspace/qa/' + q2.id, title: q2.title, meta: q2.subject || 'Q&A' }));
+  const schRows = (schR.data || []).map(s => linkRow({ href: '#workspace/scholarships/shortlist', title: s.name, meta: s.funding || 'Scholarship' }));
+
+  return { subjects: subjectRows, items: itemRows, posts: postRows, courses: courseRows, qa: qaRows, scholarships: schRows };
+}
+function globalSearchPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search notes, posts, courses, Q&A, scholarships, subjects\u2026', 'aria-label': 'Search everything' });
+  const goBtn = h('button', { class: 'btn', type: 'button', text: 'Search' });
+  const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const status = h('p', { class: 'hint-line', hidden: true });
+  const out = h('div');
+  async function run() {
+    const term = input.value.trim();
+    msg.hidden = true;
+    if (term.length < GLOBAL_SEARCH_MIN) { msg.textContent = 'Type at least ' + GLOBAL_SEARCH_MIN + ' characters.'; msg.hidden = false; return; }
+    goBtn.disabled = true; status.hidden = false; status.textContent = 'Searching\u2026'; out.replaceChildren();
+    try {
+      const res = await globalSearchRun(term);
+      const groups = [['Subjects', res.subjects], ['Notes & study items', res.items], ['Posts', res.posts],
+        ['Courses', res.courses], ['Q&A', res.qa], ['Scholarships', res.scholarships]];
+      const total = groups.reduce((n, [, l]) => n + l.length, 0);
+      out.replaceChildren(
+        h('p', { class: 'hint-line', text: total ? plural(total, 'result', 'results') + ' for \u201c' + term + '\u201d.' : 'No results for \u201c' + term + '\u201d.' }),
+        ...groups.filter(([, l]) => l.length).map(([label, list]) => section(label, null, null, h('div', { class: 'list' }, list))));
+    } catch (e) {
+      msg.textContent = 'Could not search: ' + ((e && e.message) || e); msg.hidden = false;
+    } finally { goBtn.disabled = false; status.hidden = true; }
+  }
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run(); } });
+  goBtn.addEventListener('click', run);
+  return { title: 'Search', nodes: [crumb, h('div', { class: 'field' }, input), h('div', { class: 'actions' }, goBtn), msg, status, out,
+    h('p', { class: 'hint-line', text: 'Searches your notes, definitions, formulas, mnemonics and flashcards, posts (yours and public ones), courses, Q&A questions, your shortlisted scholarships, and subjects/chapters/topics \u2014 all at once. Each result opens where that item actually lives.' })] };
+}
+
 /* ---------- E28: live classes ----------
    #workspace/scholarships/classes. A personal list of online / live class links
    (scholarship_classes; schema-update-E28-scholarship-classes.sql): name, https link,
@@ -12076,6 +12281,7 @@ async function boot() {
     b.addEventListener('click', () => { location.hash = b.dataset.tab; }));
   window.addEventListener('hashchange', () => { if (currentUser) route(); });
 
+  $('#bell-btn').addEventListener('click', () => go('#workspace/notifications'));
   $('#who-btn').addEventListener('click', openSheet);
   $('#sheet-close').addEventListener('click', closeSheet);
   $('#sheet-profile').addEventListener('click', closeSheet);
