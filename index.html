@@ -6365,6 +6365,7 @@ function confirmDeleteItem(existing) {
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const plannerOpenDays = new Set();   // which collapsed days the person has opened (kept across refreshes)
+const plannerOpenSlots = new Set();  // which slots' task checklists are expanded (kept across refreshes)
 
 async function plannerHub() {
   const rows = must(await sb.from('planner_items').select('*').order('created_at', { ascending: true }));
@@ -6379,7 +6380,7 @@ async function plannerHub() {
   // Today first (always open), then the next six days as collapsible menus.
   const today = new Date().getDay();
   const dayList = i => (byDay[i] || []).length
-    ? h('div', { class: 'list' }, byDay[i].map(r => slotRow(r)))
+    ? h('div', { class: 'list' }, byDay[i].map(r => slotBlock(r)))
     : h('p', { class: 'none', text: 'No slots.' });
 
   const todayBlock = h('div', { class: 'day-block' },
@@ -6408,13 +6409,97 @@ async function plannerHub() {
   ] };
 }
 
-function slotRow(r) {
+// D1: a slot is a time block that holds its own checklist of sub-tasks
+// (planner_items.checklist, same JSON shape as projects.checklist). Tapping
+// the block expands/collapses that checklist in place; the pencil button is
+// the only way to open the slot's own edit dialog (day/time/colour/title),
+// matching the tap-to-expand / pencil-to-edit pattern used by item cards.
+// A block reads as "complete" once every task in it is checked -- there is
+// no separate stored flag, that's simply every checklist row having done:true.
+function slotBlock(r) {
+  let list = Array.isArray(r.checklist) ? r.checklist.slice() : [];
+  let chain = Promise.resolve();
+  const time = [r.start_time, r.end_time].filter(Boolean).map(t => t.slice(0, 5)).join(' – ');
+
   const dot = h('span', { class: 'dot-c', 'aria-hidden': 'true' });
   dot.style.setProperty('--c', colorOf(r.color));
-  const time = [r.start_time, r.end_time].filter(Boolean).map(t => t.slice(0, 5)).join(' – ');
-  return h('button', { class: 'row', type: 'button', onclick: () => openPlannerDialog('slot', r) },
-    dot, h('span', { class: 'grow' }, h('strong', { text: r.title }), h('small', { text: time || 'No time set' })),
-    h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+  const titleEl = h('strong', { text: r.title });
+  const sub = h('small', { text: time || 'No time set' });
+  const count = h('small');
+  const bar = h('i');
+  const track = h('div', { class: 'progress', 'aria-hidden': 'true' }, bar);
+  const listBox = h('div', { class: 'check-list' });
+  const msg = h('p', { class: 'msg err', hidden: true });
+
+  const paint = () => {
+    const done = list.filter(x => x.done).length;
+    const complete = list.length > 0 && done === list.length;
+    titleEl.style.textDecoration = complete ? 'line-through' : '';
+    titleEl.style.opacity = complete ? '.6' : '';
+    count.textContent = list.length ? done + ' of ' + list.length + ' tasks done' : 'No tasks yet';
+    bar.style.width = (list.length ? Math.round(done / list.length * 100) : 0) + '%';
+    track.hidden = !list.length;
+
+    listBox.replaceChildren(...list.map(item => {
+      const cb = h('input', { type: 'checkbox', class: 'dl-check' });
+      cb.checked = !!item.done;
+      cb.addEventListener('change', () => save(list.map(x => x.id === item.id ? { ...x, done: cb.checked } : x)));
+      return h('div', { class: 'check-row' + (item.done ? ' done' : '') },
+        h('label', { class: 'check-lab' }, cb, h('span', { text: item.text })),
+        h('button', { class: 'check-del', type: 'button', 'aria-label': 'Remove ' + item.text, text: '×',
+                      onclick: () => save(list.filter(x => x.id !== item.id)) }));
+    }));
+  };
+
+  // Every save writes the latest list, one after another, so quick taps cannot overwrite each other.
+  function save(next) {
+    list = next;
+    paint();
+    chain = chain.then(async () => {
+      const res = await sb.from('planner_items').update({ checklist: list }).eq('id', r.id);
+      if (res.error) {
+        msg.textContent = 'Could not save the task list: ' + res.error.message;
+        msg.hidden = false;
+      } else {
+        r.checklist = list;
+        msg.hidden = true;
+      }
+    });
+  }
+
+  const input = h('input', { class: 'control', type: 'text', maxlength: 200, placeholder: 'Add a task', 'aria-label': 'New task', enterkeyhint: 'done' });
+  const addBtn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
+  const add = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    save([...list, { id: crypto.randomUUID(), text, done: false }]);
+    input.focus({ preventScroll: true });
+  };
+  addBtn.addEventListener('click', add);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+
+  const body = h('div', { class: 'check-body', hidden: !plannerOpenSlots.has(r.id) },
+    listBox, msg, h('div', { class: 'check-add' }, input, addBtn));
+
+  const toggle = () => {
+    if (plannerOpenSlots.has(r.id)) plannerOpenSlots.delete(r.id); else plannerOpenSlots.add(r.id);
+    body.hidden = !plannerOpenSlots.has(r.id);
+  };
+
+  const editBtn = h('button', {
+    class: 'item-edit', type: 'button', 'aria-label': 'Edit ' + r.title,
+    onclick: e => { e.stopPropagation(); openPlannerDialog('slot', r); }
+  }, pencilIcon());
+
+  paint();
+  return h('div', { class: 'proj' },
+    h('button', { class: 'proj-head', type: 'button', onclick: toggle },
+      dot,
+      h('span', { class: 'grow' }, titleEl, sub, count, track),
+      editBtn,
+      h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    body);
 }
 
 /* milestone dates: a start date plus an optional number of days it runs */
