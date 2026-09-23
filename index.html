@@ -466,6 +466,11 @@
   .check-add .control { min-height: 44px; flex: 1; min-width: 0; }
   .check-add .btn { width: auto; padding: 0 18px; }
   .check-body .msg { margin: 6px 0 0; }
+  .session-row { border-top: 1px solid var(--line); padding: 10px 16px; display: grid; gap: 6px; }
+  .session-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .session-row .btn { width: auto; padding: 0 16px; min-height: 40px; }
+  .session-row .hint-line { margin: 0; }
+  .session-row .msg { margin: 0; }
 
   /* Wikipedia article */
   .article h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 24px 0 8px; }
@@ -6379,8 +6384,22 @@ async function plannerHub() {
 
   // Today first (always open), then the next six days as collapsible menus.
   const today = new Date().getDay();
+
+  // D2: session tracking (Start/End, actual vs. planned) only ever applies to
+  // the real calendar day it happens on, so it's only wired up on today's
+  // block -- the other six days show the recurring slot and its task
+  // checklist, same as before, with no session controls.
+  const todayDate = todayISO();
+  const sessionRows = must(await sb.from('planner_sessions').select('*').eq('session_date', todayDate));
+  const sessionByItem = {};
+  sessionRows.forEach(s => { sessionByItem[s.planner_item_id] = s; });
+
   const dayList = i => (byDay[i] || []).length
-    ? h('div', { class: 'list' }, byDay[i].map(r => slotBlock(r)))
+    ? h('div', { class: 'list' }, byDay[i].map(r => slotBlock(r, {
+        isToday: i === today,
+        session: i === today ? (sessionByItem[r.id] || null) : null,
+        weekSlots: slots
+      })))
     : h('p', { class: 'none', text: 'No slots.' });
 
   const todayBlock = h('div', { class: 'day-block' },
@@ -6416,7 +6435,8 @@ async function plannerHub() {
 // matching the tap-to-expand / pencil-to-edit pattern used by item cards.
 // A block reads as "complete" once every task in it is checked -- there is
 // no separate stored flag, that's simply every checklist row having done:true.
-function slotBlock(r) {
+function slotBlock(r, ctx = {}) {
+  const { isToday, session, weekSlots } = ctx;
   let list = Array.isArray(r.checklist) ? r.checklist.slice() : [];
   let chain = Promise.resolve();
   const time = [r.start_time, r.end_time].filter(Boolean).map(t => t.slice(0, 5)).join(' – ');
@@ -6492,6 +6512,9 @@ function slotBlock(r) {
     onclick: e => { e.stopPropagation(); openPlannerDialog('slot', r); }
   }, pencilIcon());
 
+  // D2: Start/End session tracking, today's block only.
+  const sessionSection = isToday ? sessionControls(r, session, weekSlots) : null;
+
   paint();
   return h('div', { class: 'proj' },
     h('button', { class: 'proj-head', type: 'button', onclick: toggle },
@@ -6499,7 +6522,175 @@ function slotBlock(r) {
       h('span', { class: 'grow' }, titleEl, sub, count, track),
       editBtn,
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    sessionSection,
     body);
+}
+
+// D2: session-based study tracking for today's block. A session row lives in
+// planner_sessions, one per (planner_item_id, session_date) -- Start writes
+// started_at and locks in planned_minutes from the slot's own start/end time;
+// End writes ended_at, actual_minutes, and -- if the session finished early --
+// a pending leftover the person can apply to another slot this week or skip.
+// "Fix time" covers a session missed or logged wrong: it opens the same
+// start/end entry retroactively for today, whether or not one exists yet.
+function sessionControls(r, session, weekSlots) {
+  const wrap = h('div', { class: 'session-row' });
+  const msg = h('p', { class: 'msg err', hidden: true });
+
+  async function start() {
+    const res = await sb.from('planner_sessions').upsert({
+      planner_item_id: r.id, session_date: todayISO(),
+      started_at: new Date().toISOString(), ended_at: null,
+      planned_minutes: plannedMinutesOf(r), actual_minutes: null,
+      leftover_minutes: null, leftover_status: 'none'
+    }, { onConflict: 'planner_item_id,session_date' });
+    if (res.error) { msg.textContent = res.error.message; msg.hidden = false; return; }
+    route();
+  }
+
+  async function end() {
+    const startedAt = new Date(session.started_at);
+    const endedAt = new Date();
+    const actual = Math.max(0, Math.round((endedAt - startedAt) / 60000));
+    const totalPlanned = (session.planned_minutes || 0) + (session.bonus_minutes || 0);
+    let leftover = null, leftoverStatus = 'none';
+    if (totalPlanned > 0 && actual < totalPlanned) {
+      leftover = totalPlanned - actual;
+      leftoverStatus = 'pending';
+    }
+    const res = await sb.from('planner_sessions').update({
+      ended_at: endedAt.toISOString(), actual_minutes: actual,
+      leftover_minutes: leftover, leftover_status: leftoverStatus
+    }).eq('id', session.id);
+    if (res.error) { msg.textContent = res.error.message; msg.hidden = false; return; }
+    route();
+  }
+
+  let controls;
+  if (!session || !session.started_at) {
+    controls = h('span', { class: 'session-controls' },
+      h('button', { class: 'btn small', type: 'button', text: 'Start', onclick: e => { e.stopPropagation(); start(); } }),
+      h('button', { class: 'btn quiet small', type: 'button', text: 'Log manually',
+                    onclick: e => { e.stopPropagation(); openSessionEditDialog(r, session); } }));
+  } else if (!session.ended_at) {
+    controls = h('span', { class: 'session-controls' },
+      h('small', { text: 'Started ' + new Date(session.started_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }),
+      h('button', { class: 'btn small', type: 'button', text: 'End', onclick: e => { e.stopPropagation(); end(); } }));
+  } else {
+    const totalPlanned = (session.planned_minutes || 0) + (session.bonus_minutes || 0);
+    const plannedLabel = totalPlanned > 0 ? ' of ' + fmtMinutes(totalPlanned) + ' planned' : '';
+    controls = h('span', { class: 'session-controls' },
+      h('small', { text: 'Logged ' + fmtMinutes(session.actual_minutes) + plannedLabel }),
+      h('button', { class: 'btn quiet small', type: 'button', text: 'Fix time',
+                    onclick: e => { e.stopPropagation(); openSessionEditDialog(r, session); } }));
+  }
+  wrap.append(controls, msg);
+
+  if (session && session.bonus_minutes > 0 && (!session.ended_at)) {
+    wrap.append(h('p', { class: 'hint-line', text: 'Includes ' + plural(session.bonus_minutes, 'extra minute', 'extra minutes') + ' applied from another slot.' }));
+  }
+
+  if (session && session.leftover_status === 'pending' && session.leftover_minutes > 0) {
+    wrap.append(
+      h('p', { class: 'hint-line', text: plural(session.leftover_minutes, 'extra minute', 'extra minutes') + ' left over.' }),
+      h('span', { class: 'session-controls' },
+        h('button', { class: 'btn small', type: 'button', text: 'Apply elsewhere',
+                      onclick: e => { e.stopPropagation(); openApplyLeftoverDialog(r, session, weekSlots); } }),
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Skip',
+                      onclick: async e => {
+                        e.stopPropagation();
+                        const res = await sb.from('planner_sessions').update({ leftover_status: 'dismissed' }).eq('id', session.id);
+                        if (!res.error) route();
+                      } })));
+  }
+
+  return wrap;
+}
+
+// Manual/retroactive time entry: covers both "I forgot to tap Start/End" and
+// "I logged it wrong". Always dated today, since a session only ever belongs
+// to a real calendar day.
+function openSessionEditDialog(r, existing) {
+  const toHHMM = iso => iso ? new Date(iso).toTimeString().slice(0, 5) : '';
+  showDialog({
+    title: 'Log time for ' + r.title,
+    submitLabel: 'Save',
+    render(form) {
+      const fStart = makeField('Started at', { value: toHHMM(existing && existing.started_at) }); fStart.input.type = 'time';
+      const fEnd   = makeField('Ended at',   { value: toHHMM(existing && existing.ended_at) });   fEnd.input.type   = 'time';
+      form.append(h('div', { class: 'two-col' }, fStart.wrap, fEnd.wrap));
+      return () => {
+        if (!fStart.input.value || !fEnd.input.value) throw new Error('Enter both a start and end time.');
+        const today = todayISO();
+        const started = new Date(today + 'T' + fStart.input.value + ':00');
+        const ended = new Date(today + 'T' + fEnd.input.value + ':00');
+        if (ended <= started) throw new Error('The end time must be after the start time.');
+        return { started, ended };
+      };
+    },
+    async onSubmit(v) {
+      const actual = Math.round((v.ended - v.started) / 60000);
+      const payload = {
+        planner_item_id: r.id, session_date: todayISO(),
+        started_at: v.started.toISOString(), ended_at: v.ended.toISOString(),
+        planned_minutes: (existing && existing.planned_minutes != null) ? existing.planned_minutes : plannedMinutesOf(r),
+        actual_minutes: actual, leftover_minutes: null, leftover_status: 'none'
+      };
+      const res = await sb.from('planner_sessions').upsert(payload, { onConflict: 'planner_item_id,session_date' });
+      if (res.error) throw res.error;
+      route();
+    }
+  });
+}
+
+// Applying leftover time to another slot: picks which slot gets the bonus
+// minutes, then upserts them onto that slot's own session row for its next
+// occurrence this week (today counts). bonus_minutes accumulates rather than
+// overwrites, in case more than one leftover gets applied to the same slot.
+function openApplyLeftoverDialog(r, session, weekSlots) {
+  const candidates = (weekSlots || []).filter(x => x.id !== r.id);
+  let choice = candidates.length ? candidates[0].id : null;
+
+  showDialog({
+    title: 'Apply ' + plural(session.leftover_minutes, 'minute', 'minutes'),
+    submitLabel: 'Apply',
+    render(form) {
+      if (!candidates.length) {
+        form.append(h('p', { class: 'none', text: 'Add another slot to the weekly routine first.' }));
+        return () => { throw new Error('No other slot to apply this time to yet.'); };
+      }
+      const group = h('div', { class: 'list', role: 'radiogroup', 'aria-label': 'Apply the extra time to' });
+      const sync = () => group.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === choice)));
+      candidates.forEach(c => {
+        const btn = h('button', { type: 'button', class: 'row', 'data-id': c.id,
+                                   onclick: () => { choice = c.id; sync(); } },
+          h('span', { class: 'grow' }, h('strong', { text: c.title }), h('small', { text: WEEKDAYS_FULL[c.weekday] })));
+        group.append(btn);
+      });
+      sync();
+      form.append(group);
+      return () => {
+        if (!choice) throw new Error('Pick a slot.');
+        return { targetId: choice };
+      };
+    },
+    async onSubmit(v) {
+      const target = candidates.find(c => c.id === v.targetId);
+      const targetDate = nextOccurrenceISO(target.weekday);
+      const existingRes = await sb.from('planner_sessions').select('bonus_minutes')
+        .eq('planner_item_id', target.id).eq('session_date', targetDate).maybeSingle();
+      if (existingRes.error) throw existingRes.error;
+      const existingBonus = existingRes.data ? (existingRes.data.bonus_minutes || 0) : 0;
+      const res = await sb.from('planner_sessions').upsert({
+        planner_item_id: target.id, session_date: targetDate,
+        bonus_minutes: existingBonus + session.leftover_minutes
+      }, { onConflict: 'planner_item_id,session_date' });
+      if (res.error) throw res.error;
+      const res2 = await sb.from('planner_sessions').update({ leftover_status: 'applied' }).eq('id', session.id);
+      if (res2.error) throw res2.error;
+      route();
+    }
+  });
 }
 
 /* milestone dates: a start date plus an optional number of days it runs */
@@ -6509,6 +6700,35 @@ function parseLocalDate(str) {
 }
 const fmtDate = d => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 const daysBetween = (a, b) => Math.round((a - b) / 86400000);   // whole days, DST-safe
+
+// D2: session tracking helpers. Dates are local (not UTC) throughout, same
+// spirit as parseLocalDate above, since a "day" for study sessions means the
+// person's own calendar day.
+function todayISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// The next date (today counts) that falls on the given weekday -- used to
+// decide which day a leftover-time "bonus" should land on when applied to
+// another slot later this week.
+function nextOccurrenceISO(weekday) {
+  const now = new Date();
+  const diff = (weekday - now.getDay() + 7) % 7;
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function plannedMinutesOf(r) {
+  if (!r.start_time || !r.end_time) return null;
+  const [sh, sm] = r.start_time.slice(0, 5).split(':').map(Number);
+  const [eh, em] = r.end_time.slice(0, 5).split(':').map(Number);
+  const mins = (eh * 60 + em) - (sh * 60 + sm);
+  return mins > 0 ? mins : null;
+}
+function fmtMinutes(m) {
+  if (m == null) return '';
+  const hrs = Math.floor(m / 60), mins = m % 60;
+  return (hrs ? hrs + 'h ' : '') + (mins || !hrs ? mins + 'm' : '');
+}
 
 function milestoneStatus(r, now = new Date()) {
   if (!r.milestone_date) return { line: 'No date set', range: '' };
