@@ -83,6 +83,7 @@
   .seg button[aria-pressed="true"] { background: var(--paper-hi); color: var(--chalk); box-shadow: inset 0 -3px 0 var(--marker); }
   .seg-mini { grid-template-columns: repeat(4, 1fr); margin-bottom: 12px; }
   .seg-mini button { font-size: 13px; padding: 0 2px; min-height: 40px; }
+  .seg-3 { grid-template-columns: repeat(3, 1fr); }
 
   .field { margin-bottom: 16px; }
   .field label { display: block; font-weight: 600; margin-bottom: 6px; }
@@ -220,6 +221,11 @@
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
   .sec-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; }
   .hint-line { color: var(--dim); font-size: 14px; margin: -4px 0 12px; }
+  /* D7: adaptive pacing hint + quick-add + chronotype */
+  .adaptive-hint { padding: 0 16px 10px; margin: -6px 0 0; }
+  .link-btn { background: none; border: 0; padding: 0; color: var(--marker); font-weight: 600; font-size: 14px; text-decoration: underline; }
+  .quick-add .two-col { grid-template-columns: 1fr auto; align-items: start; }
+  .chronotype-field { margin-bottom: 20px; }
 
   .list { display: grid; gap: 10px; }
   .row {
@@ -2846,6 +2852,7 @@ function backupPanel() {
 /* ---------- General workspace: shortcuts grouped by subject ---------- */
 // Hubs (Phase 3.1) live under the Workspace tab: #workspace/<hub>[/<item>]
 function buildWorkspace(ids = []) {
+  if (ids[0] === 'today')   return todayHub();
   if (ids[0] === 'planner')  return plannerHub();
   if (ids[0] === 'projects') return projectsHub();
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
@@ -2859,6 +2866,7 @@ function buildWorkspace(ids = []) {
 function hubsSection() {
   return section('Hubs', null, null,
     h('div', { class: 'list' },
+      linkRow({ href: '#workspace/today',    title: 'Today',              meta: 'Everything due or scheduled today, in one place' }),
       linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
       linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
       linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
@@ -6453,11 +6461,154 @@ async function initPlannerAlarms() {
   setInterval(refreshPlannerAlarms, 30 * 60 * 1000);
 }
 
+/* ---------- D8: Today view --------------------------------------------
+   One screen merging today's study schedule, milestones due soon, and
+   active projects/assignments/learning goals -- the single place to check
+   "what needs attention right now" without visiting Planner and Projects
+   separately. Built from the same tables and reuses the same row/card
+   components (slotBlock, milestoneRow, projectCard) those hubs already use,
+   so an action taken here (ticking a task, starting a session, editing a
+   due date) behaves identically wherever it's done from. ---------------- */
+async function todayHub() {
+  const today = new Date().getDay();
+  const todayDate = todayISO();
+  const [plannerRes, sessionRes, projectRes] = await Promise.all([
+    sb.from('planner_items').select('*'),
+    sb.from('planner_sessions').select('*').eq('session_date', todayDate),
+    sb.from('projects').select('*').order('due_date', { ascending: true, nullsFirst: false })
+  ]);
+  const rows = must(plannerRes);
+  const sessionRows = must(sessionRes);
+  const projects = must(projectRes);
+
+  const allSlots = rows.filter(r => r.kind !== 'milestone');
+  const todaySlots = allSlots.filter(r => r.weekday === today)
+    .sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
+  const milestones = rows.filter(r => r.kind === 'milestone');
+
+  const sessionByItem = {};
+  sessionRows.forEach(s => { sessionByItem[s.planner_item_id] = s; });
+
+  // "Due soon" = currently ongoing, or starting within the next 7 days.
+  const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
+  const dueSoon = milestones.filter(r => {
+    const st = milestoneStatus(r);
+    if (st.tone === 'ongoing') return true;
+    if (st.tone !== 'upcoming') return false;
+    return daysBetween(parseLocalDate(r.milestone_date), todayMidnight) <= 7;
+  }).sort((a, b) => String(a.milestone_date || '').localeCompare(String(b.milestone_date || '')));
+
+  // Capped so Today can't sprawl into a full duplicate of Projects hub;
+  // it's sorted soonest-due first, so the cap drops the least urgent ones.
+  const activeAll = projects.filter(p => p.status !== 'done');
+  const activeWork = activeAll.slice(0, 8);
+
+  const scheduleNode = todaySlots.length
+    ? h('div', { class: 'list' }, todaySlots.map(r => slotBlock(r, { isToday: true, session: sessionByItem[r.id] || null, weekSlots: allSlots, history: [] })))
+    : h('p', { class: 'none', text: 'Nothing scheduled for today.' });
+
+  return { title: 'Today', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    section('Today\u2019s schedule', '+ Add slot', () => openPlannerDialog('slot', null), scheduleNode),
+    section('Due soon', null, null,
+      dueSoon.length ? h('div', { class: 'list' }, dueSoon.map(r => milestoneRow(r)))
+                     : h('p', { class: 'none', text: 'Nothing due in the next week.' })),
+    section('Active work', null, null,
+      activeWork.length ? h('div', { class: 'list' }, activeWork.map(p => projectCard(p)))
+                         : h('p', { class: 'none', text: 'No active projects, assignments or learning goals.' }),
+      activeAll.length > activeWork.length ? h('a', { class: 'row-link', href: '#workspace/projects', text: 'View all \u2192' }) : null)
+  ] };
+}
+
 /* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const plannerOpenDays = new Set();   // which collapsed days the person has opened (kept across refreshes)
 const plannerOpenSlots = new Set();  // which slots' task checklists are expanded (kept across refreshes)
+
+// D7: energy-aware scheduling -- a one-time self-tag, stored locally (like
+// the Gemini key already is), that quick-add falls back to when a request
+// doesn't name an explicit time of day.
+const CHRONOTYPES = { morning: 'Morning person', night: 'Night owl', none: 'No preference' };
+const getChronotype = () => store.get('planner_chronotype') || 'none';
+const setChronotype = v => store.set('planner_chronotype', v);
+
+function chronotypeRow() {
+  const current = getChronotype();
+  const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Study chronotype' },
+    Object.entries(CHRONOTYPES).map(([key, label]) => h('button', {
+      type: 'button', text: label, 'aria-pressed': String(current === key),
+      onclick: () => { setChronotype(key); route(); }
+    })));
+  return h('div', { class: 'field chronotype-field' },
+    h('label', { text: "When's your energy best?" }), seg,
+    h('p', { class: 'hint', text: 'Used as the default time of day for quick-add when you don\'t name one.' }));
+}
+
+// D7: voice/quick-add -- a short natural-language line ("study physics 2
+// hours tomorrow evening") is parsed into a draft slot by the same Gemini
+// key the rest of the app's AI tools use, then handed to the normal Add
+// Slot dialog (pre-filled) for a look before it's actually saved -- so a
+// misread parse is a one-tap edit away, not a silent wrong entry.
+function quickAddRow() {
+  const input = h('input', { class: 'control', type: 'text', maxlength: 200,
+    placeholder: 'e.g. "study physics 2 hours tomorrow evening"', 'aria-label': 'Quick add a slot', enterkeyhint: 'done' });
+  const btn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
+  const msg = h('p', { class: 'msg err', hidden: true });
+
+  const go = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    msg.hidden = true;
+    btn.disabled = true; btn.textContent = 'Parsing…';
+    try {
+      const chronoHint = { morning: 'a morning person (default ambiguous times to around 08:00)',
+                            night: 'a night owl (default ambiguous times to around 20:00)',
+                            none: 'no time-of-day preference (default ambiguous times to around 16:00)' }[getChronotype()];
+      const system = 'Parse a short natural-language study-planner request into JSON only -- no markdown, no code fences, no explanation, just the raw JSON object. ' +
+        'Today is ' + WEEKDAYS_FULL[new Date().getDay()] + '. The person is ' + chronoHint + '. ' +
+        'Output exactly this shape: {"title": string, "weekday": integer 0-6 (0=Sunday), "start_time": "HH:MM" in 24h, "end_time": "HH:MM" in 24h}. ' +
+        '"tomorrow" means the next calendar day after today. If no duration is given, default to 1 hour. If parsing fails, still return your best guess -- never omit a field.';
+      const reply = await callAI(system, [{ role: 'user', content: text }]);
+      const json = JSON.parse(reply.replace(/```json|```/g, '').trim());
+      if (!json.title || json.weekday == null || !json.start_time || !json.end_time) throw new Error('Could not understand that -- try something like "chemistry 6 to 7pm on Friday".');
+      input.value = '';
+      openPlannerDialog('slot', null, json);
+    } catch (e) {
+      msg.textContent = e.message || 'Could not parse that -- try rephrasing.';
+      msg.hidden = false;
+    } finally {
+      btn.disabled = false; btn.textContent = 'Add';
+    }
+  };
+  btn.addEventListener('click', go);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+
+  return h('div', { class: 'field quick-add' },
+    h('label', { text: 'Quick add' }),
+    h('div', { class: 'two-col' }, input, btn),
+    msg);
+}
+
+// D7: adaptive pacing -- once a slot has a few logged sessions, compare the
+// average actual time against what's planned. Consistently over or under by
+// 20%+ surfaces a one-tap "adjust to" suggestion right on the block.
+function adaptiveHint(r, history) {
+  const planned = plannedMinutesOf(r);
+  if (!planned || !Array.isArray(history)) return null;
+  const mine = history.filter(s => s.planner_item_id === r.id);
+  if (mine.length < 3) return null; // not enough sessions yet to call it a pattern
+  const avg = mine.reduce((sum, x) => sum + (x.actual_minutes || 0), 0) / mine.length;
+  const diffPct = Math.round((avg - planned) / planned * 100);
+  if (Math.abs(diffPct) < 20) return null;
+  return { diffPct, sampleSize: mine.length, suggestedMinutes: Math.max(5, Math.round(avg / 5) * 5) };
+}
+
+function addMinutesToTime(startTime, minutes) {
+  const [h0, m0] = (startTime || '00:00').slice(0, 5).split(':').map(Number);
+  const total = ((h0 * 60 + m0 + minutes) % 1440 + 1440) % 1440;
+  return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+}
 
 async function plannerHub() {
   const rows = must(await sb.from('planner_items').select('*').order('created_at', { ascending: true }));
@@ -6481,11 +6632,19 @@ async function plannerHub() {
   const sessionByItem = {};
   sessionRows.forEach(s => { sessionByItem[s.planner_item_id] = s; });
 
+  // D4/D6/D7: one 30-day fetch of logged session minutes, reused by the
+  // Progress pie (last 7 days), the Review section (week or month), and
+  // each slot's adaptive-pacing hint below (consistently running over/under).
+  const monthAgoISO = todayISOOffset(-29);
+  const monthSessionRows = must(await sb.from('planner_sessions').select('*')
+    .gte('session_date', monthAgoISO).not('actual_minutes', 'is', null));
+
   const dayList = i => (byDay[i] || []).length
     ? h('div', { class: 'list' }, byDay[i].map(r => slotBlock(r, {
         isToday: i === today,
         session: i === today ? (sessionByItem[r.id] || null) : null,
-        weekSlots: slots
+        weekSlots: slots,
+        history: monthSessionRows
       })))
     : h('p', { class: 'none', text: 'No slots.' });
 
@@ -6505,12 +6664,6 @@ async function plannerHub() {
         h('small', { text: plural(n, 'slot', 'slots') })),
       h('div', { class: 'inner' }, dayList(i)));
   });
-
-  // D4/D6: one 30-day fetch of logged session minutes, reused by the
-  // Progress pie (last 7 days) and the Review section (week or month).
-  const monthAgoISO = todayISOOffset(-29);
-  const monthSessionRows = must(await sb.from('planner_sessions').select('*')
-    .gte('session_date', monthAgoISO).not('actual_minutes', 'is', null));
 
   // D4: pie chart of the last 7 days' logged study time, by slot title
   // (each recurring slot title stands in for a "subject" -- e.g. every
@@ -6542,7 +6695,7 @@ async function plannerHub() {
 
   return { title: 'Planner', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
-    section('Weekly routine', '+ Add slot', () => openPlannerDialog('slot', null), todayBlock, otherDays),
+    section('Weekly routine', '+ Add slot', () => openPlannerDialog('slot', null), quickAddRow(), chronotypeRow(), todayBlock, otherDays),
     section('Progress', null, null,
       h('h4', { class: 'sub-head', text: 'Time this week' }),
       pieChart(pieSegments),
@@ -6819,6 +6972,19 @@ function slotBlock(r, ctx = {}) {
   // D2: Start/End session tracking, today's block only.
   const sessionSection = isToday ? sessionControls(r, session, weekSlots) : null;
 
+  // D7: adaptive pacing hint, from this slot's own logged-session history.
+  const hint = adaptiveHint(r, ctx.history);
+  const hintLine = hint ? h('p', { class: 'hint-line adaptive-hint' },
+    (hint.diffPct > 0 ? 'Running ~' + hint.diffPct + '% over' : 'Finishing ~' + Math.abs(hint.diffPct) + '% early') +
+      ' most sessions (last ' + hint.sampleSize + '). ',
+    h('button', { class: 'link-btn', type: 'button', text: 'Adjust to ' + fmtMinutes(hint.suggestedMinutes) + '?',
+      onclick: async e => {
+        e.stopPropagation();
+        const newEnd = addMinutesToTime(r.start_time, hint.suggestedMinutes);
+        const res = await sb.from('planner_items').update({ end_time: newEnd }).eq('id', r.id);
+        if (!res.error) { r.end_time = newEnd; route(); }
+      } })) : null;
+
   paint();
   return h('div', { class: 'proj' },
     h('button', { class: 'proj-head', type: 'button', onclick: toggle },
@@ -6827,6 +6993,7 @@ function slotBlock(r, ctx = {}) {
       alarmBtn,
       editBtn,
       h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    hintLine,
     sessionSection,
     body);
 }
@@ -7167,12 +7334,24 @@ function milestoneRow(r) {
     body);
 }
 
-function openPlannerDialog(kind, existing) {
-  const row = existing || {};
+// D7: openPlannerDialog also accepts a `draft` -- a plain prefill object
+// (title/weekday/start_time/end_time) used only for a brand-new item, e.g.
+// from quick-add below. It never triggers an update path; only `existing`
+// (a real saved row, with an id) does that.
+async function openPlannerDialog(kind, existing, draft) {
+  const row = existing || draft || {};
   const activeKind = existing ? (existing.kind === 'milestone' ? 'milestone' : 'slot') : kind;
   let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
-  let weekday = existing && existing.weekday != null ? existing.weekday : new Date().getDay();
+  let weekday = row.weekday != null ? row.weekday : new Date().getDay();
   let alarmOn = existing ? !!existing.alarm_enabled : false; // D3
+
+  // D7: conflict detection needs to know about every other slot up front,
+  // so it's fetched once before the dialog opens rather than per-keystroke.
+  let otherSlots = [];
+  if (activeKind === 'slot') {
+    const res = await sb.from('planner_items').select('id,title,weekday,start_time,end_time').eq('kind', 'slot');
+    if (!res.error) otherSlots = (res.data || []).filter(o => o.id !== row.id);
+  }
 
   showDialog({
     title: existing ? ('Edit ' + (activeKind === 'milestone' ? 'milestone' : 'slot'))
@@ -7233,11 +7412,16 @@ function openPlannerDialog(kind, existing) {
             if (!Number.isInteger(dayCount) || dayCount < 1 || dayCount > 3650) throw new Error('Days must be a whole number from 1 to 3650.');
           }
         }
+        if (activeKind === 'slot' && fStart.input.value && fEnd.input.value) {
+          // D7: conflict detection -- same weekday, overlapping time range.
+          const conflict = otherSlots.find(o => o.weekday === weekday && o.start_time && o.end_time &&
+            fStart.input.value < o.end_time.slice(0, 5) && o.start_time.slice(0, 5) < fEnd.input.value);
+          if (conflict) throw new Error('This overlaps "' + conflict.title + '" (' + conflict.start_time.slice(0, 5) + '–' + conflict.end_time.slice(0, 5) + ') on ' + WEEKDAYS_FULL[weekday] + '. Pick a different time.');
+        }
         return { title, start_time: fStart.input.value || null, end_time: fEnd.input.value || null,
                  milestone_date: fDate.input.value || null, day_count: dayCount };
       };
-    },
-    async onSubmit(v) {
+    },    async onSubmit(v) {
       const payload = { kind: activeKind, title: v.title };
       if (activeKind === 'slot') { payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time; payload.color = color; payload.alarm_enabled = alarmOn; }
       else { payload.milestone_date = v.milestone_date; payload.day_count = v.day_count; }
