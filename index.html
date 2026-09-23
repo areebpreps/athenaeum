@@ -6462,13 +6462,14 @@ async function initPlannerAlarms() {
 }
 
 /* ---------- D8: Today view --------------------------------------------
-   One screen merging today's study schedule, milestones due soon, and
-   active projects/assignments/learning goals -- the single place to check
-   "what needs attention right now" without visiting Planner and Projects
-   separately. Built from the same tables and reuses the same row/card
-   components (slotBlock, milestoneRow, projectCard) those hubs already use,
-   so an action taken here (ticking a task, starting a session, editing a
-   due date) behaves identically wherever it's done from. ---------------- */
+   One screen merging today's study schedule, anything overdue, milestones
+   due soon, and assignment/project/learning progress -- the single place to
+   check "what needs attention right now". Built from the same tables and
+   reuses the same row/card components (slotBlock, milestoneRow, projectCard)
+   the Planner and Projects hubs use, so an action taken here (ticking a
+   task, starting a session, editing a due date) behaves identically
+   wherever it's done from. Scholarship Center deadlines (Phase E) will plug
+   into the `overdue` and `dueSoon` lists below once that data exists. ---- */
 async function todayHub() {
   const today = new Date().getDay();
   const todayDate = todayISO();
@@ -6484,40 +6485,82 @@ async function todayHub() {
   const allSlots = rows.filter(r => r.kind !== 'milestone');
   const todaySlots = allSlots.filter(r => r.weekday === today)
     .sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
-  const milestones = rows.filter(r => r.kind === 'milestone');
+  const milestones = rows.filter(r => r.kind === 'milestone' && !r.done);
 
   const sessionByItem = {};
   sessionRows.forEach(s => { sessionByItem[s.planner_item_id] = s; });
 
-  // "Due soon" = currently ongoing, or starting within the next 7 days.
   const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
+  const cmpDate = (a, b) => String(a || '9999').localeCompare(String(b || '9999'));
+
+  // Overdue = a not-done milestone that has ended, or an unfinished project/assignment past its due date.
+  const overdueMilestones = milestones.filter(r => milestoneStatus(r).tone === 'ended')
+    .sort((a, b) => cmpDate(a.milestone_date, b.milestone_date));
+  const activeAll = projects.filter(p => p.status !== 'done');
+  const overdueWork = activeAll.filter(p => p.due_date && daysBetween(parseLocalDate(p.due_date), todayMidnight) < 0);
+  const overdueCount = overdueMilestones.length + overdueWork.length;
+
+  // "Due soon" = currently ongoing, or starting within the next 7 days.
   const dueSoon = milestones.filter(r => {
     const st = milestoneStatus(r);
     if (st.tone === 'ongoing') return true;
     if (st.tone !== 'upcoming') return false;
     return daysBetween(parseLocalDate(r.milestone_date), todayMidnight) <= 7;
-  }).sort((a, b) => String(a.milestone_date || '').localeCompare(String(b.milestone_date || '')));
+  }).sort((a, b) => cmpDate(a.milestone_date, b.milestone_date));
 
-  // Capped so Today can't sprawl into a full duplicate of Projects hub;
-  // it's sorted soonest-due first, so the cap drops the least urgent ones.
-  const activeAll = projects.filter(p => p.status !== 'done');
-  const activeWork = activeAll.slice(0, 8);
+  // Assignments (stored as kind 'eca') and projects/learning goals, soonest-due first.
+  // Overdue ones already show under "Overdue", so they're left out here to avoid duplicates.
+  const overdueIds = new Set(overdueWork.map(p => p.id));
+  const assignments = activeAll.filter(p => p.kind === 'eca' && !overdueIds.has(p.id)).slice(0, 6);
+  const otherWork = activeAll.filter(p => p.kind !== 'eca' && !overdueIds.has(p.id)).slice(0, 6);
+
+  // Day summary: a block counts as done once all its tasks are ticked or its session has ended.
+  const blockDone = r => {
+    const l = Array.isArray(r.checklist) ? r.checklist : [];
+    const s = sessionByItem[r.id];
+    return (l.length > 0 && l.every(x => x.done)) || !!(s && s.ended_at);
+  };
+  const doneBlocks = todaySlots.filter(blockDone).length;
+  const pct = todaySlots.length ? Math.round(doneBlocks / todaySlots.length * 100) : 0;
+  const nextUp = todaySlots.find(r => !blockDone(r) && r.start_time && r.start_time.slice(0, 5) >=
+    String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0'));
+
+  const summary = h('div', { class: 'proj', style: 'padding:12px 14px' },
+    h('strong', { text: WEEKDAYS_FULL[today] + ', ' + fmtDate(new Date()) }),
+    h('small', { text: todaySlots.length
+      ? doneBlocks + ' of ' + todaySlots.length + ' study blocks done' + (nextUp ? ' · next: ' + nextUp.title + ' at ' + nextUp.start_time.slice(0, 5) : '')
+      : 'No study blocks scheduled today' }),
+    todaySlots.length ? h('div', { class: 'progress', 'aria-hidden': 'true' }, h('i', { style: 'width:' + pct + '%' })) : null,
+    h('small', { style: overdueCount ? 'color:var(--err)' : '',
+      text: (overdueCount ? plural(overdueCount, 'item', 'items') + ' overdue' : 'Nothing overdue') +
+            ' · ' + plural(dueSoon.length, 'milestone', 'milestones') + ' due within a week' }));
 
   const scheduleNode = todaySlots.length
     ? h('div', { class: 'list' }, todaySlots.map(r => slotBlock(r, { isToday: true, session: sessionByItem[r.id] || null, weekSlots: allSlots, history: [] })))
     : h('p', { class: 'none', text: 'Nothing scheduled for today.' });
 
+  const overdueSection = overdueCount
+    ? section('Overdue', null, null, h('div', { class: 'list' },
+        overdueMilestones.map(r => milestoneRow(r)), overdueWork.map(p => projectCard(p))))
+    : null;
+
+  const workSection = (title, list, kind, addLabel) => section(title, addLabel, () => openProjectDialog(kind, null),
+    list.length ? h('div', { class: 'list' }, list.map(p => projectCard(p)))
+                : h('p', { class: 'none', text: 'Nothing active here.' }));
+  const extra = activeAll.filter(p => !overdueIds.has(p.id)).length - assignments.length - otherWork.length;
+
   return { title: 'Today', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    summary,
+    overdueSection,
     section('Today\u2019s schedule', '+ Add slot', () => openPlannerDialog('slot', null), scheduleNode),
     section('Due soon', null, null,
       dueSoon.length ? h('div', { class: 'list' }, dueSoon.map(r => milestoneRow(r)))
                      : h('p', { class: 'none', text: 'Nothing due in the next week.' })),
-    section('Active work', null, null,
-      activeWork.length ? h('div', { class: 'list' }, activeWork.map(p => projectCard(p)))
-                         : h('p', { class: 'none', text: 'No active projects, assignments or learning goals.' }),
-      activeAll.length > activeWork.length ? h('a', { class: 'row-link', href: '#workspace/projects', text: 'View all \u2192' }) : null)
-  ] };
+    workSection('Assignments', assignments, 'eca', '+ Add assignment'),
+    workSection('Projects & learning', otherWork, 'project', '+ Add project'),
+    extra > 0 ? h('a', { class: 'row-link', href: '#workspace/projects', text: 'View all (' + extra + ' more) \u2192' }) : null
+  ].filter(Boolean) };
 }
 
 /* ---------- Planner: weekly routine grid + milestones (global, not scoped) ---------- */
