@@ -11078,7 +11078,7 @@ async function qaPage(id) {
   if (tr.error) return { title: 'Q&A', nodes: [crumb, qaSetup(tr.error)] };
   const teachers = tr.data || [], isT = new Set(teachers.map(x => x.user_id)), me = currentUser.id;
   if (!id) {
-    const qr = await sb.from('qa_questions').select('*, qa_answers(count)').order('created_at', { ascending: false }).limit(50);
+    const qr = await sb.from('qa_questions').select('*, qa_answers!question_id(count)').order('created_at', { ascending: false }).limit(50);
     if (qr.error) return { title: 'Q&A', nodes: [crumb, qaSetup(qr.error)] };
     const qs = qr.data || [], names = await profNames([...qs.flatMap(q => [q.user_id, q.requested_teacher_id]), ...teachers.map(x => x.user_id)]);
     let f = 'all';
