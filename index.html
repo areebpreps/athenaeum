@@ -7781,7 +7781,7 @@ async function schDetailPage(ref) {
 
   const saved = row ? section('Your saved details', null, null, facts([
     ['Deadline', row.deadline ? fmtDate(parseLocalDate(row.deadline)) : ''], ['Funding', row.funding],
-    ['Required tests', row.required_tests], ['Duration', row.duration]])) : null;
+    ['Required tests', row.required_tests], ['Duration', row.duration]].concat(row.notes ? [['About', row.notes]] : []))) : null;
   const box = h('div'), status = h('p', { class: 'hint-line' }), err = h('p', { class: 'msg err', role: 'alert', hidden: true });
   const again = h('button', { class: 'btn quiet small', type: 'button', text: 'Read again', hidden: true });
   let detailName = '';
@@ -7873,7 +7873,7 @@ const SCH_SUGG = {
     ph: 'e.g. a science-fair experiment, a small website',
     intro: 'Projects that would show your skills in your field, each with the reason it was picked. Projects already in your Planner are taken into account.',
     ask: 'projects (things they can build, research or produce on their own, e.g. a small research study, an app, a data analysis, a portfolio piece) that would show ability in their field and strengthen scholarship applications' },
-  uni: { stage: 'Universities', rowKey: 'university', tail: 'Name only real, well-established universities you are confident exist. Give no links, and never invent programs or scholarship names.',
+  uni: { stage: 'Universities', rowKey: 'university', key: 'sch-uni:v2', site: true, tail: 'Name only real, well-established universities you are confident exist. For website give only the university\u2019s own main homepage (for example https://www.unsw.edu.au) with no deeper path, and use \"\" if you are not certain of it. Never invent programs or scholarship names.',
     title: 'University paths', button: 'Suggest universities', noun: 'universities', have: 'Universities you already have in mind',
     ph: 'e.g. TU Munich, University of Toronto',
     intro: 'Universities in your target destinations that fit your subject and level, each with the reason it was picked. Check each one\u2019s own site for entry requirements and scholarships.',
@@ -7890,12 +7890,19 @@ async function schSuggest(cfg, p, have, avoid) {
     '; from ' + (p.home_country || 'an unspecified country') + '; target destinations: ' + ((p.destinations || []).join(', ') || 'open') + '. ' +
     cfg.have + ': ' + (have || 'not stated') + '. ' +
     'Suggest 5 ' + cfg.ask + ' that they have not already done' + (avoid.length ? ' (also skip: ' + avoid.join('; ') + ')' : '') + '. ' +
-    'Reply with ONLY a JSON array of {"title":"short name","reason":"one sentence saying why it helps THIS student, naming the specific profile fact (major, level, destination or the gap in what they already have) it builds on"}. ' +
+    'Reply with ONLY a JSON array of {"title":"short name","reason":"one sentence saying why it helps THIS student, naming the specific profile fact (major, level, destination or the gap in what they already have) it builds on"' +
+    (cfg.site ? ',"website":"the official homepage URL","about":"one or two plain sentences on what the university is: where it is and what it is known for"' : '') + '}. ' +
     cfg.tail;
   const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }]);
   let a; try { a = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1)); } catch (e) { throw new Error('Could not read the suggestions. Try again in a moment.'); }
   const str = v => (typeof v === 'string' ? v.trim() : '');
-  return (Array.isArray(a) ? a : []).map(x => ({ title: str(x && x.title).slice(0, 120), reason: str(x && x.reason).slice(0, 300) })).filter(x => x.title && x.reason).slice(0, 6);
+  // a website is kept only if it is a plain https/http address; it is cut back to the site's front page
+  const site = v => { v = str(v); if (!v) return ''; if (!/^https?:\/\//i.test(v)) v = 'https://' + v; try { const u = new URL(v); return /\./.test(u.hostname) ? u.origin + '/' : ''; } catch (e) { return ''; } };
+  return (Array.isArray(a) ? a : []).map(x => {
+    const o = { title: str(x && x.title).slice(0, 120), reason: str(x && x.reason).slice(0, 300) };
+    if (cfg.site) { o.website = site(x && x.website); o.about = str(x && x.about).slice(0, 300); }
+    return o;
+  }).filter(x => x.title && x.reason).slice(0, 6);
 }
 
 /* E18: the roadmap follows the profile. schRoadmapSync(profile) runs when the
@@ -8043,6 +8050,22 @@ async function schRoadmapPage() {
   const P = pr.data;
   const sig = P ? JSON.stringify([P.target_level, P.target_major, P.home_country, P.destinations]) : '';
   const suggBoxes = [];
+  // G14: universities from "University paths" can go straight onto the scholarship shortlist
+  // (name + official website + a short description in `notes`).
+  const uniSaved = new Set();
+  ((await sb.from('scholarship_shortlist').select('name,link')).data || []).forEach(r => { if (r.name) uniSaved.add(r.name.toLowerCase()); if (r.link) uniSaved.add(r.link); });
+  async function uniToShortlist(x) {
+    const row = { name: x.title.slice(0, 150), link: x.website || null, notes: x.about || x.reason || null, followed: false, updated_at: new Date().toISOString() };
+    let ins = await sb.from('scholarship_shortlist').insert(row).select('id').single();
+    let noNotes = false;
+    if (ins.error && /notes/i.test(ins.error.message || '')) { // notes column not added yet: save without it
+      noNotes = true; delete row.notes;
+      ins = await sb.from('scholarship_shortlist').insert(row).select('id').single();
+    }
+    if (ins.error) return { error: ins.error };
+    uniSaved.add(row.name.toLowerCase()); if (row.link) uniSaved.add(row.link);
+    return { noNotes };
+  }
   function suggSection(cfg, extraHave) {
     const box = h('div'), st = schSuggState(cfg, sig);
     let busy = false, err = '';
@@ -8068,16 +8091,27 @@ async function schRoadmapPage() {
         err ? h('p', { class: 'msg err', role: 'alert', text: err }) : null,
         h('div', { class: 'list', style: 'display:grid;gap:10px;margin-top:10px' }, shown.map(x => {
           const added = inRoad(x.title);
+          const inList = cfg.site && (uniSaved.has(x.title.toLowerCase()) || (x.website && uniSaved.has(x.website)));
+          let host = ''; if (x.website) { try { host = new URL(x.website).hostname.replace(/^www\./, ''); } catch (e) { host = ''; } }
           return h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px' },
-            h('strong', { text: x.title }), h('small', { text: 'Why: ' + x.reason }),
+            h('strong', { text: x.title }),
+            cfg.site && x.about ? h('small', { text: x.about }) : null,
+            cfg.site && host ? h('a', { class: 'link-btn', href: x.website, target: '_blank', rel: 'noopener noreferrer', text: 'Official website: ' + host, style: 'justify-self:start' }) : null,
+            h('small', { text: 'Why: ' + x.reason }),
             h('div', { class: 'actions' },
+              cfg.site ? h('button', { class: 'btn small', type: 'button', disabled: inList, text: inList ? 'In shortlist \u2713' : 'Add to scholarship shortlist', onclick: async e => {
+                const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Adding\u2026';
+                const r = await uniToShortlist(x);
+                if (r.error) { err = 'Could not add to the shortlist: ' + r.error.message; paintS(); return; }
+                err = r.noNotes ? 'Added to your shortlist, but its description could not be saved yet \u2014 run schema-update-G14-shortlist-notes.sql in Supabase to keep it.' : '';
+                paintS(); } }) : null,
               h('button', { class: 'btn quiet small', type: 'button', disabled: added, text: added ? 'In roadmap \u2713' : 'Add to roadmap', onclick: async () => {
                 const r = await sb.from('scholarship_roadmap').insert({ text: x.title, stage: cfg.stage, done: false, key: cfg.rowKey }).select('*').single();
                 if (r.error) { err = 'Could not add: ' + r.error.message; paintS(); return; }
                 rows.push(r.data); paint(); } }),
               added ? null : h('button', { class: 'btn quiet small', type: 'button', text: 'Not for me', onclick: () => { st.dismissed.push(x.title); save(); paintS(); } })));
         })),
-        h('p', { class: 'hint-line', text: 'Suggestions come from Gemini and are ideas, not guarantees \u2014 pick what genuinely fits you.' })));
+        h('p', { class: 'hint-line', text: 'Suggestions come from Gemini and are ideas, not guarantees \u2014 pick what genuinely fits you.' + (cfg.site ? ' Check that each website opens the right university.' : '') })));
     }
     suggBoxes.push({ box, paintS });
     return box;
@@ -8904,6 +8938,7 @@ function schShortlistRow(r, opts) {
   // milestones/slots keep (see plannerOpenSlots), namespaced with 'sch-'
   // the same way milestones already namespace theirs with 'm-'.
   const body = h('div', { class: 'check-body', hidden: !plannerOpenSlots.has('sch-' + r.id) },
+    r.notes ? h('p', { class: 'hint-line', style: 'margin:0 0 10px', text: r.notes }) : null,
     h('a', { class: 'link-btn', href: '#workspace/scholarships/detail-' + r.id, text: 'View details', style: 'display:inline-block;margin:0 14px 10px 0' }),
     h('a', { class: 'link-btn', href: '#workspace/scholarships/bundle-' + r.id, text: 'Application material', style: 'display:inline-block;margin-bottom:10px' }),
     opts.outcome ? schOutcomeBlock(r, opts.outcome) : null,
