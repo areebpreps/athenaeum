@@ -7269,7 +7269,7 @@ async function setExternalAlarm(r) {
     // 2. Android browser / PWA. Only for an alarm due within 24h, because
     // the intent link can't carry a weekday: the Clock app would ring at the
     // next time it hits that clock time, which may be the wrong day.
-    if (/Android/i.test(navigator.userAgent) && s.withinDay) {
+    if (/Android/i.test(navigator.userAgent) && !window.AndroidDownloader && s.withinDay) { // not inside the APK: its WebView would send an intent: link to a Custom Tab
       if (await tryAlarmIntent(s)) return 'Opening your Clock app to add the ' + alarmTimeLabel(s) + ' alarm. Confirm it there.';
     }
 
