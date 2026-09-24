@@ -223,7 +223,7 @@
   .back:active { background: var(--paper-hi); }
 
   /* ---------- content building blocks ---------- */
-  a.btn { display: grid; place-items: center; text-decoration: none; }
+  a.btn { display: flex; align-items: center; justify-content: center; gap: 8px; text-align: center; text-decoration: none; }
   .btn.small { width: auto; min-height: 44px; padding: 0 16px; font-size: 15px; border-radius: 12px; }
   .btn.danger { background: var(--err); color: #2A0A0A; }
   .btn.quiet.danger-text { color: var(--err); }
@@ -335,6 +335,15 @@
   /* D3: planner alarm toggle — lit up (marker colour) once the alarm is on */
   .alarm-toggle[aria-pressed="true"] { color: var(--marker); border-color: var(--marker); }
   .alarm-field .check-lab { min-height: 32px; }
+  /* F4: transient status line for the external (Clock app) alarm */
+  .alarm-toast {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 84px);
+    z-index: 9999; width: max-content; max-width: min(92vw, 420px);
+    padding: 12px 16px; border-radius: 12px; font-size: 15px; line-height: 1.35;
+    color: var(--chalk); background: var(--paper-hi);
+    border: 1px solid var(--marker); box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  }
   .chip {
     justify-self: start; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
     color: var(--marker); background: rgba(243,201,85,.12); padding: 3px 10px; border-radius: 999px;
@@ -387,6 +396,10 @@
   /* dialogs and forms */
   .form-sheet { max-height: 90dvh; overflow-y: auto; overscroll-behavior: contain; }
   .form-sheet .field { margin-bottom: 0; }
+  /* F1: consistent spacing between stacked buttons and blocks */
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  .sec-wrap { margin-top: 28px; }
+  .actions + .hint-line, .btn + .hint-line { margin-top: 12px; }
   .form-sheet .actions { display: grid; gap: 10px; margin-top: 4px; }
   .form-sheet .msg { margin: 0; }
   .control.area { padding: 12px 14px; min-height: 120px; resize: vertical; line-height: 1.5; }
@@ -796,6 +809,7 @@
     <a class="btn quiet" id="sheet-profile" href="#workspace/profile">My public profile</a>
     <a class="btn quiet" id="sheet-posts" href="#workspace/posts">My posts</a>
     <a class="btn quiet" id="sheet-teach" href="#workspace/teach">Become a teacher</a>
+    <button class="btn quiet" id="sheet-voice" type="button">Voice settings</button>
     <button class="btn quiet" id="logout-btn" type="button">Log out</button>
     <button class="btn quiet" id="sheet-close" type="button">Close</button>
   </div>
@@ -1014,6 +1028,7 @@ async function logout() {
 /* ---------- app shell ---------- */
 function enterApp(user) {
   currentUser = user;
+  ttsLoad(user);
   const name = usernameFrom(user);
   myProfile = null;
   $('#who-btn').textContent = (name[0] || '?').toUpperCase();
@@ -1038,6 +1053,10 @@ const PALETTE = [
 ];
 const colorOf = c => (HEX.test(c || '') ? c : PALETTE[0].hex);
 const plural  = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+// F3: never print null / undefined / NaN. nn(v) gives '' for those, otherwise v unchanged.
+const nn = v => (v == null || (typeof v === 'number' && !isFinite(v)) || v === 'null' || v === 'undefined' || v === 'NaN') ? '' : v;
+// joins the non-empty parts with a separator, so a missing field leaves no "null" and no stray separator
+const joinParts = (parts, sep) => parts.map(nn).filter(x => x !== '' && x !== false).join(sep);
 
 const ITEM_TYPES = {
   note:       { label: 'Note',       table: 'notes',     kind: 'short_note', titleLabel: 'Title (optional)', titleReq: false, bodyLabel: 'Note' },
@@ -1063,7 +1082,7 @@ function h(tag, props, ...kids) {
   if (props) for (const [k, v] of Object.entries(props)) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
-    else if (k === 'text') el.textContent = v;
+    else if (k === 'text') el.textContent = nn(v);
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? '' : v);
   }
@@ -1351,10 +1370,45 @@ function stopIcon() {
   t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>';
   return t.content.firstChild;
 }
+/* ---------- Voice settings ----------
+   Speed, pitch, volume and the chosen English / Bangla voice. Kept on this device
+   and also in the account (auth user metadata, so no extra table is needed), and
+   applied by every read-aloud feature through ttsApply()/pickVoice(). */
+const TTS_KEY = 'athenaeum.tts.v1';
+const TTS_DEFAULTS = { rate: 1, pitch: 1, volume: 1, voiceEn: '', voiceBn: '' };
+function ttsClean(o) {
+  o = o && typeof o === 'object' ? o : {};
+  const num = (v, lo, hi, d) => { v = Number(v); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
+  return {
+    rate: num(o.rate, 0.5, 2, 1), pitch: num(o.pitch, 0.5, 2, 1), volume: num(o.volume, 0, 1, 1),
+    voiceEn: typeof o.voiceEn === 'string' ? o.voiceEn : '', voiceBn: typeof o.voiceBn === 'string' ? o.voiceBn : '',
+    at: Number(o.at) || 0
+  };
+}
+let ttsSettings = ttsClean(null);
+function ttsLoad(user) {
+  let local = null;
+  try { local = JSON.parse(store.get(TTS_KEY) || 'null'); } catch (e) { local = null; }
+  const remote = user && user.user_metadata && user.user_metadata.tts;
+  const a = ttsClean(local), b = ttsClean(remote);
+  ttsSettings = (remote && b.at >= a.at) ? b : a;   // whichever was saved last wins
+  if (remote && b.at >= a.at) store.set(TTS_KEY, JSON.stringify(ttsSettings));
+}
+async function ttsSave(next) {
+  ttsSettings = ttsClean({ ...next, at: Date.now() });
+  store.set(TTS_KEY, JSON.stringify(ttsSettings));
+  try { if (sb && currentUser) await sb.auth.updateUser({ data: { tts: ttsSettings } }); } catch (e) { /* kept on this device; syncs the next time it is saved */ }
+}
+function ttsApply(utter, s) {
+  s = s || ttsSettings;
+  utter.rate = s.rate; utter.pitch = Math.min(2, s.pitch); utter.volume = s.volume;
+}
+ttsLoad(null);
 function pickVoice(lang) {
   if (!window.speechSynthesis) return null;
   const voices = window.speechSynthesis.getVoices() || [];
-  return voices.find(v => v.lang && v.lang.toLowerCase().startsWith(lang)) || null;
+  const saved = lang === 'bn' ? ttsSettings.voiceBn : ttsSettings.voiceEn;
+  return (saved && voices.find(v => v.voiceURI === saved)) || voices.find(v => v.lang && v.lang.toLowerCase().startsWith(lang)) || null;
 }
 // getText() is called fresh each time Listen is pressed (so it can read live
 // input). opts.iconOnly gives a round icon button for item cards; otherwise
@@ -1385,6 +1439,7 @@ function listenButton(getText, opts = {}) {
     const voice = pickVoice(lang);
     if (voice) utter.voice = voice;
     utter.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
+    ttsApply(utter);
     utter.onend = () => { speaking = false; sync(); };
     utter.onerror = () => { speaking = false; sync(); };
     speaking = true; sync();
@@ -3215,7 +3270,7 @@ function backupPanel() {
 function buildWorkspace(ids = []) {
   if (ids[0] === 'today')   return todayHub();
   if (ids[0] === 'scholarships') return scholarshipsHub(ids[1]);
-  if (ids[0] === 'profile')  return profilePage();
+  if (ids[0] === 'profile')  return ids[1] === 'details' ? profileDetailsPage() : profilePage();
   if (ids[0] === 'teach')    return teacherPage();
   if (ids[0] === 'courses')  return coursesPage(ids[1]);
   if (ids[0] === 'market')   return marketPage(ids[1]);
@@ -5170,9 +5225,9 @@ function checkWritingResultBlock(data, sourceText) {
     h('p', { text: iss.explanation })));
   const citationCards = data.citationIssues.map(iss => h('div', { class: 'issue-card' },
     h('span', { class: 'chip citation', text: 'Citation / originality' }),
-    h('p', { class: 'snippet', text: '"' + iss.passage + '"' }),
+    iss.passage ? h('p', { class: 'snippet', text: '"' + iss.passage + '"' }) : null,
     h('p', { text: iss.concern }),
-    h('p', { text: 'Suggestion: ' + iss.suggestion })));
+    iss.suggestion ? h('p', { text: 'Suggestion: ' + iss.suggestion }) : null));
 
   return h('div', {},
     h('div', { class: 'sec-head' }, h('h3', { text: 'Corrected text' })),
@@ -6296,6 +6351,8 @@ function scriptPlayButton(script) {
   const speakerVoice = new Map();
   function assignVoices() {
     const voices = (window.speechSynthesis.getVoices() || []).filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+    const chosen = voices.findIndex(v => v.voiceURI === ttsSettings.voiceEn);
+    if (chosen > 0) voices.unshift(voices.splice(chosen, 1)[0]);
     speakers.forEach((sp, i) => speakerVoice.set(sp, voices.length ? voices[i % voices.length] : null));
   }
   function stop() { window.speechSynthesis.cancel(); playing = false; stopped = true; btn.textContent = 'Play audio overview'; }
@@ -6305,8 +6362,9 @@ function scriptPlayButton(script) {
     const utter = new SpeechSynthesisUtterance(turn.line);
     const voice = speakerVoice.get(turn.speaker);
     if (voice) utter.voice = voice;
-    utter.pitch = speakers.indexOf(turn.speaker) % 2 === 0 ? 1 : 0.85;
     utter.lang = 'en-US';
+    ttsApply(utter);
+    utter.pitch = Math.min(2, Math.max(0.5, ttsSettings.pitch * (speakers.indexOf(turn.speaker) % 2 === 0 ? 1 : 0.85)));
     utter.onend = () => playLine(i + 1);
     utter.onerror = () => playLine(i + 1);
     window.speechSynthesis.speak(utter);
@@ -7083,6 +7141,155 @@ async function initPlannerAlarms() {
   setInterval(refreshPlannerAlarms, 30 * 60 * 1000);
 }
 
+/* ---------- F4: External alarm (phone Clock app) ----------
+   Turning a planner alarm ON also asks the phone's Clock app to create a
+   real alarm, so it rings even when Athenaeum is closed. Three paths,
+   tried in order:
+     1. Native: inside the Android app, window.AndroidAlarm (a WebView
+        bridge, same pattern as AndroidDownloader) or a Capacitor
+        "AlarmClock" plugin fires ACTION_SET_ALARM with EXTRA_SKIP_UI.
+     2. Browser/PWA on Android: an intent: link for the same action.
+        Chrome gives no success signal, so if the page never loses focus
+        we treat it as blocked and fall through.
+     3. Fallback: download a small .ics file with an alarm reminder.
+   A web page cannot read or delete Clock-app alarms, so turning the
+   alarm OFF only clears the in-app state and says so. */
+let alarmToastEl = null, alarmToastTimer = 0;
+function alarmToast(text) {
+  if (!alarmToastEl) {
+    alarmToastEl = h('div', { class: 'alarm-toast', role: 'status' });
+    document.body.append(alarmToastEl);
+  }
+  alarmToastEl.textContent = text;
+  alarmToastEl.hidden = false;
+  clearTimeout(alarmToastTimer);
+  alarmToastTimer = setTimeout(() => { alarmToastEl.hidden = true; }, 6000);
+}
+
+// Works out what to ring and when. Study slots repeat weekly on their
+// weekday; a scholarship deadline rings once, on its date, at DEADLINE_ALARM_TIME.
+function externalAlarmSpec(r) {
+  const isDeadline = r.kind === 'milestone';
+  const t = isDeadline ? DEADLINE_ALARM_TIME : String(r.start_time || '').slice(0, 5);
+  const [hh, mm] = t.split(':').map(Number);
+  if (!t || Number.isNaN(hh) || Number.isNaN(mm)) return { error: 'Add a start time to this item to set a Clock alarm.' };
+  const now = new Date();
+  let at;
+  if (isDeadline) {
+    const [y, mo, d] = String(r.milestone_date || '').split('-').map(Number);
+    if (!y || !mo || !d) return { error: 'This deadline has no date, so no Clock alarm was set.' };
+    at = new Date(y, mo - 1, d, hh, mm, 0, 0);
+    if (at <= now) return { error: 'That deadline time has already passed, so no Clock alarm was set.' };
+  } else {
+    if (!(r.weekday >= 0 && r.weekday <= 6)) return { error: 'Pick a weekday for this slot to set a Clock alarm.' };
+    at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+    for (let i = 0; i < 8 && (at <= now || at.getDay() !== r.weekday); i++) at.setDate(at.getDate() + 1);
+  }
+  const endT = String(r.end_time || '').slice(0, 5).split(':').map(Number);
+  let mins = 15;
+  if (!isDeadline && endT.length === 2 && !endT.some(Number.isNaN)) {
+    const diff = endT[0] * 60 + endT[1] - (hh * 60 + mm);
+    if (diff > 0) mins = diff;
+  }
+  return {
+    title: String(r.title || 'Athenaeum').trim() || 'Athenaeum',
+    hour: hh, minute: mm, at, mins, isDeadline,
+    weekday: isDeadline ? null : r.weekday,
+    withinDay: at - now <= 24 * 60 * 60 * 1000
+  };
+}
+
+function alarmTimeLabel(s) {
+  return String(s.hour).padStart(2, '0') + ':' + String(s.minute).padStart(2, '0');
+}
+
+// Path 2. Resolves true if the page lost focus (Clock app took over).
+function tryAlarmIntent(s) {
+  return new Promise(resolve => {
+    let left = false;
+    const onHide = () => { if (document.hidden) left = true; };
+    const onBlur = () => { left = true; };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('blur', onBlur);
+    const url = 'intent:#Intent;action=android.intent.action.SET_ALARM;' +
+      'i.android.intent.extra.alarm.HOUR=' + s.hour + ';' +
+      'i.android.intent.extra.alarm.MINUTES=' + s.minute + ';' +
+      'S.android.intent.extra.alarm.MESSAGE=' + encodeURIComponent(s.title) + ';end';
+    try { location.href = url; } catch (e) { /* fall through to the timeout */ }
+    setTimeout(() => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('blur', onBlur);
+      resolve(left);
+    }, 1500);
+  });
+}
+
+// Path 3. Floating local time, so it lands at the same clock time wherever the phone is.
+function downloadAlarmIcs(r, s) {
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = d => d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + 'T' + pad(d.getHours()) + pad(d.getMinutes()) + '00';
+  const esc = v => String(v).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  const end = new Date(s.at.getTime() + s.mins * 60000);
+  const lines = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Athenaeum//Planner//EN', 'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    'UID:planner-' + esc(r.id || Date.now()) + '@athenaeum',
+    'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, ''),
+    'DTSTART:' + stamp(s.at), 'DTEND:' + stamp(end),
+    'SUMMARY:' + esc(s.title)
+  ];
+  if (s.weekday != null) lines.push('RRULE:FREQ=WEEKLY;BYDAY=' + ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'][s.weekday]);
+  lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc(s.title), 'TRIGGER:PT0S', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR');
+  const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/calendar' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'athenaeum-alarm.ics';
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
+// Returns a short status sentence for the UI. Never throws.
+async function setExternalAlarm(r) {
+  try {
+    const s = externalAlarmSpec(r);
+    if (s.error) return s.error;
+    const days = s.weekday == null ? [] : [s.weekday + 1]; // Android Calendar.DAY_OF_WEEK: Sun=1..Sat=7
+
+    // 1. Native
+    const cap = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlarmClock;
+    if (cap && typeof cap.setAlarm === 'function') {
+      await cap.setAlarm({ hour: s.hour, minutes: s.minute, label: s.title, days });
+      return 'Alarm sent to your Clock app for ' + alarmTimeLabel(s) + '.';
+    }
+    if (window.AndroidAlarm && typeof window.AndroidAlarm.setAlarm === 'function') {
+      const ok = window.AndroidAlarm.setAlarm(s.hour, s.minute, s.title, JSON.stringify(days));
+      if (ok !== false) return 'Alarm sent to your Clock app for ' + alarmTimeLabel(s) + '.';
+    }
+
+    // 2. Android browser / PWA. Only for an alarm due within 24h, because
+    // the intent link can't carry a weekday: the Clock app would ring at the
+    // next time it hits that clock time, which may be the wrong day.
+    if (/Android/i.test(navigator.userAgent) && s.withinDay) {
+      if (await tryAlarmIntent(s)) return 'Opening your Clock app to add the ' + alarmTimeLabel(s) + ' alarm. Confirm it there.';
+    }
+
+    // 3. Fallback
+    downloadAlarmIcs(r, s);
+    return 'Could not open the Clock app from here, so a calendar file with an alarm was downloaded. Open it to add the reminder.';
+  } catch (e) {
+    return 'Could not set a Clock alarm: ' + ((e && e.message) || 'unknown error') + '.';
+  }
+}
+
+// Called by every alarm toggle after the server update succeeded.
+async function externalAlarmFeedback(r, on) {
+  if (!on) {
+    alarmToast('Alarm turned off in Athenaeum. To remove it from your phone, delete it in the Clock app.');
+    return;
+  }
+  alarmToast(await setExternalAlarm(r));
+}
+
 /* ---------- D8: Today view --------------------------------------------
    One screen merging today's study schedule, anything overdue, milestones
    due soon, and assignment/project/learning progress -- the single place to
@@ -7270,8 +7477,8 @@ function schChip(text, on, onclick) {
 }
 
 function schSummaryFacts(row) {
-  const edu = (row.education || []).map(e => e.level + ' \u00b7 ' + e.gpa + ' / ' + e.scale);
-  const tests = (row.test_scores || []).map(t => (t.test === 'Other' ? (t.name || 'Other') : t.test) + ' \u00b7 ' + t.score);
+  const edu = (row.education || []).map(e => joinParts([e.level, joinParts([e.gpa, e.scale], ' / ')], ' \u00b7 ')).filter(Boolean);
+  const tests = (row.test_scores || []).map(t => joinParts([t.test === 'Other' ? (t.name || 'Other') : t.test, t.score], ' \u00b7 ')).filter(Boolean);
   return [
     ['Education completed', edu.join('\n') || '\u2014'],
     ['Wants to study', [row.target_level, row.target_major].filter(Boolean).join(' \u00b7 ') || '\u2014'],
@@ -8147,7 +8354,7 @@ function schResultCard(c, isSaved, onSave) {
   const bullets = [['\uD83D\uDCB0', c.funding], ['\uD83C\uDFDB\uFE0F', c.provider], ['\uD83C\uDF93', c.levels], ['\uD83D\uDCD6', c.subjects], ['\uD83C\uDF10', c.audience], ['\uD83D\uDCCD', c.country]].filter(b => b[1]);
   // Opens the in-app detail page (read + summarised, ads and promos left out) instead of
   // launching an external tab to the ScholarshipsAds page.
-  const more = h('a', { class: 'btn', href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url), style: 'display:block;text-align:center;text-decoration:none', text: 'Read More \u2192' });
+  const more = h('a', { class: 'btn', href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url) }, 'Read More', h('span', { 'aria-hidden': 'true', text: '\u2192' }));
   return h('article', { class: 'proj', style: 'padding:14px;display:grid;gap:10px' },
     c.img ? h('img', { src: c.img, alt: c.name, loading: 'lazy', referrerpolicy: 'no-referrer',
       style: 'width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:var(--paper-hi)', onerror: e => e.currentTarget.remove() }) : null,
@@ -8525,8 +8732,10 @@ function schMinBlock(m) {
     ['GRE', m.gre != null ? String(m.gre) : ''],
     ['Minimum GPA', m.gpaPct != null ? m.gpaPct + '%' : '']
   ];
+  const stated = rows.filter(([, v]) => v);
+  if (!stated.length) return h('p', { class: 'none', text: 'The page doesn\u2019t state any minimum scores or GPA.' });
   return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px' },
-    rows.map(([k, v]) => h('div', {}, h('small', { text: k }), h('strong', { style: 'display:block;font-weight:600', text: v || 'N/A' }))));
+    stated.map(([k, v]) => h('div', {}, h('small', { text: k }), h('strong', { style: 'display:block;font-weight:600', text: v }))));
 }
 
 function schRateBlock(r) {
@@ -8554,7 +8763,7 @@ async function schDetailPage(ref) {
     url = row.link || '';
   }
   if (!/^https?:\/\//i.test(url)) url = '';
-  const facts = pairs => h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:12px' }, pairs.map(([k, v]) =>
+  const facts = pairs => !pairs.length ? h('p', { class: 'none', text: 'The page doesn\u2019t list programme details.' }) : h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:12px' }, pairs.map(([k, v]) =>
     h('div', {}, h('small', { text: k }), h('strong', { style: 'display:block;white-space:pre-line;font-weight:600', text: v || '\u2014' }))));
 
   const saved = row ? section('Your saved details', null, null, facts([
@@ -8582,7 +8791,7 @@ async function schDetailPage(ref) {
     });
     kids.push(
       H3('Programme'),
-      facts([['Duration', d.duration || 'N/A'], ['Available subjects', d.subjects || 'N/A'], ['Levels', d.levels || 'N/A'], ['Provider', d.provider || 'N/A'], ['Country', d.country || 'N/A']]),
+      facts([['Duration', d.duration], ['Available subjects', d.subjects], ['Levels', d.levels], ['Provider', d.provider], ['Country', d.country]].filter(([, v]) => nn(v) && !/^\s*n\/a\s*$/i.test(String(v)))),
       H3('Exams'),
       (d.exams || []).length ? h('div', { style: 'display:grid;gap:8px' }, d.exams.map(x => h('div', { class: 'proj', style: 'padding:10px 14px' },
         h('strong', { text: x.name }), h('span', { class: 'chip', style: 'margin-left:8px', text: x.required ? 'Required' : 'Optional' }),
@@ -8620,7 +8829,7 @@ async function schDetailPage(ref) {
   if (url) load(false);
   else status.textContent = 'No link saved for this scholarship. Add one with the pencil icon in your Shortlist and its page will be loaded here.';
   return { title: (row && row.name) || 'Scholarship', nodes: [crumb, saved, status, err, box, tips, cohort,
-    url ? h('div', { class: 'actions' }, openBtn, again) : null, note] };
+    url ? h('div', { class: 'actions', style: 'margin-top:16px' }, openBtn, again) : null, note] };
 }
 
 /* ---------- E14: Scholarship Center -- roadmap screen & checklist ----------
@@ -8752,7 +8961,7 @@ async function schRoadmapSync(p) {
     const fw = byKey('follow');
     if (fw && !fw.done && fol) await tick(fw, 'Ticked the follow step \u2014 you follow a scholarship.');
   }
-  const gpa = (p.education || []).map(e => e.level + ' ' + e.gpa + '/' + e.scale).join(' | '), snap = schJson(SCH_ROAD_SNAP, null);
+  const gpa = (p.education || []).map(e => joinParts([e.level, joinParts([e.gpa, e.scale], '/')], ' ')).filter(Boolean).join(' | '), snap = schJson(SCH_ROAD_SNAP, null);
   if (snap && snap.gpa !== gpa) await add('transcripts-update', 'Documents', 'Request an updated transcript showing your new GPA', 'GPA changed \u2014 added a step to request an updated transcript.');
   if (!snap || snap.gpa !== gpa) store.set(SCH_ROAD_SNAP, JSON.stringify({ gpa }));
 
@@ -8768,7 +8977,7 @@ function schRoadLogCard(repaint) {
   if (!log.length) return null;
   return h('div', { class: 'proj', style: 'padding:12px 16px;margin-bottom:16px;display:grid;gap:6px' },
     h('strong', { text: 'Updated from your profile' }),
-    ...log.map(x => h('small', { text: fmtDate(new Date(x.at)) + ' \u00b7 ' + x.t })),
+    ...log.map(x => h('small', { text: joinParts([fmtDate(new Date(x.at)), x.t], ' \u00b7 ') })),
     h('button', { class: 'btn quiet small', type: 'button', style: 'justify-self:start', text: 'Clear', onclick: () => { store.set(SCH_ROAD_LOG, '[]'); repaint(); } }));
 }
 
@@ -8891,7 +9100,7 @@ async function schRoadmapPage() {
             h('strong', { text: x.title }),
             cfg.site && x.about ? h('small', { text: x.about }) : null,
             cfg.site && host ? h('a', { class: 'link-btn', href: x.website, target: '_blank', rel: 'noopener noreferrer', text: 'Official website: ' + host, style: 'justify-self:start' }) : null,
-            h('small', { text: 'Why: ' + x.reason }),
+            x.reason ? h('small', { text: 'Why: ' + x.reason }) : null,
             h('div', { class: 'actions' },
               cfg.site ? h('button', { class: 'btn small', type: 'button', disabled: inList, text: inList ? 'In shortlist \u2713' : 'Add to scholarship shortlist', onclick: async e => {
                 const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Adding\u2026';
@@ -10302,6 +10511,7 @@ function slotBlock(r, ctx = {}) {
         r.alarm_enabled = next;
         msg.hidden = true;
         refreshPlannerAlarms();
+        externalAlarmFeedback(r, next); // F4
       }
     }
   }, bellIcon());
@@ -10690,6 +10900,7 @@ function milestoneRow(r) {
         r.alarm_enabled = next;
         msg.hidden = true;
         refreshPlannerAlarms();
+        externalAlarmFeedback(r, next); // F4
       }
     }
   }, bellIcon()) : null;
@@ -10803,6 +11014,12 @@ async function openPlannerDialog(kind, existing, draft) {
         : await sb.from('planner_items').insert(payload);
       if (res.error) throw res.error;
       refreshPlannerAlarms();
+      // F4: alarm newly switched on in this dialog -> also ask the Clock app.
+      const alarmNewlyOn = activeKind === 'slot' && alarmOn && !(existing && existing.alarm_enabled);
+      if (alarmNewlyOn && v.start_time) {
+        const ext = { id: existing ? row.id : null, kind: 'slot', title: v.title, weekday, start_time: v.start_time, end_time: v.end_time };
+        externalAlarmFeedback(ext, true);
+      }
       route();
     },
     extra: existing ? { label: 'Delete', onClick: () => confirmDeleteRow('planner_items', row, activeKind === 'milestone' ? 'milestone' : 'slot') } : null
@@ -11803,7 +12020,7 @@ async function profilePage() {
       if (oldPath && oldPath !== path) { try { await sb.storage.from(AVATAR_BUCKET).remove([oldPath]); } catch (e) {} }
       if (st.previewUrl) URL.revokeObjectURL(st.previewUrl);
       st.blob = null; st.previewUrl = ''; st.remove = false; fileIn.value = '';
-      nameF.input.value = row.display_name; countryF.input.value = row.country; fieldF.input.value = row.field_of_study;
+      nameF.input.value = nn(row.display_name) || ''; countryF.input.value = nn(row.country) || ''; fieldF.input.value = nn(row.field_of_study) || '';
       paintPreview(); paintWho();
       say('Saved.', 'ok');
     } catch (e) { say('Could not save: ' + ((e && e.message) || 'try again')); }
@@ -11819,8 +12036,202 @@ async function profilePage() {
       h('p', { class: 'hint', text: 'Square photos work best. It is cropped and shrunk on your device before it is uploaded.' })),
     nameF.wrap, countryF.wrap, dl, fieldF.wrap, msg,
     h('div', { class: 'actions' }, saveBtn),
+    h('a', { class: 'btn quiet', style: 'margin:12px 0 0', href: '#workspace/profile/details', text: 'Bio, education, experience and links' }),
     h('a', { class: 'btn quiet', style: 'margin:12px 0', href: '#workspace/people/' + currentUser.id, text: 'See how others see it' }),
-    h('p', { class: 'hint-line', text: 'This is your public profile. Any signed-in Athenaeum user can see your name, photo, country and field of study \u2014 nothing else from your account is on it.' })] };
+    h('p', { class: 'hint-line', text: 'This is your public profile. Any signed-in Athenaeum user can see your name, photo, country and field of study. Anything you add under \u201cBio, education, experience and links\u201d is shown only in the sections you switch on \u2014 nothing else from your account is on it.' })] };
+}
+
+/* ---------- F6: profile details ----------
+   #workspace/profile/details edits the extra sections shown on the public profile
+   (#workspace/people/<id>): About, Education, Experience, Study profile and Links.
+   Table profile_details (schema-update-F6-profile-details.sql). Every section has its own
+   "show on my public profile" switch and starts private. Other people's details are only
+   read through the get_profile_details() function, which leaves out sections that are
+   switched off, so private sections never leave the database. */
+const PD_KEYS = ['about', 'education', 'experience', 'study', 'links'];
+const PD_LINK_KINDS = ['Portfolio', 'GitHub', 'LinkedIn', 'Facebook', 'Instagram', 'X', 'YouTube', 'Other'];
+const PD_EDU = [
+  { key: 'institution', label: 'School, college or university', max: 100 },
+  { key: 'degree', label: 'Degree or class', max: 80, ph: 'e.g. HSC, BSc' },
+  { key: 'field', label: 'Field or group', max: 80 },
+  { key: 'start', label: 'From (year)', max: 12 },
+  { key: 'end', label: 'To (year, or Present)', max: 12 }];
+const PD_EXP = [
+  { key: 'role', label: 'Role', max: 100 },
+  { key: 'place', label: 'Organisation or place', max: 100 },
+  { key: 'start', label: 'From (year)', max: 12 },
+  { key: 'end', label: 'To (year, or Present)', max: 12 },
+  { key: 'description', label: 'What you did', max: 300, multi: true }];
+
+// Returns a clean http(s) address, '' for empty, or null when it is not a usable web link.
+function pdCleanUrl(raw) {
+  let u = String(raw || '').trim();
+  if (!u) return '';
+  if (u.length > 300) return null;
+  if (!/^https?:\/\//i.test(u)) { if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return null; u = 'https://' + u; }
+  try { const x = new URL(u); return (/^https?:$/.test(x.protocol) && x.hostname.includes('.')) ? x.href : null; } catch (e) { return null; }
+}
+
+// A list of cards (education / experience) with Add and Remove. get() returns the non-empty cards.
+function pdListEditor(fields, items, max, addLabel) {
+  const box = h('div', { style: 'display:grid;gap:12px' }), rows = [];
+  const addBtn = h('button', { class: 'btn quiet small', type: 'button', text: addLabel, onclick: () => { if (rows.length < max) addRow({}); } });
+  const syncAdd = () => { addBtn.hidden = rows.length >= max; };
+  function addRow(data) {
+    const inputs = {}, card = h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:4px' }), row = { inputs };
+    fields.forEach(f => {
+      const fld = makeField(f.label, { value: nn(data[f.key]) || '', maxlength: f.max, placeholder: f.ph, multiline: f.multi, rows: f.multi ? 3 : undefined });
+      inputs[f.key] = fld.input; card.append(fld.wrap);
+    });
+    card.append(h('button', { class: 'btn quiet small danger-text', type: 'button', style: 'justify-self:start', text: 'Remove',
+      onclick: () => { rows.splice(rows.indexOf(row), 1); card.remove(); syncAdd(); } }));
+    rows.push(row); box.append(card); syncAdd();
+  }
+  (Array.isArray(items) ? items : []).slice(0, max).forEach(addRow);
+  return {
+    node: h('div', { style: 'display:grid;gap:12px' }, box, h('div', {}, addBtn)),
+    get: () => rows.map(r => Object.fromEntries(fields.map(f => [f.key, r.inputs[f.key].value.trim()]))).filter(o => Object.values(o).some(Boolean))
+  };
+}
+
+function pdLinksEditor(items, max) {
+  const box = h('div', { style: 'display:grid;gap:12px' }), rows = [];
+  const addBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add a link', onclick: () => { if (rows.length < max) addRow({}); } });
+  const syncAdd = () => { addBtn.hidden = rows.length >= max; };
+  function addRow(data) {
+    const kind = h('select', { class: 'control', 'aria-label': 'Kind of link' }, PD_LINK_KINDS.map(k => h('option', { value: k, text: k })));
+    kind.value = PD_LINK_KINDS.includes(data.kind) ? data.kind : 'Portfolio';
+    const url = h('input', { class: 'control', type: 'url', inputmode: 'url', maxlength: 300, autocapitalize: 'off', autocomplete: 'off', placeholder: 'https://\u2026', 'aria-label': 'Link address' });
+    url.value = nn(data.url) || '';
+    const card = h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:8px' }), row = { kind, url };
+    card.append(kind, url, h('button', { class: 'btn quiet small danger-text', type: 'button', style: 'justify-self:start', text: 'Remove',
+      onclick: () => { rows.splice(rows.indexOf(row), 1); card.remove(); syncAdd(); } }));
+    rows.push(row); box.append(card); syncAdd();
+  }
+  (Array.isArray(items) ? items : []).slice(0, max).forEach(addRow);
+  return {
+    node: h('div', { style: 'display:grid;gap:12px' }, box, h('div', {}, addBtn)),
+    get: () => rows.map(r => {
+      const raw = r.url.value.trim(); if (!raw) return null;
+      const clean = pdCleanUrl(raw);
+      if (!clean) throw new Error('\u201c' + raw.slice(0, 60) + '\u201d is not a valid web address. Use a link that starts with http:// or https://.');
+      return { kind: r.kind.value, url: clean };
+    }).filter(Boolean)
+  };
+}
+
+async function profileDetailsPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Public profile', href: '#workspace/profile' }]);
+  const res = await sb.from('profile_details').select('*').eq('user_id', currentUser.id).maybeSingle();
+  if (res.error) {
+    return { title: 'More about you', nodes: [crumb,
+      h('div', { class: 'status bad' }, h('strong', { text: 'Profile details are not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-F6-profile-details.sql), then reload. (' + res.error.message + ') ',
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
+  }
+  const d = res.data || {}, st = (d.study && typeof d.study === 'object') ? d.study : {}, shown = (d.visibility && typeof d.visibility === 'object') ? d.visibility : {};
+  const vis = {}; PD_KEYS.forEach(k => { vis[k] = shown[k] === 'everyone' ? 'everyone' : 'private'; });
+  const toggle = key => {
+    const cb = h('input', { type: 'checkbox' }); cb.checked = vis[key] === 'everyone';
+    cb.addEventListener('change', () => { vis[key] = cb.checked ? 'everyone' : 'private'; });
+    return h('label', { style: 'display:flex;gap:10px;align-items:center;font-size:14px;color:var(--dim);margin-bottom:12px' }, cb, 'Show this section on my public profile');
+  };
+  const F = (label, val, max, extra) => makeField(label, { value: nn(val) || '', maxlength: max, ...(extra || {}) });
+  const headline = F('Headline', d.headline, 100, { placeholder: 'e.g. HSC student aiming for aerospace engineering' });
+  const bio = F('Bio', d.bio, 500, { multiline: true, rows: 4, placeholder: 'A few lines about you' });
+  const location = F('Location', d.location, 80, { placeholder: 'e.g. Dhaka, Bangladesh' });
+  const languages = F('Languages', d.languages, 150, { placeholder: 'e.g. Bangla, English' });
+  const eduEd = pdListEditor(PD_EDU, d.education, 10, 'Add education');
+  const expEd = pdListEditor(PD_EXP, d.experience, 10, 'Add experience');
+  const sCountries = F('Countries you want to study in', st.countries, 150);
+  const sField = F('Field you want to study', st.field, 100);
+  const sExams = F('Exams and scores (one per line)', st.exams, 300, { multiline: true, rows: 3, placeholder: 'IELTS 7.0\nSAT 1400' });
+  const sAwards = F('Awards and achievements', st.awards, 400, { multiline: true, rows: 3 });
+  const sSkills = F('Skills (separate with commas)', st.skills, 200);
+  const linksEd = pdLinksEditor(d.links, 10);
+
+  const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const say = (text, kind) => { msg.className = 'msg ' + (kind || 'err'); msg.textContent = text; msg.hidden = !text; };
+  const saveBtn = h('button', { class: 'btn', type: 'button', text: 'Save details' });
+  saveBtn.addEventListener('click', async () => {
+    say('');
+    let links;
+    try { links = linksEd.get(); } catch (e) { say(e.message); return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+    const payload = {
+      user_id: currentUser.id,
+      headline: headline.input.value.trim(), bio: bio.input.value.trim(), location: location.input.value.trim(), languages: languages.input.value.trim(),
+      education: eduEd.get(), experience: expEd.get(), links,
+      study: { countries: sCountries.input.value.trim(), field: sField.input.value.trim(), exams: sExams.input.value.trim(), awards: sAwards.input.value.trim(), skills: sSkills.input.value.trim() },
+      visibility: { ...vis }, updated_at: new Date().toISOString()
+    };
+    try {
+      const r = await sb.from('profile_details').upsert(payload, { onConflict: 'user_id' });
+      if (r.error) throw r.error;
+      say('Saved.', 'ok');
+    } catch (e) { say('Could not save: ' + ((e && e.message) || 'try again')); }
+    saveBtn.disabled = false; saveBtn.textContent = 'Save details';
+  });
+
+  return { title: 'More about you', nodes: [crumb,
+    h('p', { class: 'hint-line', text: 'Every section starts private. Switch a section on to show it on your public profile to other signed-in Athenaeum users.' }),
+    section('About', null, null, toggle('about'), headline.wrap, bio.wrap, location.wrap, languages.wrap),
+    section('Education', null, null, toggle('education'), eduEd.node),
+    section('Experience', null, null, toggle('experience'), expEd.node),
+    section('Study profile', null, null, toggle('study'), sCountries.wrap, sField.wrap, sExams.wrap, sAwards.wrap, sSkills.wrap),
+    section('Links', null, null, toggle('links'), linksEd.node,
+      h('p', { class: 'hint', text: 'Portfolio, GitHub, LinkedIn and social media. Only web links (http or https) are accepted.' })),
+    msg,
+    h('div', { class: 'actions', style: 'margin-top:16px' }, saveBtn),
+    h('a', { class: 'btn quiet', style: 'margin:12px 0', href: '#workspace/people/' + currentUser.id, text: 'See how others see it' })] };
+}
+
+// The sections shown on a public profile page. d comes from get_profile_details(); a section the
+// owner keeps private is simply not in it for other people.
+async function profileDetailsSection(uid, mine) {
+  const editLink = text => h('a', { class: 'btn quiet', style: 'margin-bottom:16px', href: '#workspace/profile/details', text });
+  let d = null;
+  try { const r = await sb.rpc('get_profile_details', { target: uid }); if (!r.error) d = r.data; } catch (e) { d = null; }
+  if (!d || typeof d !== 'object') return mine ? editLink('Add a bio, education, experience and links') : null;
+  const v = (d.visibility && typeof d.visibility === 'object') ? d.visibility : {};
+  const badge = key => mine ? h('span', { class: 'chip' + (v[key] === 'everyone' ? ' pub' : ''), style: 'justify-self:start', text: v[key] === 'everyone' ? 'Shown to everyone' : 'Only you' }) : null;
+  const list = x => (Array.isArray(x) ? x : []);
+  const txt = x => String(nn(x) || '');
+  const card = (...kids) => h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:4px;min-width:0;overflow-wrap:anywhere' }, ...kids);
+  const out = [];
+
+  if ([d.headline, d.bio, d.location, d.languages].some(x => txt(x))) {
+    out.push(section('About', null, null, badge('about'), card(
+      txt(d.headline) ? h('strong', { text: txt(d.headline) }) : null,
+      txt(d.bio) ? h('p', { style: 'margin:0;white-space:pre-wrap', text: txt(d.bio) }) : null,
+      txt(d.location) ? h('small', { text: 'Location: ' + txt(d.location) }) : null,
+      txt(d.languages) ? h('small', { text: 'Languages: ' + txt(d.languages) }) : null)));
+  }
+  const edu = list(d.education).filter(e => e && (txt(e.institution) || txt(e.degree)));
+  if (edu.length) out.push(section('Education', null, null, badge('education'), h('div', { style: 'display:grid;gap:8px' }, edu.map(e => card(
+    h('strong', { text: txt(e.institution) || txt(e.degree) }),
+    h('small', { text: joinParts([txt(e.institution) ? e.degree : '', e.field], ' \u00b7 ') }),
+    h('small', { text: joinParts([e.start, e.end], ' \u2013 ') }))))));
+  const exp = list(d.experience).filter(e => e && (txt(e.role) || txt(e.place)));
+  if (exp.length) out.push(section('Experience', null, null, badge('experience'), h('div', { style: 'display:grid;gap:8px' }, exp.map(e => card(
+    h('strong', { text: txt(e.role) || txt(e.place) }),
+    h('small', { text: joinParts([txt(e.role) ? e.place : '', joinParts([e.start, e.end], ' \u2013 ')], ' \u00b7 ') }),
+    txt(e.description) ? h('p', { style: 'margin:0;white-space:pre-wrap;font-size:14px', text: txt(e.description) }) : null)))));
+  const s = (d.study && typeof d.study === 'object') ? d.study : {};
+  if (['countries', 'field', 'exams', 'awards', 'skills'].some(k => txt(s[k]))) {
+    out.push(section('Study profile', null, null, badge('study'), card(
+      txt(s.countries) ? h('small', { text: 'Wants to study in: ' + txt(s.countries) }) : null,
+      txt(s.field) ? h('small', { text: 'Field: ' + txt(s.field) }) : null,
+      txt(s.exams) ? h('small', { style: 'white-space:pre-line', text: 'Exams: ' + txt(s.exams) }) : null,
+      txt(s.awards) ? h('small', { style: 'white-space:pre-line', text: 'Awards: ' + txt(s.awards) }) : null,
+      txt(s.skills) ? h('small', { text: 'Skills: ' + txt(s.skills) }) : null)));
+  }
+  const links = list(d.links).filter(l => l && safeHref(l.url));
+  if (links.length) out.push(section('Links', null, null, badge('links'), h('div', { class: 'list' }, links.map(l =>
+    h('a', { class: 'row', href: safeHref(l.url), target: '_blank', rel: 'noopener noreferrer nofollow', style: 'text-decoration:none;overflow-wrap:anywhere' },
+      h('span', { style: 'display:grid;gap:2px;min-width:0' }, h('strong', { text: txt(l.kind) || 'Link' }), h('small', { text: txt(l.url).replace(/^https?:\/\//i, '').slice(0, 80) })))))));
+  if (mine) out.push(editLink('Edit these details'));
+  return h('div', {}, ...out);
 }
 
 /* ---------- E26: create & share posts ----------
@@ -12156,6 +12567,7 @@ async function peoplePage(uid) {
       mine ? h('p', { class: 'hint-line', text: 'This is how other people see your profile.' }) : null,
       mine ? h('a', { class: 'btn quiet', style: 'margin-bottom:16px', href: '#workspace/profile', text: 'Edit profile' }) : null,
       mine ? null : reportBtn('profile', uid, uid, name),
+      await profileDetailsSection(uid, mine),
       await teacherProfileSection(uid, mine),
       section('Public posts', null, null, feed),
       await bookReviewsSection(uid, mine)] };
@@ -12395,7 +12807,7 @@ function enrollRow(e, names) {
     h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
       h('span', { class: 'chip ' + (e.status === 'active' ? 'pub' : ''), text: e.status === 'active' ? 'Unlocked' : e.status === 'pending' ? 'Waiting' : 'Declined' }),
       h('a', { href: '#workspace/people/' + e.user_id, text: names[e.user_id] || 'Athenaeum user' })),
-    h('small', { style: 'overflow-wrap:anywhere', text: 'Payment reference: ' + e.payment_ref }),
+    h('small', { style: 'overflow-wrap:anywhere', text: e.payment_ref ? 'Payment reference: ' + e.payment_ref : '' }),
     h('div', { class: 'vault-actions' }, e.status === 'pending' ? [b('Approve & unlock', 'active'), b('Decline', 'rejected')] : e.status === 'active' ? b('Remove access', 'rejected') : b('Unlock anyway', 'active')));
 }
 async function marketPage(id) {
@@ -12430,7 +12842,7 @@ async function marketPage(id) {
   if (mine) nodes.push(h('a', { class: 'btn quiet', style: 'margin-bottom:12px', href: '#workspace/courses/' + id, text: 'Open in course builder' }));
   if (!mine) nodes.push(reportBtn('course', c.id, c.teacher_id, c.title));
   if (!open) {
-    if (enr && enr.status === 'pending') nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Waiting for the teacher' }), 'Sent with reference \u201c' + enr.payment_ref + '\u201d. The lessons unlock when the teacher confirms your payment.'),
+    if (enr && enr.status === 'pending') nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Waiting for the teacher' }), (enr.payment_ref ? 'Sent with reference \u201c' + enr.payment_ref + '\u201d. ' : 'Sent. ') + 'The lessons unlock when the teacher confirms your payment.'),
       h('button', { class: 'btn quiet', type: 'button', text: 'Cancel request', onclick: async () => { await sb.from('course_enrollments').delete().eq('id', enr.id); route(); } }));
     else {
       const ref = makeField('Payment reference / transaction ID', { maxlength: 100, placeholder: 'From your payment receipt' });
@@ -12447,7 +12859,7 @@ async function marketPage(id) {
       });
       nodes.push(h('div', { class: 'status' + (enr ? ' bad' : '') }, h('strong', { text: enr ? 'The teacher declined that payment' : 'This course is paid' }),
         enr ? 'Check the reference and try again, or contact the teacher.' : 'Pay the teacher directly, then send the reference so they can unlock it.'),
-        h('p', { class: 'hint-line', style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: 'How to pay: ' + c.pay_instructions }), ref.wrap, msg, h('div', { class: 'actions' }, go2),
+        h('p', { class: 'hint-line', style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: c.pay_instructions ? 'How to pay: ' + c.pay_instructions : '' }), ref.wrap, msg, h('div', { class: 'actions' }, go2),
         h('p', { class: 'hint-line', text: 'Athenaeum does not handle the payment or refunds \u2014 that is between you and the teacher.' }));
     }
     return { title: c.title, nodes };
@@ -12480,7 +12892,7 @@ function questionDialog(row, teachers, names) {
       const b = makeField('Details (optional)', { value: row && row.body, maxlength: 5000, multiline: true, rows: 4 });
       const sub = makeField('Subject (optional)', { value: row && row.subject, maxlength: 80, placeholder: 'e.g. Physics' });
       const sel = h('select', { class: 'control', 'aria-label': 'Request a teacher' }, h('option', { value: '', text: 'Anyone can answer' }),
-        teachers.filter(x => x.user_id !== currentUser.id).map(x => h('option', { value: x.user_id, text: (names[x.user_id] || 'Teacher') + ' \u00b7 ' + x.subjects })));
+        teachers.filter(x => x.user_id !== currentUser.id).map(x => h('option', { value: x.user_id, text: joinParts([names[x.user_id] || 'Teacher', x.subjects], ' \u00b7 ') })));
       sel.value = (row && row.requested_teacher_id) || '';
       form.append(t.wrap, b.wrap, sub.wrap, h('div', { class: 'field' }, h('label', { text: 'Request a teacher (optional)' }), sel));
       return () => {
@@ -12689,7 +13101,7 @@ function consultBookDialog(o, name) {
       const at = makeField('Proposed start time'); at.input.type = 'datetime-local';
       const ref = makeField('Payment reference / transaction ID', { maxlength: 100 });
       form.append(h('p', { class: 'hint-line', text: o.duration_min + ' minutes \u00b7 ' + priceTxt(o.price_bdt) }), t.wrap, d.wrap, at.wrap);
-      if (o.price_bdt) form.append(h('p', { class: 'hint-line', style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: 'How to pay: ' + o.pay_instructions }), ref.wrap);
+      if (o.price_bdt) form.append(h('p', { class: 'hint-line', style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: o.pay_instructions ? 'How to pay: ' + o.pay_instructions : '' }), ref.wrap);
       return () => {
         const topic = t.input.value.trim(), when = new Date(at.input.value);
         if (topic.length < 5) throw new Error('Describe the topic (at least 5 characters).');
@@ -12748,7 +13160,7 @@ async function consultPage() {
       h('small', { style: 'overflow-wrap:anywhere', text: [subj(o.teacher_id), o.duration_min + ' min', priceTxt(o.price_bdt), o.about].filter(Boolean).join(' \u00b7 ') }))))) : emptyBlock('No teachers open yet', 'Teachers who open consult sessions will be listed here.')),
     section('My bookings', null, null, mineS.length ? mineS.map(b => consultRow(b, false, names)) : h('p', { class: 'hint-line', text: 'You have not booked a session yet.' }))];
   if (isTeacher) nodes.push(section('Teaching: my consult offer', mine ? 'Edit' : 'Set up', () => offerDialog(mine),
-    mine ? h('p', { class: 'hint-line', text: (mine.enabled ? 'Open' : 'Paused') + ' \u00b7 ' + mine.duration_min + ' min \u00b7 ' + priceTxt(mine.price_bdt) + (mine.about ? ' \u00b7 ' + mine.about : '') }) : h('p', { class: 'hint-line', text: 'Set your session length and price to let students book you.' })),
+    mine ? h('p', { class: 'hint-line', text: joinParts([mine.enabled ? 'Open' : 'Paused', mine.duration_min ? mine.duration_min + ' min' : '', priceTxt(mine.price_bdt), mine.about], ' \u00b7 ') }) : h('p', { class: 'hint-line', text: 'Set your session length and price to let students book you.' })),
     section('Requests to me', null, null, mineT.length ? mineT.map(b => consultRow(b, true, names)) : h('p', { class: 'hint-line', text: 'No booking requests yet.' })));
   return { title: 'Consult a teacher', nodes };
 }
@@ -12882,7 +13294,7 @@ async function itemDialog(g, kind, req) {
       const u = makeField('Link (https)', { maxlength: 500, placeholder: 'https://\u2026' });
       if (mine.length) {
         const sel = h('select', { class: 'control', 'aria-label': 'Start from a saved note' }, h('option', { value: '', text: 'Or start from one of my saved notes\u2026' }), mine.map((x, i) => h('option', { value: String(i), text: ITEM_TYPES[x.type].label + ' \u00b7 ' + (x.title || x.body.slice(0, 40)) })));
-        sel.addEventListener('change', () => { const x = mine[Number(sel.value)]; chosenType = x ? x.type : 'note'; if (x) { t.input.value = x.title || ''; b.input.value = x.body; } });
+        sel.addEventListener('change', () => { const x = mine[Number(sel.value)]; chosenType = x ? x.type : 'note'; if (x) { t.input.value = x.title || ''; b.input.value = x.body || ''; } });
         form.append(h('div', { class: 'field' }, sel));
       }
       form.append(t.wrap); if (kind === 'link') form.append(u.wrap); form.append(b.wrap);
@@ -12957,6 +13369,31 @@ function groupChat(g, names) {
   const earlier = h('button', { class: 'btn quiet small', type: 'button', text: 'Load earlier', hidden: true });
   const ta = h('textarea', { class: 'control area', rows: 2, maxlength: 1000, placeholder: 'Message the group\u2026', 'aria-label': 'Message the group' });
   const send = h('button', { class: 'btn', type: 'button', text: 'Send' });
+  // 3-minute cooldown after each message (also enforced by the database; see schema-update-G9b-chat-cooldown.sql)
+  const COOLDOWN_MS = 3 * 60 * 1000;
+  let cdUntil = 0, cdTimer = null;
+  const fmtCd = ms => { const t = Math.max(0, Math.ceil(ms / 1000)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
+  function paintCd() {
+    const left = cdUntil - Date.now();
+    if (left <= 0 || !box.isConnected) {
+      clearInterval(cdTimer); cdTimer = null; cdUntil = 0;
+      ta.disabled = false; send.disabled = false; send.textContent = 'Send';
+      return;
+    }
+    ta.disabled = true; send.disabled = true; send.textContent = 'You can send again in ' + fmtCd(left);
+  }
+  function startCd(ms) {
+    cdUntil = Date.now() + Math.min(ms, COOLDOWN_MS);
+    clearInterval(cdTimer); paintCd(); cdTimer = setInterval(paintCd, 1000);
+  }
+  (async () => {   // resume a running cooldown after a reload or after coming back to this page
+    try {
+      const r = await sb.from('group_chat_last_sent').select('last_at').eq('group_id', g.id).eq('user_id', me).maybeSingle();
+      if (r.error || !r.data || !r.data.last_at) return;
+      const left = new Date(r.data.last_at).getTime() + COOLDOWN_MS - Date.now();
+      if (left > 0) startCd(left);
+    } catch (e) { /* migration not run yet: no client-side countdown */ }
+  })();
   const msgEl = m => {
     const mineMsg = m.user_id === me, el = h('div', { 'data-id': m.id, style: 'padding:8px 12px;border:1px solid var(--line);border-radius:12px;min-width:0;display:grid;gap:2px;' + (mineMsg ? 'background:var(--paper-hi)' : '') },
       h('small', { style: 'color:var(--dim)' }, h('a', { href: '#workspace/people/' + m.user_id, text: mineMsg ? 'You' : (names[m.user_id] || 'Athenaeum user') }), ' \u00b7 ' + whenTxt(m.created_at)),
@@ -12988,16 +13425,20 @@ function groupChat(g, names) {
     const rows = (r.data || []).slice().reverse(); const top = box.scrollHeight; await add(rows, true); box.scrollTop = box.scrollHeight - top; earlier.hidden = rows.length < 50;
   });
   async function sendMsg() {
+    if (cdUntil > Date.now()) return;
     const body = ta.value.trim(); if (!body) return;
     send.disabled = true;
     const r = await sb.from('group_messages').insert({ group_id: g.id, user_id: me, body }).select('*').single();
-    send.disabled = false;
-    if (r.error) { status.textContent = 'Could not send: ' + r.error.message; return; }
-    ta.value = ''; status.textContent = ''; await add([r.data], false); box.scrollTop = box.scrollHeight;
+    if (r.error) {
+      const m = /COOLDOWN:(\d+)/.exec(r.error.message || '');
+      if (m) { status.textContent = ''; startCd(Number(m[1]) * 1000); return; }   // the server says how long is left; the typed text stays in the box
+      send.disabled = false; status.textContent = 'Could not send: ' + r.error.message; return;
+    }
+    ta.value = ''; status.textContent = ''; startCd(COOLDOWN_MS); await add([r.data], false); box.scrollTop = box.scrollHeight;
   }
   send.addEventListener('click', sendMsg);
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMsg(); } });
-  const stop = () => { clearInterval(timer); if (ch) { try { sb.removeChannel(ch); } catch (e) {} ch = null; } };
+  const stop = () => { clearInterval(timer); clearInterval(cdTimer); if (ch) { try { sb.removeChannel(ch); } catch (e) {} ch = null; } };
   loadLatest().then(ok => {
     if (!ok) return;
     try {
@@ -13014,7 +13455,7 @@ function groupChat(g, names) {
     }, 20000);
   });
   return section('Group chat', null, null, status, earlier, box, h('div', { class: 'field' }, ta), h('div', { class: 'actions' }, send),
-    h('p', { class: 'hint-line', text: 'Only members of this group can read or write here. Messages cannot be edited; you can delete your own.' }));
+    h('p', { class: 'hint-line', text: 'Only members of this group can read or write here. You can send one message every 3 minutes. Messages cannot be edited; you can delete your own.' }));
 }
 
 /* ---------- G10: teacher reputation & verification ----------
@@ -13418,7 +13859,7 @@ function schScholarshipKey(url) {
 }
 
 function schAlumniTips(url, getName) {
-  const key = schScholarshipKey(url), wrap = h('div');
+  const key = schScholarshipKey(url), wrap = h('div', { class: 'sec-wrap' });
   if (!key) {
     wrap.append(section('Alumni tips', null, null, h('p', { class: 'none', text: 'Add a link to this scholarship (pencil icon in your Shortlist) so alumni tips can be matched to it.' })));
     return wrap;
@@ -13483,7 +13924,7 @@ function schAlumniTips(url, getName) {
     return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
       who,
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
-        h('span', { class: 'chip pub', text: 'Alumni \u00b7 ' + t.year_received }), h('small', { text: fmtDate(new Date(t.created_at)) })),
+        h('span', { class: 'chip pub', text: joinParts(['Alumni', t.year_received], ' \u00b7 ') }), h('small', { text: fmtDate(new Date(t.created_at)) })),
       h('p', { style: 'margin:0;white-space:pre-wrap;overflow-wrap:anywhere', text: t.body }),
       t.mine ? h('div', { class: 'vault-actions', style: 'margin:0' }, h('button', { class: 'btn quiet small', type: 'button', text: 'Edit my tip', onclick: () => openTipDialog(t) })) : null);
   }
@@ -13533,7 +13974,7 @@ const schCohortSetup = e => h('div', { class: 'status bad' }, h('strong', { text
   h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
 
 function schCohort(url, getName, deadlineYear) {
-  const key = schScholarshipKey(url), me = currentUser.id, wrap = h('div');
+  const key = schScholarshipKey(url), me = currentUser.id, wrap = h('div', { class: 'sec-wrap' });
   if (!key) {
     wrap.append(section('Applying this year', null, null, h('p', { class: 'none', text: 'Add a link to this scholarship (pencil icon in your Shortlist) to see and join the people applying to it.' })));
     return wrap;
@@ -13688,6 +14129,68 @@ function schOutcomeBlock(r, ctx) {
   return box;
 }
 
+function openVoiceSettings() {
+  const ss = window.speechSynthesis;
+  if (!ss) {
+    showDialog({ title: 'Voice settings', text: 'This device or browser has no built-in speech engine, so read-aloud is not available here.', submitLabel: 'OK', onSubmit() {} });
+    return;
+  }
+  const draft = { ...ttsSettings };
+  showDialog({
+    title: 'Voice settings',
+    text: 'How read-aloud sounds. This applies to every Listen button and to audio overviews.',
+    submitLabel: 'Save',
+    render(form) {
+      const refreshers = [];
+      const slider = (label, key, min, max, step, fmt) => {
+        const out = h('strong', { text: fmt(draft[key]) });
+        const input = h('input', { type: 'range', min, max, step, value: draft[key], 'aria-label': label, style: 'width:100%;accent-color:var(--marker)' });
+        input.addEventListener('input', () => { draft[key] = Number(input.value); out.textContent = fmt(draft[key]); });
+        refreshers.push(() => { input.value = draft[key]; out.textContent = fmt(draft[key]); });
+        return h('div', { class: 'field' }, h('label', {}, label + ': ', out), input);
+      };
+      const voiceSel = (label, key, lang) => {
+        const sel = h('select', { class: 'control', 'aria-label': label });
+        const fill = () => {
+          const all = (ss.getVoices() || []).filter(v => v.lang && v.lang.toLowerCase().startsWith(lang));
+          sel.replaceChildren(
+            h('option', { value: '', text: all.length ? 'Device default' : 'No ' + (lang === 'bn' ? 'Bangla' : 'English') + ' voice found on this device' }),
+            all.map(v => h('option', { value: v.voiceURI, text: v.name + ' (' + v.lang + ')' })));
+          sel.value = all.some(v => v.voiceURI === draft[key]) ? draft[key] : '';
+        };
+        fill();
+        sel.addEventListener('change', () => { draft[key] = sel.value; });
+        refreshers.push(fill);
+        return h('div', { class: 'field' }, h('label', { text: label }), sel);
+      };
+      const sample = lang => {
+        ss.cancel();
+        const u = new SpeechSynthesisUtterance(lang === 'bn' ? 'আপনার নোটগুলো এভাবে পড়ে শোনানো হবে।' : 'This is how your study notes will sound.');
+        const saved = lang === 'bn' ? draft.voiceBn : draft.voiceEn, voices = ss.getVoices() || [];
+        const v = (saved && voices.find(x => x.voiceURI === saved)) || voices.find(x => x.lang && x.lang.toLowerCase().startsWith(lang));
+        if (v) u.voice = v;
+        u.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
+        ttsApply(u, draft);
+        ss.speak(u);
+      };
+      ss.onvoiceschanged = () => refreshers.forEach(f => f());   // voices often load a moment after the page
+
+      form.append(
+        slider('Speed', 'rate', 0.5, 2, 0.1, v => v.toFixed(1) + '\u00d7'),
+        slider('Pitch', 'pitch', 0.5, 2, 0.1, v => v.toFixed(1)),
+        slider('Volume', 'volume', 0, 1, 0.05, v => Math.round(v * 100) + '%'),
+        voiceSel('English voice', 'voiceEn', 'en'),
+        voiceSel('Bangla voice', 'voiceBn', 'bn'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn quiet small', type: 'button', text: 'Test English', onclick: () => sample('en') }),
+          h('button', { class: 'btn quiet small', type: 'button', text: 'Test Bangla', onclick: () => sample('bn') }),
+          h('button', { class: 'btn quiet small', type: 'button', text: 'Reset to defaults', onclick: () => { Object.assign(draft, TTS_DEFAULTS); refreshers.forEach(f => f()); } })));
+      return () => ({ ...draft });
+    },
+    async onSubmit(values) { ss.cancel(); await ttsSave(values); }
+  });
+}
+
 function openSheet()  { $('#sheet').hidden = false; $('#logout-btn').focus(); }
 function closeSheet() { $('#sheet').hidden = true; }
 
@@ -13717,6 +14220,7 @@ async function boot() {
   $('#sheet-profile').addEventListener('click', closeSheet);
   $('#sheet-posts').addEventListener('click', closeSheet);
   $('#sheet-teach').addEventListener('click', closeSheet);
+  $('#sheet-voice').addEventListener('click', () => { closeSheet(); openVoiceSettings(); });
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   $('#viewer-close').addEventListener('click', closeViewer);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closeSheet(); } });
@@ -13763,6 +14267,28 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
+
+// F1 safety net: two full-width buttons stacked in a plain block container (no flex/grid gap of
+// their own) get a 12px gap, wherever they are rendered.
+(function () {
+  const view = document.getElementById('view');
+  if (!view) return;
+  let queued = false;
+  function fixGaps() {
+    queued = false;
+    view.querySelectorAll('.btn + .btn').forEach(el => {
+      if (el.hidden || el.classList.contains('small') || el.style.marginTop) return;
+      let prev = el.previousElementSibling;
+      while (prev && prev.hidden) prev = prev.previousElementSibling;
+      if (!prev || !prev.classList.contains('btn') || prev.classList.contains('small')) return;
+      const d = getComputedStyle(el.parentElement).display;
+      if (d === 'block') el.style.marginTop = '12px';
+    });
+  }
+  new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(fixGaps); } })
+    .observe(view, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  fixGaps();
+})();
 
 // Phase 5.2: inside the Android app, a WebView can't save a blob: URL to
 // disk the way a real browser does, so hand backup/export/infographic
