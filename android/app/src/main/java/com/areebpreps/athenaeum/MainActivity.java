@@ -55,6 +55,13 @@ public class MainActivity extends Activity {
 
     private static final int FILE_CHOOSER_REQUEST_CODE = 51;
 
+    // YouTube's embedded player (error 153) refuses pages that send no
+    // Referer, and a file:// page never sends one. So the local copy of
+    // index.html is loaded with this real https address as its base URL
+    // (no network request is made for it); the page then has a proper origin.
+    private static final String LOCAL_BASE_URL = "https://athenaeum.eu.cc/";
+    private static final String LOCAL_BASE_HOST = "athenaeum.eu.cc";
+
     private WebView webView;
     private File localIndexFile;
 
@@ -70,7 +77,7 @@ public class MainActivity extends Activity {
         setupLocalSite();
         configureWebView();
 
-        webView.loadUrl("file://" + localIndexFile.getAbsolutePath());
+        loadLocalSite();
     }
 
     @Override
@@ -110,6 +117,15 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void loadLocalSite() {
+        try {
+            String html = readFile(localIndexFile);
+            webView.loadDataWithBaseURL(LOCAL_BASE_URL, html, "text/html", "UTF-8", null);
+        } catch (IOException e) {
+            webView.loadUrl("file://" + localIndexFile.getAbsolutePath());
+        }
+    }
+
     // ---------- GitHub sync ----------
 
     private void checkForUpdateInBackground() {
@@ -121,7 +137,7 @@ public class MainActivity extends Activity {
                 if (!latest.equals(current)) {
                     writeFile(localIndexFile, latest);
                     runOnUiThread(() -> {
-                        webView.loadUrl("file://" + localIndexFile.getAbsolutePath());
+                        loadLocalSite();
                         Toast.makeText(MainActivity.this, "Athenaeum updated.", Toast.LENGTH_SHORT).show();
                     });
                 }
@@ -189,6 +205,7 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 if ("file".equals(uri.getScheme())) return false;
+                if (LOCAL_BASE_HOST.equals(uri.getHost())) return false; // the app's own address stays in the app
                 openExternally(uri);
                 return true;
             }
