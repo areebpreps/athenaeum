@@ -7507,27 +7507,34 @@ function schMatches(c, f, usedDest) {
   const fund = { fully: /fully/i, partial: /partial/i, tuition: /tuition/i }[f.funding];
   if (fund && !fund.test(c.funding || '')) return false;
   if (!usedDest && f.dest && !(SCH_DEST_RE[f.dest] || new RegExp(f.dest, 'i')).test(c.country || '')) return false;
-  return true;
+  return schSubjectOk(c, f);
 }
 
 // Card fields are read by position, not class name: each card is an <h3> link
 // followed by a short list [funding, provider, levels, subjects, audience, country].
 function schParseListing(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  const out = []; let cur = null;
-  doc.querySelectorAll('h3, li').forEach(el => {
-    if (el.tagName === 'H3') {
+  const out = []; let cur = null, img = '';
+  doc.querySelectorAll('img, h3, li, p').forEach(el => {
+    if (el.tagName === 'IMG') {                       // the banner sits just before its card's title
+      const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+      try { img = src ? new URL(src, SCH_SRC).href : ''; } catch (e) { img = ''; }
+    } else if (el.tagName === 'H3') {
       const a = el.querySelector('a[href]');
       let url = ''; try { url = a ? new URL(a.getAttribute('href'), SCH_SRC).href : ''; } catch (e) { /* skip */ }
-      cur = url.startsWith(SCH_SRC) ? { name: a.textContent.trim(), url, tags: [] } : null;
+      cur = url.startsWith(SCH_SRC) ? { name: a.textContent.trim(), url, tags: [], img, desc: '' } : null;
+      img = '';
       if (cur) out.push(cur);
-    } else if (cur && cur.tags.length < 6) {
+    } else if (el.tagName === 'P') {
+      const t = el.textContent.trim();
+      if (cur && cur.tags.length >= 3 && !cur.desc && t.length > 40) cur.desc = t;
+    } else if (cur && !cur.desc && cur.tags.length < 6) {
       const t = el.textContent.trim();
       if (!t || t.length > 120 || /^(\u00ab|\u00bb|\d+)$/.test(t)) cur = null; else cur.tags.push(t);
     }
   });
   return out.filter(c => c.tags.length >= 3).map(c => ({ name: c.name, url: c.url, funding: c.tags[0], provider: c.tags[1],
-    levels: c.tags[2], subjects: c.tags[3] || '', country: c.tags[c.tags.length - 1] }));
+    levels: c.tags[2], subjects: c.tags[3] || '', audience: c.tags.length >= 6 ? c.tags[4] : '', country: c.tags[c.tags.length - 1], img: c.img, desc: c.desc }));
 }
 
 async function schFetchListing(url) {
@@ -7602,17 +7609,89 @@ async function schLoadDeadlines(cards, onProgress) {
   }
 }
 
+// E7b: subject / discipline filters run on the fetched cards (the listing pages carry the subject text).
+const SCH_DISCIPLINES = {
+  'Computer Science & IT': /comput|software|informat|data|\bit\b|cyber|artificial/i, 'Engineering': /engineer|aero|mechanic|electr|civil|robot|manufactur|material|chemical|mechatron|space|aviation/i,
+  'Medicine & Health': /medic|health|nurs|pharm|dent|clinical|biomed/i, 'Agriculture': /agri|farm|food|crop|forest/i, 'Environment': /environment|climate|sustainab|energy|ecolog|water/i,
+  'Law': /\blaw|legal|justice/i, 'Business & Management': /business|manage|mba|marketing|entrepren/i, 'Economics & Finance': /econom|financ|account|bank/i, 'Mathematics': /math|statist/i,
+  'Natural Sciences': /physic|chemi|biolog|geolog|astronom|natural science|earth/i, 'Social Sciences': /social|politic|sociolog|psycholog|international relations|development|policy|anthropolog/i,
+  'Education': /educat|teach|pedagog/i, 'Media & Communication': /media|communicat|journalis|film/i, 'Architecture & Design': /architect|design|urban|planning/i,
+  'Arts & Humanities': /\barts?\b|humanit|history|literat|language|philosoph|music|theolog/i, 'Science (General)': /science/i };
+const SCH_FUNDING_LABEL = { fully: 'Fully funded', partial: 'Partial funding', tuition: 'Full tuition fee' };
+const SCH_LEVEL_LABEL = { bachelor: 'Bachelor', masters: 'Masters', phd: 'PhD' };
+function schSubjectOk(c, f) {
+  if (!f.discipline && !f.subject) return true;
+  const subj = c.subjects || '';
+  if (/all subjects/i.test(subj)) return true;              // open to every subject, so it fits any filter
+  const hay = (subj + ' ' + c.name).toLowerCase();
+  if (f.discipline && !SCH_DISCIPLINES[f.discipline].test(hay)) return false;
+  if (f.subject) {
+    const stems = String(f.subject).toLowerCase().split(/[^a-z]+/).filter(w => w.length > 2 && !/^(and|of|the|for|studies|science|sciences)$/i.test(w)).map(w => w.slice(0, 4));
+    const spec = stems.filter(w => w !== 'engi'), want = spec.length ? spec : stems;   // "Aerospace Engineering" -> match on "aero"
+    return !want.length || want.some(w => hay.includes(w));
+  }
+  return true;
+}
+
+// "Read More" opens the university's own page. The ScholarshipsAds page is fetched the same way the listings are
+// (directly, or through SCH_PROXY) and its best outside link is picked; the result is cached for 30 days.
+// If no outside link is found, the ScholarshipsAds page itself opens.
+const SCH_OFFICIAL_KEY = 'sch-official2:';
+const SCH_SKIP_HOST = ['scholarshipsads', 'facebook', 'twitter', 'x.com', 'linkedin', 'pinterest', 'instagram', 'youtube', 'youtu.be', 'whatsapp', 'wa.me', 't.me', 'telegram', 'tiktok', 'syntaratechnologies', 'google', 'gstatic', 'apple.com'];
+function schPeekOfficial(url) { try { const k = JSON.parse(store.get(SCH_OFFICIAL_KEY + url) || 'null'); if (k && k.u && k.at > Date.now() - 30 * 864e5) return k.u; } catch (e) { /* none */ } return ''; }
+function schPickOfficial(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const main = doc.querySelector('article, main, #content, .content') || doc.body;
+  let best = '', top = 0;
+  doc.querySelectorAll('a[href]').forEach(a => {
+    let u; try { u = new URL(a.getAttribute('href'), SCH_SRC); } catch (e) { return; }
+    if (!/^https?:$/.test(u.protocol) || SCH_SKIP_HOST.some(x => u.hostname.includes(x))) return;
+    let sc = main.contains(a) ? 1 : 0;
+    if (/official|apply|website|visit|portal|scholarship page|more info|source/i.test(a.textContent)) sc += 3;
+    if (/\.edu(\.|$)|\.ac\.|univ|uni-|college|institut|school/i.test(u.hostname)) sc += 2;
+    if (u.pathname.length > 1) sc += 1;                      // a deep page beats a bare homepage
+    if (sc > top) { top = sc; best = u.href; }
+  });
+  return top >= 4 ? best : '';
+}
+async function schOfficialUrl(c) {
+  const known = schPeekOfficial(c.url); if (known) return known;
+  let html = '';
+  try { const r = await fetch(c.url); if (r.ok) html = await r.text(); } catch (e) { /* blocked by CORS -- use the proxy */ }
+  if (!html && SCH_PROXY) { try { const r = await fetch(SCH_PROXY + '?url=' + encodeURIComponent(c.url)); if (r.ok) html = await r.text(); } catch (e) { /* offline */ } }
+  const u = html ? schPickOfficial(html) : '';
+  if (u) store.set(SCH_OFFICIAL_KEY + c.url, JSON.stringify({ at: Date.now(), u }));
+  return u;
+}
+
 function schResultCard(c, isSaved, onSave) {
-  return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px' },
-    h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer', style: 'font-weight:700', text: c.name }),
-    h('div', { class: 'chips', style: 'margin:0' }, [c.funding, c.levels].filter(Boolean).map(t => h('span', { class: 'chip', text: t }))),
-    h('small', { text: [c.provider, c.subjects, c.country].filter(Boolean).join(' \u00b7 ') }),
-    c.fit ? h('small', { style: 'font-weight:600;color:' + (c.fit.score >= 75 ? '#3ecf8e' : c.fit.score >= 45 ? 'var(--marker)' : '#ef6b6b'),
-      text: c.fit.label + ' \u00b7 ' + c.fit.parts.join(' \u00b7 ') }) : null,
+  const bullets = [['\uD83D\uDCB0', c.funding], ['\uD83C\uDFDB\uFE0F', c.provider], ['\uD83C\uDF93', c.levels], ['\uD83D\uDCD6', c.subjects], ['\uD83C\uDF10', c.audience], ['\uD83D\uDCCD', c.country]].filter(b => b[1]);
+  const more = h('a', { class: 'btn', href: c.url, target: '_blank', rel: 'noopener noreferrer', style: 'display:block;text-align:center;text-decoration:none', text: 'Read More \u2192' });
+  more.addEventListener('click', async e => {
+    if (more.dataset.busy) { e.preventDefault(); return; }
+    const known = schPeekOfficial(c.url);
+    if (known) { more.href = known; return; }                // the link's normal navigation opens it
+    e.preventDefault();
+    const w = window.open('', '_blank');                      // opened now so the browser allows it, pointed once found
+    more.dataset.busy = '1'; more.textContent = 'Finding the official page\u2026';
+    const u = await schOfficialUrl(c);
+    delete more.dataset.busy; more.textContent = 'Read More \u2192';
+    if (u) more.href = u;
+    if (w) w.location.href = u || c.url; else window.open(u || c.url, '_blank', 'noopener');
+  });
+  return h('article', { class: 'proj', style: 'padding:14px;display:grid;gap:10px' },
+    c.img ? h('img', { src: c.img, alt: c.name, loading: 'lazy', referrerpolicy: 'no-referrer',
+      style: 'width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:var(--paper-hi)', onerror: e => e.currentTarget.remove() }) : null,
+    h('strong', { style: 'font-size:17px;line-height:1.3', text: c.name }),
+    h('ul', { style: 'list-style:none;margin:0;padding:0;display:grid;gap:6px' },
+      bullets.map(([ic, t]) => h('li', { style: 'display:flex;gap:8px;font-size:14px' }, h('span', { 'aria-hidden': 'true', text: ic }), h('span', { text: t })))),
     c.deadline ? h('small', { text: 'Deadline: ' + fmtDate(parseLocalDate(c.deadline)) + (c.deadline < schToday() ? ' (closed)' : '') }) : null,
-    h('button', { class: 'btn quiet small', type: 'button', style: 'justify-self:start', text: isSaved ? 'Saved \u2713' : 'Save to shortlist',
-      disabled: isSaved, onclick: e => onSave(c, e.currentTarget) }),
-    h('a', { class: 'link-btn', href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url), text: 'View details', style: 'justify-self:start' }));
+    c.fit ? h('small', { style: 'font-weight:600;color:' + (c.fit.score >= 75 ? '#3ecf8e' : c.fit.score >= 45 ? 'var(--marker)' : '#ef6b6b'), text: c.fit.label + ' \u00b7 ' + c.fit.parts.join(' \u00b7 ') }) : null,
+    c.desc ? h('p', { style: 'margin:0;font-size:14px;color:var(--dim);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden', text: c.desc }) : null,
+    more,
+    h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;align-items:center' },
+      h('button', { class: 'btn quiet small', type: 'button', text: isSaved ? 'Saved \u2713' : 'Save to shortlist', disabled: isSaved, onclick: e => onSave(c, e.currentTarget) }),
+      h('a', { class: 'link-btn', href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url), text: 'View details' })));
 }
 
 async function schSearchPage() {
@@ -7621,26 +7700,53 @@ async function schSearchPage() {
   const p = pr.data || {};
   const dests = SCH_DESTINATIONS.filter(d => d !== 'Open to anywhere');
   const nats = SCH_COUNTRIES.filter(c => c !== 'Other');
-  const f = { nat: nats.includes(p.home_country) ? p.home_country : '', dest: (p.destinations || []).find(d => dests.includes(d)) || '', level: SCH_LEVEL_SLUGS[p.target_level] || '', funding: 'fully' };
+  const f = { nat: nats.includes(p.home_country) ? p.home_country : '', dest: (p.destinations || []).find(d => dests.includes(d)) || '', level: SCH_LEVEL_SLUGS[p.target_level] || '',
+    discipline: '', subject: (p.target_major || '').slice(0, 60), funding: 'fully' };
   let st = { cards: [], page: 1, combo: 0 }, sort = 'fit';
-  const saved = new Set();
+  const saved = new Set(), ctrl = {};
   const sl = await sb.from('scholarship_shortlist').select('link');
   (sl.data || []).forEach(r => { if (r.link) saved.add(r.link); });
 
   const sel = (label, opts, key) => {
     const s = h('select', { class: 'control', 'aria-label': label }, opts.map(([v, t]) => h('option', { value: v, text: t })));
-    s.value = f[key]; s.addEventListener('change', () => { f[key] = s.value; });
+    s.value = f[key]; s.addEventListener('change', () => { f[key] = s.value; }); ctrl[key] = s;
     return h('div', { class: 'field' }, h('label', { text: label }), s);
   };
-  const goBtn = h('button', { class: 'btn', type: 'button', text: 'Search' });
+  const subjectIn = h('input', { class: 'control', type: 'text', placeholder: 'e.g. Aerospace Engineering', 'aria-label': 'Subject', value: f.subject, maxlength: '60' });
+  subjectIn.addEventListener('input', () => { f.subject = subjectIn.value.trim(); });
+  subjectIn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run(false); } });
+  ctrl.subject = subjectIn;
+
+  const goBtn = h('button', { class: 'btn', type: 'button', text: 'Apply filter' });
+  const clearBtn = h('button', { class: 'btn quiet', type: 'button', text: 'Clear' });
   const moreBtn = h('button', { class: 'btn quiet', type: 'button', text: 'Show more', hidden: true });
   const err = h('p', { class: 'msg err', role: 'alert', hidden: true });
-  const out = h('div');
+  const out = h('div'), chipsBox = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center', hidden: true });
   const status = h('p', { class: 'hint-line', hidden: true });
-  const sortSel = h('select', { class: 'control', 'aria-label': 'Sort results' },
-    [['fit', 'Best fit'], ['deadline', 'Deadline (soonest)']].map(([v, t]) => h('option', { value: v, text: t })));
-  const sortBox = h('div', { class: 'field', hidden: true }, h('label', { text: 'Sort results' }), sortSel);
+  const countEl = h('strong', { style: 'font-size:18px', text: '' });
+  const sortSel = h('select', { class: 'control', 'aria-label': 'Sort results', style: 'width:auto' },
+    [['fit', 'Relevance'], ['deadline', 'Deadline (soonest)']].map(([v, t]) => h('option', { value: v, text: t })));
+  const sortBox = h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)', hidden: true },
+    countEl, h('label', { style: 'display:flex;align-items:center;gap:8px;font-size:14px' }, 'Sort:', sortSel));
+  const panel = h('div', { style: 'display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px' },
+    h('strong', { text: 'Refine scholarships' }),
+    sel('Your nationality', [['', 'Any country'], ...nats.map(c => [c, c])], 'nat'),
+    sel('Study destination', [['', 'Any destination'], ...dests.map(d => [d, d])], 'dest'),
+    sel('Degree level', [['', 'Any level'], ['bachelor', 'Bachelor'], ['masters', 'Masters'], ['phd', 'PhD']], 'level'),
+    sel('Subject discipline', [['', 'Any discipline'], ...Object.keys(SCH_DISCIPLINES).map(d => [d, d])], 'discipline'),
+    h('div', { class: 'field' }, h('label', { text: 'Subject (pick a discipline above, or type any subject)' }), subjectIn),
+    sel('Funding', [['', 'Any funding'], ['fully', 'Fully funded'], ['partial', 'Partial funding'], ['tuition', 'Full tuition fee']], 'funding'),
+    h('div', { class: 'actions' }, goBtn, clearBtn));
+  const filtersBtn = h('button', { class: 'btn', type: 'button', style: 'background:var(--marker);color:#1a1a1a;width:100%', text: 'Filters & refine' });
+  filtersBtn.addEventListener('click', () => { panel.hidden = !panel.hidden; });
 
+  function drawChips(a) {
+    const items = [['funding', SCH_FUNDING_LABEL[a.funding]], ['level', SCH_LEVEL_LABEL[a.level]], ['dest', a.dest], ['discipline', a.discipline], ['subject', a.subject], ['nat', a.nat && 'For ' + a.nat + ' students']].filter(i => i[1]);
+    chipsBox.hidden = !items.length;
+    chipsBox.replaceChildren(h('small', { text: 'FILTERED BY:' }), items.map(([k, t]) => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter ' + t, text: t + ' \u00d7',
+      style: 'cursor:pointer;border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--chalk)',
+      onclick: () => { f[k] = ''; ctrl[k].value = ''; run(false); } })));
+  }
   function sorted() {
     const fitOf = c => (c.fit ? c.fit.score : 0);
     if (sort !== 'deadline') return st.cards.slice().sort((a, b) => fitOf(b) - fitOf(a));
@@ -7655,7 +7761,6 @@ async function schSearchPage() {
     saved.add(c.url); btn.textContent = 'Saved \u2713';
     await syncScholarshipDeadline({ id: ins.data.id, name: c.name, deadline: c.deadline || null, followed: true }); // E4: deadline reaches Planner
   }
-  // Sorting by deadline first reads any deadlines not read yet, then repaints.
   async function applySort() {
     err.hidden = true; status.hidden = true;
     if (sort === 'deadline') {
@@ -7669,40 +7774,39 @@ async function schSearchPage() {
   sortSel.addEventListener('change', () => { sort = sortSel.value; applySort(); });
 
   function paint() {
+    countEl.textContent = st.cards.length + ' scholarship' + (st.cards.length === 1 ? '' : 's');
     out.replaceChildren(
       st.combo > 0 ? h('p', { class: 'hint-line', text: 'ScholarshipsAds has no page for this exact combination, so these come from a broader list, filtered to match.' }) : null,
       f.nat && !SCH_COMBOS[st.combo][3] ? h('p', { class: 'hint-line', text: 'Your country couldn\u2019t be applied to these results, so check each scholarship\u2019s eligibility for ' + f.nat + ' students.' }) : null,
-      h('p', { class: 'hint-line', text: st.cards.length + ' scholarship' + (st.cards.length === 1 ? '' : 's') + ' shown. Details and deadlines are on each scholarship\u2019s own page \u2014 always confirm there before applying.' }),
-      pr.data ? h('p', { class: 'hint-line', text: 'Fit compares each result\u2019s level, subject and destination with your profile (\u2713 match, \u2717 no match, ~ open or unknown). Your GPA and test scores can\u2019t be checked yet \u2014 requirements aren\u2019t on these cards.' })
-        : h('p', { class: 'hint-line', text: 'Set up your profile in Scholarship Center to see how well each result fits you.' }),
-      sort === 'deadline' ? h('p', { class: 'hint-line', text: 'Deadlines are read from each scholarship\u2019s page by Gemini \u2014 scholarships with no single clear date go after the dated ones, closed ones last. Confirm on the page.' }) : null,
-      h('div', { class: 'list', style: 'display:grid;gap:10px' }, sorted().map(c => schResultCard(c, saved.has(c.url), saveResult))));
+      sort === 'deadline' ? h('p', { class: 'hint-line', text: 'Deadlines are read from each scholarship\u2019s page by Gemini \u2014 undated ones go after the dated ones, closed ones last. Confirm on the page.' }) : null,
+      h('div', { class: 'list', style: 'display:grid;gap:14px;margin-top:12px' }, sorted().map(c => schResultCard(c, saved.has(c.url), saveResult))),
+      h('p', { class: 'hint-line', text: 'Always confirm funding, eligibility and deadlines on the official page before applying.' }));
   }
   async function run(more) {
-    err.hidden = true; goBtn.disabled = moreBtn.disabled = true;
+    err.hidden = true; goBtn.disabled = clearBtn.disabled = moreBtn.disabled = true;
     const label = more ? moreBtn : goBtn, old = label.textContent; label.textContent = 'Searching\u2026';
+    if (!more) drawChips({ ...f });
     try {
-      const r = await schLoadResults(f, more ? st.page + 1 : 1, more ? st.combo : 0);
+      let page = more ? st.page + 1 : 1, r = await schLoadResults(f, page, more ? st.combo : 0);
+      // a subject filter can empty a whole page of results, so look a few pages further before giving up
+      for (let t = 0; !r.cards.length && (f.subject || f.discipline) && t < 3; t++) r = await schLoadResults(f, ++page, r.combo);
       const seen = new Set(more ? st.cards.map(c => c.url) : []);
       const fresh = r.cards.filter(c => !seen.has(c.url));
       fresh.forEach(c => { c.fit = pr.data ? schFit(c, p) : null; });
-      st = { cards: (more ? st.cards : []).concat(fresh), page: more ? st.page + 1 : 1, combo: r.combo };
-      if (!st.cards.length) out.replaceChildren(h('p', { class: 'none', text: 'No scholarships found for those filters. Try a wider level or funding type, or another destination.' }));
-      else { sortBox.hidden = false; await applySort(); }
+      st = { cards: (more ? st.cards : []).concat(fresh), page, combo: r.combo };
+      if (!st.cards.length) { sortBox.hidden = true; out.replaceChildren(h('p', { class: 'none', text: 'No scholarships found for those filters. Try removing a filter chip, a wider level or funding type, or another destination.' })); }
+      else { sortBox.hidden = false; panel.hidden = true; await applySort(); }
       moreBtn.hidden = !fresh.length;
     } catch (e) { err.textContent = (e && e.message) || 'Could not search right now. Try again.'; err.hidden = false; }
-    finally { label.textContent = old; goBtn.disabled = moreBtn.disabled = false; }
+    finally { label.textContent = old; goBtn.disabled = clearBtn.disabled = moreBtn.disabled = false; }
   }
   goBtn.addEventListener('click', () => run(false));
   moreBtn.addEventListener('click', () => run(true));
+  clearBtn.addEventListener('click', () => { Object.keys(ctrl).forEach(k => { f[k] = ''; ctrl[k].value = ''; }); run(false); });
 
   return { title: 'Find scholarships', nodes: [crumb, section('Find scholarships', null, null,
-    h('p', { class: 'hint-line', text: 'Filters start from your profile. Results come live from ScholarshipsAds; tap Save to shortlist on any result to keep it.' }),
-    sel('Your country (nationality)', [['', 'Any country'], ...nats.map(c => [c, c])], 'nat'),
-    sel('Study destination', [['', 'Any destination'], ...dests.map(d => [d, d])], 'dest'),
-    sel('Level', [['', 'Any level'], ['bachelor', 'Bachelor\u2019s'], ['masters', 'Master\u2019s'], ['phd', 'PhD']], 'level'),
-    sel('Scholarship type', [['', 'Any funding'], ['fully', 'Fully funded'], ['partial', 'Partial funding'], ['tuition', 'Full tuition fee']], 'funding'),
-    h('div', { class: 'actions' }, goBtn), err, sortBox, status, out, h('div', { class: 'actions' }, moreBtn))] };
+    h('p', { class: 'hint-line', text: 'Filters start from your profile. Results come live from ScholarshipsAds; Read More opens the university\u2019s own page.' }),
+    filtersBtn, panel, err, chipsBox, sortBox, status, out, h('div', { class: 'actions' }, moreBtn))] };
 }
 
 /* ---------- E10: Scholarship Center -- detail page & overview ---------------
