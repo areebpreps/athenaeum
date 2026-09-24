@@ -703,15 +703,14 @@
     <div class="field">
       <label for="email">Email</label>
       <input class="control" id="email" name="email" type="email" inputmode="email"
-             autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false"
-             placeholder="you@example.com">
+             autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false">
     </div>
 
     <div class="field">
       <label for="password">Password</label>
       <div class="pw-wrap">
         <input class="control" id="password" name="password" type="password"
-               autocomplete="current-password" placeholder="Your password">
+               autocomplete="current-password">
         <button type="button" class="pw-toggle" id="pw-toggle" aria-label="Show password">Show</button>
       </div>
       <div class="hint" id="password-hint" hidden>At least 8 characters.</div>
@@ -726,8 +725,7 @@
     <div class="field">
       <label for="reset-email">Email</label>
       <input class="control" id="reset-email" name="reset-email" type="email" inputmode="email"
-             autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false"
-             placeholder="you@example.com">
+             autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false">
     </div>
     <button class="btn" id="reset-submit" type="submit">Send reset link</button>
     <button class="btn quiet small" id="reset-cancel" type="button">Back to log in</button>
@@ -7376,9 +7374,9 @@ async function scholarshipsHub(sub) {
     }
 
     if (step === 1) {
-      const major = makeField('Subject / major you want to study', { value: draft.target_major, maxlength: 100, placeholder: 'e.g. Computer Science' });
+      const major = makeField('Subject / major you want to study', { value: draft.target_major, maxlength: 100 });
       major.input.addEventListener('input', () => { draft.target_major = major.input.value; });
-      const home = makeField('Home country', { value: draft.home_country, maxlength: 60, placeholder: 'e.g. Bangladesh' });
+      const home = makeField('Home country', { value: draft.home_country, maxlength: 60 });
       home.input.setAttribute('list', 'sch-countries');
       home.input.addEventListener('input', () => { draft.home_country = home.input.value; });
       const dl = h('datalist', { id: 'sch-countries' }, SCH_COUNTRIES.map(c => h('option', { value: c })));
@@ -7566,13 +7564,13 @@ function cvStepPersonal(draft, body) {
     f.input.addEventListener('input', () => { p[key] = f.input.value; cvSaveDraft(draft); });
     return f;
   };
-  const full = mk('Full name', 'fullName', { maxlength: 80, placeholder: 'e.g. Ayesha Khan' });
-  const headline = mk('Headline', 'headline', { maxlength: 100, placeholder: 'e.g. BS Computer Science student' });
-  const email = mk('Email', 'email', { maxlength: 100, placeholder: 'yourname@gmail.com', type: 'email' });
-  const phone = mk('Phone', 'phone', { maxlength: 30, placeholder: '+92 300 1234567' });
-  const city = mk('City, country', 'city', { maxlength: 80, placeholder: 'e.g. Lahore, Pakistan' });
-  const linkedin = mk('LinkedIn', 'linkedin', { maxlength: 150, placeholder: 'linkedin.com/in/yourname' });
-  const website = mk('Website or portfolio (optional)', 'website', { maxlength: 150, placeholder: 'github.com/yourname' });
+  const full = mk('Full name', 'fullName', { maxlength: 80 });
+  const headline = mk('Headline', 'headline', { maxlength: 100, placeholder: 'Your current title or area of study' });
+  const email = mk('Email', 'email', { maxlength: 100, type: 'email' });
+  const phone = mk('Phone', 'phone', { maxlength: 30 });
+  const city = mk('City, country', 'city', { maxlength: 80 });
+  const linkedin = mk('LinkedIn', 'linkedin', { maxlength: 150 });
+  const website = mk('Website or portfolio (optional)', 'website', { maxlength: 150 });
   body.append(
     h('p', { class: 'hint-line', text: 'How recruiters and scholarship committees will contact you.' }),
     h('div', { class: 'two-col' }, full.wrap, headline.wrap),
@@ -7605,12 +7603,12 @@ function cvStepEducation(draft, body) {
           f.input.addEventListener('input', () => { item[key] = f.input.value; cvSaveDraft(draft); });
           return f;
         };
-        const degree = mk('Degree or qualification', 'degree', { maxlength: 100, placeholder: 'e.g. BS Computer Science' });
-        const inst = mk('Institution', 'institution', { maxlength: 120, placeholder: 'e.g. COMSATS University Islamabad' });
+        const degree = mk('Degree or qualification', 'degree', { maxlength: 100 });
+        const inst = mk('Institution', 'institution', { maxlength: 120 });
         const city = mk('City, country', 'city', { maxlength: 80 });
-        const start = mk('Start', 'start', { maxlength: 20, placeholder: 'e.g. Sep 2022' });
-        const end = mk('End (or expected)', 'end', { maxlength: 20, placeholder: 'e.g. Jun 2026' });
-        const details = mk('Details', 'details', { multiline: true, rows: 3, maxlength: 400, placeholder: 'CGPA 3.62/4.00 \u00b7 Thesis: \u2026 \u00b7 Relevant courses: \u2026' });
+        const start = mk('Start', 'start', { maxlength: 20, placeholder: 'Month Year' });
+        const end = mk('End (or expected)', 'end', { maxlength: 20, placeholder: 'Month Year' });
+        const details = mk('Details', 'details', { multiline: true, rows: 3, maxlength: 400, placeholder: 'Grade, thesis title or relevant courses' });
         return [h('div', { class: 'two-col' }, degree.wrap, inst.wrap), h('div', { class: 'two-col' }, city.wrap, start.wrap), end.wrap, details.wrap];
       }, '+ Add education', (item, i) => 'Education ' + (i + 1)));
 }
@@ -7625,11 +7623,11 @@ function cvStepExperience(draft, body) {
           f.input.addEventListener('input', () => { item[key] = f.input.value; cvSaveDraft(draft); });
           return f;
         };
-        const title = mk('Job title', 'title', { maxlength: 100, placeholder: 'e.g. Research Assistant' });
+        const title = mk('Job title', 'title', { maxlength: 100 });
         const org = mk('Organisation', 'org', { maxlength: 120 });
         const city = mk('City, country', 'city', { maxlength: 80 });
-        const start = mk('Start', 'start', { maxlength: 20, placeholder: 'e.g. Jan 2025' });
-        const end = mk('End', 'end', { maxlength: 20, placeholder: 'e.g. Jun 2025' });
+        const start = mk('Start', 'start', { maxlength: 20, placeholder: 'Month Year' });
+        const end = mk('End', 'end', { maxlength: 20, placeholder: 'Month Year' });
         end.input.disabled = !!item.current;
         const cur = h('input', { type: 'checkbox' }); cur.checked = !!item.current;
         cur.addEventListener('change', () => {
@@ -7638,7 +7636,7 @@ function cvStepExperience(draft, body) {
           cvSaveDraft(draft);
         });
         const curLab = h('label', { class: 'check-lab', style: 'min-height:36px' }, cur, h('span', { text: 'I currently work here' }));
-        const achievements = mk('Achievements (one per line)', 'achievements', { multiline: true, rows: 4, maxlength: 1000, placeholder: 'Cleaned and analysed survey data from 1,200 households\nPresented findings at the department seminar' });
+        const achievements = mk('Achievements (one per line)', 'achievements', { multiline: true, rows: 4, maxlength: 1000, placeholder: 'One achievement per line, starting with an action verb' });
         return [h('div', { class: 'two-col' }, title.wrap, org.wrap), h('div', { class: 'two-col' }, city.wrap, start.wrap), end.wrap, curLab, achievements.wrap];
       }, '+ Add experience', (item, i) => 'Experience ' + (i + 1)));
 }
@@ -7649,7 +7647,7 @@ function cvStepSkills(draft, body) {
     h('button', { class: 'chip-btn', type: 'button', 'aria-pressed': 'true', text: s + ' \u00d7', onclick: () => { draft.skills.splice(i, 1); cvSaveDraft(draft); paintTags(); } })));
   paintTags();
   const addSkill = v => { v = v.trim().replace(/,$/, ''); if (v && !draft.skills.includes(v)) { draft.skills.push(v); cvSaveDraft(draft); paintTags(); } };
-  const input = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'e.g. Python, Data analysis, Public speaking', 'aria-label': 'Add a skill' });
+  const input = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'Type a skill and press Enter', 'aria-label': 'Add a skill' });
   input.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addSkill(input.value); input.value = ''; } });
   input.addEventListener('blur', () => { if (input.value.trim()) { addSkill(input.value); input.value = ''; } });
 
@@ -7657,7 +7655,7 @@ function cvStepSkills(draft, body) {
   const LEVELS = ['Basic', 'Conversational', 'Fluent', 'Native'];
   function paintLangs() {
     langBox.replaceChildren(...draft.languages.map((lg, i) => {
-      const name = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'e.g. English', value: lg.name, 'aria-label': 'Language name' });
+      const name = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'Language', value: lg.name, 'aria-label': 'Language name' });
       name.addEventListener('input', () => { lg.name = name.value; cvSaveDraft(draft); });
       const chips = h('div', { class: 'chips' }, LEVELS.map(lv => schChip(lv, lg.level === lv, () => { lg.level = lv; cvSaveDraft(draft); paintLangs(); })));
       const del = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove', onclick: () => { draft.languages.splice(i, 1); cvSaveDraft(draft); paintLangs(); } });
