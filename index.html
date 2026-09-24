@@ -13994,81 +13994,68 @@ async function schClassesPage() {
    all, given it already failed to even *play back* YouTube video
    (Error 153). Needs schema-update-H1-live-sessions.sql.
 
-   Security note, same tradeoff as the Gemini key above: LiveKit access
-   tokens are short-lived JWTs signed with your LiveKit API secret. With
-   no server in this app, that secret has to live in the browser to mint
-   a token at all — anyone who opens dev tools on a page that has it
-   could read it out and mint their own tokens. Fine for this spike and
-   for a small trusted group; before a wider launch, move minting to a
-   small server (e.g. a Supabase Edge Function) that holds the secret
-   instead, and stop shipping it to the browser. ===================== */
-const LIVE_KEYS = {
-  url:    'aw.live.lk.url',
-  apiKey: 'aw.live.lk.key',
-  secret: 'aw.live.lk.secret'
-};
-function liveSettings() {
-  return {
-    url:    store.get(LIVE_KEYS.url)    || '',
-    apiKey: store.get(LIVE_KEYS.apiKey) || '',
-    secret: store.get(LIVE_KEYS.secret) || ''
-  };
-}
-function liveConfigured() {
-  const s = liveSettings();
-  return !!(s.url && s.apiKey && s.secret);
-}
+   H1.5 update: each teacher now brings their own LiveKit Cloud project
+   (and, ready for H3, their own Cloudflare R2 bucket) instead of one
+   shared project. Credentials live in teacher_live_config, readable by
+   nobody but the mint_live_token() Postgres function — no LiveKit secret
+   ever reaches a browser. Needs schema-update-H1.5-teacher-live-config.sql.
+   ===================== */
 
-/* ---------- LiveKit access token, minted client-side ----------
-   A LiveKit access token is a JWT: header {alg:'HS256',typ:'JWT'}, a
-   payload carrying a "video grant", signed HS256 with the API secret.
-   https://docs.livekit.io/home/get-started/authentication/ */
-function b64url(bytes) {
-  let bin = '';
-  (bytes instanceof Uint8Array ? bytes : new TextEncoder().encode(bytes)).forEach(b => { bin += String.fromCharCode(b); });
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-async function mintLiveKitToken({ apiKey, secret, identity, name, room, canPublish }) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    iss: apiKey, sub: identity, name: name || identity,
-    nbf: now - 10, exp: now + 6 * 3600,
-    video: { room, roomJoin: true, canPublish: !!canPublish, canSubscribe: true, canPublishData: !!canPublish }
-  };
-  const signingInput = b64url(JSON.stringify(header)) + '.' + b64url(JSON.stringify(payload));
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signingInput));
-  return signingInput + '.' + b64url(new Uint8Array(sig));
+// Only ever selects the teacher_id column — never the secret columns —
+// just to answer "has this teacher configured live broadcasting yet?".
+async function teacherLiveConfigured(teacherId) {
+  const res = await sb.from('teacher_live_config').select('teacher_id').eq('teacher_id', teacherId).maybeSingle();
+  return !res.error && !!res.data;
 }
 
 function liveSettingsPage() {
-  const s = liveSettings();
-  const fUrl    = makeField('LiveKit URL', { value: s.url,    placeholder: 'wss://your-project.livekit.cloud' });
-  const fKey    = makeField('LiveKit API key', { value: s.apiKey, placeholder: 'Paste from LiveKit Cloud settings' });
-  const fSecret = makeField('LiveKit API secret', { value: s.secret, placeholder: 'Paste from LiveKit Cloud settings' });
+  const fUrl    = makeField('LiveKit URL', { placeholder: 'wss://your-project.livekit.cloud' });
+  const fKey    = makeField('LiveKit API key', { placeholder: 'Paste from LiveKit Cloud settings' });
+  const fSecret = makeField('LiveKit API secret', { placeholder: 'Paste from LiveKit Cloud settings' });
   fSecret.input.type = 'password'; fSecret.input.autocomplete = 'off';
+  const fR2Account = makeField('R2 account ID (optional \u2014 for recordings, later)', {});
+  const fR2Bucket  = makeField('R2 bucket name (optional)', {});
+  const fR2KeyId   = makeField('R2 access key ID (optional)', {});
+  const fR2Secret  = makeField('R2 secret access key (optional)', {});
+  fR2Secret.input.type = 'password'; fR2Secret.input.autocomplete = 'off';
+  const fR2Public  = makeField('R2 public URL (optional)', { placeholder: 'e.g. https://pub-xxxx.r2.dev' });
 
   const msg = h('div', { class: 'msg', hidden: true });
   const showMsgLocal = (text, kind) => { msg.className = 'msg ' + kind; msg.textContent = text; msg.hidden = false; };
+  const statusLine = h('p', { class: 'hint-line', text: 'Checking\u2026' });
+  teacherLiveConfigured(currentUser.id).then(ok => { statusLine.textContent = ok ? 'Live broadcasting is configured for your account.' : 'Not set up yet.'; });
 
   const form = h('form', {
-    onsubmit: e => {
+    onsubmit: async e => {
       e.preventDefault();
       const url = fUrl.input.value.trim(), key = fKey.input.value.trim(), secret = fSecret.input.value.trim();
-      if (!url || !key || !secret) return showMsgLocal('Fill in all three fields.', 'err');
+      if (!url || !key || !secret) return showMsgLocal('LiveKit URL, API key and API secret are required.', 'err');
       if (!/^wss:\/\//.test(url)) return showMsgLocal('The URL should start with wss:// (from LiveKit Cloud\u2019s project settings).', 'err');
-      store.set(LIVE_KEYS.url, url); store.set(LIVE_KEYS.apiKey, key); store.set(LIVE_KEYS.secret, secret);
+      const payload = {
+        teacher_id: currentUser.id, livekit_url: url, livekit_api_key: key, livekit_api_secret: secret,
+        r2_account_id: fR2Account.input.value.trim() || null, r2_bucket: fR2Bucket.input.value.trim() || null,
+        r2_access_key_id: fR2KeyId.input.value.trim() || null, r2_secret_access_key: fR2Secret.input.value.trim() || null,
+        r2_public_url: fR2Public.input.value.trim() || null, updated_at: new Date().toISOString()
+      };
+      const res = await sb.from('teacher_live_config').upsert(payload, { onConflict: 'teacher_id' });
+      if (res.error) return showMsgLocal(res.error.message, 'err');
+      fUrl.input.value = ''; fKey.input.value = ''; fSecret.input.value = '';
+      fR2Account.input.value = ''; fR2Bucket.input.value = ''; fR2KeyId.input.value = ''; fR2Secret.input.value = ''; fR2Public.input.value = '';
+      statusLine.textContent = 'Live broadcasting is configured for your account.';
       showMsgLocal('Saved.', 'ok');
     }
   },
     h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://cloud.livekit.io/', text: 'Open LiveKit Cloud \u2197' }),
     fUrl.wrap, fKey.wrap, fSecret.wrap,
+    h('hr', { class: 'divider' }),
+    h('p', { class: 'hint-line', text: 'Cloudflare R2 isn\u2019t used yet \u2014 recordings are a later phase (H3) \u2014 but saving it now means you won\u2019t need to come back.' }),
+    fR2Account.wrap, fR2Bucket.wrap, fR2KeyId.wrap, fR2Secret.wrap, fR2Public.wrap,
     msg, h('button', { class: 'btn', type: 'submit', text: 'Save' }));
 
   return { title: 'Live broadcast settings', nodes: [
     crumbs([{ text: 'Live classes', href: '#workspace/classes' }]),
-    h('p', { class: 'provider-note', text: 'Stays on this device only \u2014 never synced to your account, never in the backup file. This is a spike: the secret is minted into tokens right in the browser (see the code comment), which is fine for testing but not for a wide rollout.' }),
+    statusLine,
+    h('p', { class: 'provider-note', text: 'Your own LiveKit project and R2 bucket \u2014 not shared with other teachers. Saved to your account, but never read back into this form: reopening this page always shows blank fields, even after saving.' }),
     form
   ] };
 }
@@ -14076,38 +14063,38 @@ function liveSettingsPage() {
 function liveNeedsSetup() {
   return { title: 'Live broadcast', nodes: [
     crumbs([{ text: 'Live classes', href: '#workspace/classes' }]),
-    emptyBlock('Add your LiveKit keys first', 'In-app live broadcasting needs a free LiveKit Cloud project.'),
+    emptyBlock('Set up your own LiveKit project first', 'Each teacher brings their own free LiveKit Cloud project for in-app live broadcasting.'),
     h('a', { class: 'btn', href: '#workspace/livesettings', text: 'Open Live broadcast settings' })
   ] };
 }
 
-// Card + button in the Live classes page, above the link list, for the H1 spike.
+// Card + button in the Live classes page, above the link list.
 function liveInAppSection(teacherActive) {
   const box = h('div');
   async function paint() {
-    if (!liveConfigured()) {
-      box.replaceChildren(section('In-app live (beta)', null, null,
-        h('p', { class: 'hint-line', text: 'Broadcast straight from inside the app \u2014 no external link needed.' }),
-        h('a', { class: 'btn small', href: '#workspace/livesettings', text: 'Set up LiveKit' })));
-      return;
-    }
     const res = await sb.from('live_sessions').select('*').neq('status', 'ended').order('created_at', { ascending: false }).limit(20);
     if (res.error) {
       box.replaceChildren(section('In-app live (beta)', null, null,
         h('div', { class: 'status bad' }, h('strong', { text: 'Not set up yet' }),
-          'Run schema-update-H1-live-sessions.sql in Supabase, then reload. (' + res.error.message + ')')));
+          'Run schema-update-H1-live-sessions.sql and schema-update-H1.5-teacher-live-config.sql in Supabase, then reload. (' + res.error.message + ')')));
       return;
     }
     const rows = res.data || [];
-    const goLive = teacherActive ? h('button', { class: 'btn small', type: 'button', text: '\u25cf Go live', onclick: async () => {
-      goLive.disabled = true;
-      const ins = await sb.from('live_sessions').insert({ teacher_id: currentUser.id }).select('id').single();
-      if (ins.error) { showDialog({ title: 'Could not start', text: ins.error.message, submitLabel: 'OK', onSubmit() {} }); goLive.disabled = false; return; }
-      go('#workspace/live/' + ins.data.id);
-    } }) : null;
+    let goLive = null;
+    if (teacherActive) {
+      const configured = await teacherLiveConfigured(currentUser.id);
+      goLive = configured
+        ? h('button', { class: 'btn small', type: 'button', text: '\u25cf Go live', onclick: async () => {
+            goLive.disabled = true;
+            const ins = await sb.from('live_sessions').insert({ teacher_id: currentUser.id }).select('id').single();
+            if (ins.error) { showDialog({ title: 'Could not start', text: ins.error.message, submitLabel: 'OK', onSubmit() {} }); goLive.disabled = false; return; }
+            go('#workspace/live/' + ins.data.id);
+          } })
+        : h('a', { class: 'btn small', href: '#workspace/livesettings', text: 'Set up your live broadcasting' });
+    }
     box.replaceChildren(section('In-app live (beta)', null, null,
       h('div', { class: 'actions', style: 'margin-bottom:8px' }, goLive,
-        h('a', { class: 'btn quiet small', href: '#workspace/livesettings', text: 'Settings' })),
+        teacherActive ? h('a', { class: 'btn quiet small', href: '#workspace/livesettings', text: 'Settings' }) : null),
       rows.length ? h('div', { class: 'list' }, rows.map(r => linkRow({
         href: '#workspace/live/' + r.id, title: r.title,
         meta: (r.status === 'live' ? 'Live now' : 'Scheduled') + (r.teacher_id === (currentUser && currentUser.id) ? ' \u00b7 yours' : '')
@@ -14119,7 +14106,6 @@ function liveInAppSection(teacherActive) {
 
 async function liveSessionPage(id) {
   const crumb = crumbs([{ text: 'Live classes', href: '#workspace/classes' }]);
-  if (!liveConfigured()) return liveNeedsSetup();
   if (!id) return { title: 'Live broadcast', nodes: [crumb, emptyBlock('No session', 'Start or open a live broadcast from Live classes.')] };
 
   const res = await sb.from('live_sessions').select('*').eq('id', id).maybeSingle();
@@ -14130,6 +14116,8 @@ async function liveSessionPage(id) {
   }
   const sessionRow = res.data;
   const isTeacher = currentUser && currentUser.id === sessionRow.teacher_id;
+  if (isTeacher && !(await teacherLiveConfigured(currentUser.id))) return liveNeedsSetup();
+
   const displayName = (myProfile && myProfile.display_name) || usernameFrom(currentUser);
   const video = h('div', { class: 'live-video', style: 'display:grid;gap:10px' });
   const status = h('div', { class: 'status', text: sessionRow.status === 'live' ? 'Live' : sessionRow.status === 'ended' ? 'Ended' : 'Not started yet' });
@@ -14138,17 +14126,15 @@ async function liveSessionPage(id) {
   let room = null;
 
   async function connect(canPublish) {
-    const s = liveSettings();
-    const token = await mintLiveKitToken({
-      apiKey: s.apiKey, secret: s.secret, identity: currentUser.id, name: displayName,
-      room: sessionRow.id, canPublish
-    });
+    const mint = await sb.rpc('mint_live_token', { p_session_id: sessionRow.id, p_name: displayName });
+    if (mint.error) throw mint.error;
+    const { token, url } = mint.data;
     room = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
     room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
       if (track.kind === 'video' || track.kind === 'audio') video.append(track.attach());
     });
     room.on(LivekitClient.RoomEvent.Disconnected, () => { status.textContent = 'Disconnected'; });
-    await room.connect(s.url, token);
+    await room.connect(url, token);
     if (canPublish) await room.localParticipant.enableCameraAndMicrophone();
   }
 
