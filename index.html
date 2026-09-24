@@ -7261,9 +7261,13 @@ async function setExternalAlarm(r) {
       await cap.setAlarm({ hour: s.hour, minutes: s.minute, label: s.title, days });
       return 'Alarm sent to your Clock app for ' + alarmTimeLabel(s) + '.';
     }
+    let why = '';
     if (window.AndroidAlarm && typeof window.AndroidAlarm.setAlarm === 'function') {
       const ok = window.AndroidAlarm.setAlarm(s.hour, s.minute, s.title, JSON.stringify(days));
       if (ok !== false) return 'Alarm sent to your Clock app for ' + alarmTimeLabel(s) + '.';
+      why = ' [Clock app refused the request]';
+    } else if (window.AndroidDownloader) {
+      why = ' [this app version has no alarm bridge: install the latest APK]';
     }
 
     // 2. Android browser / PWA. Only for an alarm due within 24h, because
@@ -7275,7 +7279,7 @@ async function setExternalAlarm(r) {
 
     // 3. Fallback
     downloadAlarmIcs(r, s);
-    return 'Could not open the Clock app from here, so a calendar file with an alarm was downloaded. Open it to add the reminder.';
+    return 'Could not open the Clock app from here, so a calendar file with an alarm was downloaded. Open it to add the reminder.' + why;
   } catch (e) {
     return 'Could not set a Clock alarm: ' + ((e && e.message) || 'unknown error') + '.';
   }
