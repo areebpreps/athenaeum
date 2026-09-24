@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
     private static final String LOCAL_BASE_HOST = "athenaeum.eu.cc";
 
     private WebView webView;
+    private TtsBridge ttsBridge;
     private File localIndexFile;
 
     private ValueCallback<Uri[]> filePathCallback;
@@ -84,6 +85,12 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         checkForUpdateInBackground();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (ttsBridge != null) ttsBridge.shutdown();
+        super.onDestroy();
     }
 
     @Override
@@ -199,6 +206,9 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new AndroidDownloaderBridge(this), "AndroidDownloader");
         // F4: lets the planner create alarms in the phone's Clock app
         webView.addJavascriptInterface(new AlarmBridge(this), "AndroidAlarm");
+        // Read-aloud: WebView has no speechSynthesis, so the phone's own TTS engine is bridged in
+        ttsBridge = new TtsBridge(this, webView);
+        webView.addJavascriptInterface(ttsBridge, "AndroidTTS");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
