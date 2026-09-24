@@ -8068,24 +8068,23 @@ function schFit(c, p) {
 }
 
 // E9: deadlines aren't on ScholarshipsAds' listing cards, so sorting by deadline
-// asks Gemini to read them off the scholarship pages (url_context), a few pages
-// per call. c.deadline: undefined = not read yet, null = no single clear date.
+// reads them off the scholarship pages by code (no AI), a few pages at a time. c.deadline: undefined = not read yet, null = no single clear date.
 const schToday = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-async function schLoadDeadlines(cards, onProgress) {
-  const todo = cards.filter(c => c.deadline === undefined), s = aiSettings();
-  if (todo.length && (!s.geminiKey || !s.geminiModel)) throw new Error('Reading deadlines uses Gemini \u2014 add your key and model in AI Settings.');
-  for (let i = 0; i < todo.length; i += 6) {
-    const batch = todo.slice(i, i + 6); onProgress(i, todo.length);
-    const prompt = 'Open each scholarship page below and find its current application deadline. Reply with ONLY a JSON array, one item per URL: ' +
-      '{"url": "<the url>", "deadline": "YYYY-MM-DD"}. Use null when the page gives no single clear date (rolling, varies, or reopens later). Never guess.\n' + batch.map(c => c.url).join('\n');
-    const found = {}; let ok = false;
-    try {
-      const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
-      JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1)).forEach(x => {
-        if (x && /^\d{4}-\d{2}-\d{2}$/.test(x.deadline || '') && !isNaN(Date.parse(x.deadline))) found[x.url] = x.deadline; });
-      ok = true;
-    } catch (e) { if (isQuotaError(e)) throw e; }
-    if (ok) batch.forEach(c => { c.deadline = found[c.url] || null; }); // a failed batch stays unread so it can be retried
+const SCH_DL_KEY = 'sch-dl1:';
+function schPeekDeadline(url) { try { const k = JSON.parse(store.get(SCH_DL_KEY + url) || 'null'); if (k && k.at > Date.now() - 14 * 864e5) return k.v || null; } catch (e) { /* not cached */ } return undefined; }
+async function schLoadDeadlines(cards, onProgress) {   // read by code from each page (via the proxy), a few at a time; no AI
+  const todo = cards.filter(c => c.deadline === undefined);
+  for (let i = 0; i < todo.length; i += 4) {
+    onProgress(i, todo.length);
+    await Promise.all(todo.slice(i, i + 4).map(async c => {
+      const known = schPeekDeadline(c.url);
+      if (known !== undefined) { c.deadline = known; return; }
+      try {
+        const d = schParseDetail(await schFetchHtml(c.url), c.url);
+        c.deadline = d.deadline || null;
+        store.set(SCH_DL_KEY + c.url, JSON.stringify({ at: Date.now(), v: c.deadline }));
+      } catch (e) { /* a page that fails stays unread so it can be retried */ }
+    }));
   }
 }
 
@@ -8252,7 +8251,7 @@ async function schSearchPage() {
     out.replaceChildren(...[
       st.combo > 0 ? h('p', { class: 'hint-line', text: 'ScholarshipsAds has no page for this exact combination, so these come from a broader list, filtered to match.' }) : null,
       f.nat && !SCH_COMBOS[st.combo][3] ? h('p', { class: 'hint-line', text: 'Your country couldn\u2019t be applied to these results, so check each scholarship\u2019s eligibility for ' + f.nat + ' students.' }) : null,
-      sort === 'deadline' ? h('p', { class: 'hint-line', text: 'Deadlines are read from each scholarship\u2019s page by Gemini \u2014 undated ones go after the dated ones, closed ones last. Confirm on the page.' }) : null,
+      sort === 'deadline' ? h('p', { class: 'hint-line', text: 'Deadlines are read from each scholarship\u2019s page \u2014 undated ones go after the dated ones, closed ones last. Confirm on the page.' }) : null,
       h('div', { class: 'list', style: 'display:grid;gap:14px;margin-top:12px' }, sorted().map(c => schResultCard(c, saved.has(c.url), saveResult))),
       h('p', { class: 'hint-line', text: 'Always confirm funding, eligibility and deadlines on the official page before applying.' })
     ].filter(Boolean));
@@ -8372,6 +8371,35 @@ function schExtractBlocks(root) {
   const res = []; out.forEach(b => { const prev = res[res.length - 1]; if (!(prev && JSON.stringify(prev) === JSON.stringify(b))) res.push(b); });
   return res.slice(0, 220);
 }
+const SCH_MON_RE = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+function schDatesIn(str) {
+  const out = [], M = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const push = (y, mo, d) => { y = +y; mo = +mo; d = +d; if (y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) out.push(y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0')); };
+  let m;
+  const r1 = new RegExp('\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?' + SCH_MON_RE + '\\.?,?\\s+(\\d{4})\\b', 'gi');
+  while ((m = r1.exec(str))) push(m[3], M.indexOf(m[2].slice(0, 3).toLowerCase()) + 1, m[1]);
+  const r2 = new RegExp('\\b' + SCH_MON_RE + '\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b', 'gi');
+  while ((m = r2.exec(str))) push(m[3], M.indexOf(m[1].slice(0, 3).toLowerCase()) + 1, m[2]);
+  const r3 = /\b(\d{4})-(\d{2})-(\d{2})\b/g;
+  while ((m = r3.exec(str))) push(m[1], m[2], m[3]);
+  const r4 = /\b(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})\b/g;      // day first, as most international pages write it
+  while ((m = r4.exec(str))) push(m[3], m[2], m[1]);
+  return out;
+}
+// The application deadline: dates on lines that talk about a deadline (or under a deadline heading).
+// The nearest upcoming one wins; if all are past, the latest past one (the card then shows "closed").
+function schFindDeadline(blocks) {
+  const KEY = /deadline|closing date|closes?\b|apply (by|before)|last date|due (date|by)|applications? (end|close|due)|submit.{0,40}\bby\b/i, HEAD = /deadline|when to apply|application (period|window|dates?)|important dates/i;
+  const cands = []; let inHead = false;
+  blocks.forEach(b => {
+    if (b.t === 'h') { inHead = HEAD.test(b.text); if (inHead) cands.push(...schDatesIn(b.text)); return; }
+    const ls = b.t === 'p' ? [b.text] : b.t === 'ul' || b.t === 'ol' ? b.items : b.rows.map(r => r.join(' '));
+    ls.forEach(l => { if (inHead || KEY.test(l)) cands.push(...schDatesIn(l)); });
+  });
+  if (!cands.length) return '';
+  const today = schToday(), up = cands.filter(x => x >= today).sort();
+  return up.length ? up[0] : cands.sort().pop();
+}
 function schDeriveFields(blocks) {
   const lines = [], kv = [];
   const add = t => { lines.push(t); const m = t.match(/^([A-Za-z][A-Za-z &\/()'\u2019.\-]{2,40}?)\s*[:\uFF1A]\s*(.{1,240})$/); if (m) kv.push([m[1].trim(), m[2].trim()]); };
@@ -8422,12 +8450,9 @@ function schDeriveFields(blocks) {
   if (ga && parseFloat(ga[2]) > 0) gpaPct = parseFloat(ga[1]) / parseFloat(ga[2]) * 100;
   else { const gb = text.match(/(?:GPA|CGPA|average|grades?|marks|percentage|result)[^\n]{0,50}?\b(\d{2,3}(?:\.\d+)?)\s*%/i); if (gb) gpaPct = parseFloat(gb[1]); }
   const min = schCleanMin({ ielts: g(/IELTS.{0,60}?\b([4-9](?:\.[05])?)\b/, 3, 9), toefl: g(/TOEFL.{0,60}?\b(\d{2,3})\b/, 20, 120), sat: g(/\bSAT\b.{0,60}?\b(\d{3,4})\b/, 400, 1600), gre: g(/\bGRE\b.{0,60}?\b(\d{3})\b/, 260, 340), gpaPct });
-  return { provider, country, levels, subjects, duration, exams: exams.slice(0, 8), min };
+  return { provider, country, levels, subjects, duration, exams: exams.slice(0, 8), min, deadline: schFindDeadline(blocks) };
 }
-async function schReadDetail(url, force) {
-  const key = SCH_DETAIL_KEY + url;
-  if (!force) { try { const c = JSON.parse(store.get(key) || 'null'); if (c && c.at > Date.now() - 7 * 864e5) return c.d; } catch (e) { /* re-read */ } }
-  const html = await schFetchHtml(url);
+function schParseDetail(html, url) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const h1 = doc.querySelector('h1');
   let name = h1 ? h1.textContent.replace(/\s+/g, ' ').trim() : '';
@@ -8445,8 +8470,13 @@ async function schReadDetail(url, force) {
   const blocks = schExtractBlocks(root);
   if (blocks.length && blocks[0].t === 'h' && blocks[0].text === name) blocks.shift();
   if (!blocks.length) throw new Error('That page has no readable content. Tap Read again, or open it from the button below.');
-  const d = { name, blocks, official, ...schDeriveFields(blocks) };
-  if (official && SCH_OWN_HOST.test(url)) store.set(SCH_OFFICIAL_KEY + url, JSON.stringify({ at: Date.now(), u: official }));
+  return { name, blocks, official, ...schDeriveFields(blocks) };
+}
+async function schReadDetail(url, force) {
+  const key = SCH_DETAIL_KEY + url;
+  if (!force) { try { const c = JSON.parse(store.get(key) || 'null'); if (c && c.at > Date.now() - 7 * 864e5) return c.d; } catch (e) { /* re-read */ } }
+  const d = schParseDetail(await schFetchHtml(url), url);
+  if (d.official && SCH_OWN_HOST.test(url)) store.set(SCH_OFFICIAL_KEY + url, JSON.stringify({ at: Date.now(), u: d.official }));
   store.set(key, JSON.stringify({ at: Date.now(), d }));
   return d;
 }
@@ -9749,39 +9779,95 @@ function chronotypeRow() {
 }
 
 // D7: voice/quick-add -- a short natural-language line ("study physics 2
-// hours tomorrow evening") is parsed into a draft slot by the same Gemini
-// key the rest of the app's AI tools use, then handed to the normal Add
-// Slot dialog (pre-filled) for a look before it's actually saved -- so a
-// misread parse is a one-tap edit away, not a silent wrong entry.
+// hours tomorrow evening") is parsed by plain code (no AI) into a draft slot,
+// then handed to the normal Add Slot dialog (pre-filled) for a look before it's
+// actually saved -- so a misread parse is a one-tap edit away.
+function parseQuickAdd(text, chrono) {
+  let t = ' ' + String(text || '').toLowerCase().replace(/\s+/g, ' ').trim() + ' ';
+  const cut = re => { const m = t.match(re); if (m) t = t.replace(m[0], ' '); return m; };
+  const NUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
+  let weekday = new Date().getDay(), part = '', m;
+  // day
+  if ((m = cut(/\b(?:day after tomorrow)\b/))) weekday = (weekday + 2) % 7;
+  else if ((m = cut(/\btomorrow\b/))) weekday = (weekday + 1) % 7;
+  else if ((m = cut(/\btonight\b/))) part = 'night';
+  else if ((m = cut(/\btoday\b/))) { /* today */ }
+  else {
+    const names = [['sunday', 'sun'], ['monday', 'mon'], ['tuesday', 'tues', 'tue'], ['wednesday', 'wed'], ['thursday', 'thurs', 'thur', 'thu'], ['friday', 'fri'], ['saturday', 'sat']];
+    const re = new RegExp('\\b(?:(?:next|this|on|every)\\s+)?(' + names.map(n => n.join('|')).join('|') + ')\\b');
+    if ((m = cut(re))) weekday = names.findIndex(n => n.includes(m[1]));
+  }
+  // duration
+  let dur = null;
+  if (cut(/\ban hour and a half\b|\b1\.5\s*(?:hours?|hrs?|h)\b/)) dur = 90;
+  else if ((m = cut(/\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b(?:\s*(?:and\s*)?(\d+)\s*(?:minutes?|mins?|m)\b)?/))) dur = Math.round(parseFloat(m[1]) * 60 + (m[2] ? +m[2] : 0));
+  else if ((m = cut(/\b(one|two|three|four|five|six|seven|eight)\s+hours?\b/))) dur = NUM[m[1]] * 60;
+  else if ((m = cut(/\b(\d+)\s*(?:minutes?|mins?)\b/))) dur = +m[1];
+  else if (cut(/\bhalf an hour\b|\bhalf hour\b/)) dur = 30;
+  else if (cut(/\ban hour\b|\bone hour\b|\ban? hr\b/)) dur = 60;
+  if (!part) { const pm = t.match(/\b(morning|afternoon|evening|night|noon)\b/); if (pm) part = pm[1]; }
+  const mer = x => (x ? (x[0] === 'p' ? 'pm' : 'am') : '');
+  const toMin = (hh, mm, me) => { let x = +hh; if (me === 'pm' && x < 12) x += 12; if (me === 'am' && x === 12) x = 0; return x * 60 + (+mm || 0); };
+  const guess = hh => {   // am or pm for an hour written without it
+    if (part === 'afternoon' || part === 'evening' || part === 'night') return hh < 12 ? 'pm' : 'am';
+    if (part === 'morning') return 'am';
+    if (hh === 12 || (hh >= 1 && hh <= 6)) return 'pm';
+    return chrono === 'night' ? 'pm' : 'am';
+  };
+  let start = null, end = null;
+  const MER = '(am|pm|a\\.m\\.|p\\.m\\.)';
+  if ((m = cut(new RegExp('\\b(?:from\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*' + MER + '?\\s*(?:to|-|\u2013|until|till|through)\\s*(\\d{1,2})(?::(\\d{2}))?\\s*' + MER + '?(?![\\d:])')))) {
+    const a = +m[1], b = +m[4], a2 = +(m[2] || 0), b2 = +(m[5] || 0);
+    if (a > 12 || b > 12 || a === 0) { start = a * 60 + a2; end = b * 60 + b2; }
+    else {
+      let me1 = mer(m[3]), me2 = mer(m[6]);
+      if (!me1 && me2) me1 = me2;
+      if (!me1 && !me2) me1 = me2 = guess(a);
+      if (!me2) me2 = me1;
+      start = toMin(a, a2, me1); end = toMin(b, b2, me2);
+      if (!m[3] && m[6] && start >= end) start -= 720;
+    }
+  } else if ((m = cut(new RegExp('\\b(?:at\\s+|@\\s*)?(\\d{1,2})(?::(\\d{2}))?\\s*' + MER + '(?![a-z])')))) start = toMin(m[1], m[2], mer(m[3]));
+  else if ((m = cut(/\b([01]?\d|2[0-3]):([0-5]\d)\b/))) start = +m[1] * 60 + +m[2];
+  else if ((m = cut(/\bat\s+(\d{1,2})(?::(\d{2}))?\b/)) && +m[1] >= 1 && +m[1] <= 12) start = toMin(m[1], m[2], guess(+m[1]));
+  else if (cut(/\bmidnight\b/)) start = 0;
+  else if (/\bnoon\b/.test(t)) start = 720;
+  if (start == null) {   // only a part of the day (or nothing): use the person's usual time for it
+    const dflt = { morning: 480, afternoon: 900, evening: 1080, night: 1200, noon: 720 }[part];
+    start = dflt != null ? dflt : ({ morning: 480, night: 1200 }[chrono] || 960);
+  }
+  if (end == null || end <= start) end = start + (dur || 60);
+  end = Math.min(end, 1439); start = Math.max(0, Math.min(start, 1438));
+  if (end <= start) end = Math.min(start + 30, 1439);
+  const hm = x => String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0');
+  // title: what is left, minus day/time words and connectors
+  t = t.replace(/\b(morning|afternoon|evening|night|noon|midnight)\b/g, ' ').replace(/[,.;:@]+/g, ' ');
+  let w = t.split(/\s+/).filter(Boolean);
+  const LEAD = /^(please|add|schedule|plan|book|put|set|remind|me|to|i|want|need|have|a|an|slot|session|block)$/, TAIL = /^(at|on|in|for|from|until|till|to|the|a|an|every|next|this|by|of|and|-|\u2013)$/;
+  while (w.length && LEAD.test(w[0])) w.shift();
+  while (w.length && TAIL.test(w[0])) w.shift();
+  while (w.length && TAIL.test(w[w.length - 1])) w.pop();
+  let title = w.join(' ').trim();
+  title = title ? title[0].toUpperCase() + title.slice(1) : 'Study session';
+  return { title: title.slice(0, 80), weekday, start_time: hm(start), end_time: hm(end) };
+}
 function quickAddRow() {
   const input = h('input', { class: 'control', type: 'text', maxlength: 200,
     placeholder: 'e.g. "study physics 2 hours tomorrow evening"', 'aria-label': 'Quick add a slot', enterkeyhint: 'done' });
   const btn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
   const msg = h('p', { class: 'msg err', hidden: true });
 
-  const go = async () => {
+  const go = () => {
     const text = input.value.trim();
     if (!text) return;
     msg.hidden = true;
-    btn.disabled = true; btn.textContent = 'Parsing…';
     try {
-      const chronoHint = { morning: 'a morning person (default ambiguous times to around 08:00)',
-                            night: 'a night owl (default ambiguous times to around 20:00)',
-                            none: 'no time-of-day preference (default ambiguous times to around 16:00)' }[getChronotype()];
-      const system = 'Parse a short natural-language study-planner request into JSON only -- no markdown, no code fences, no explanation, just the raw JSON object. ' +
-        'Today is ' + WEEKDAYS_FULL[new Date().getDay()] + '. The person is ' + chronoHint + '. ' +
-        'Output exactly this shape: {"title": string, "weekday": integer 0-6 (0=Sunday), "start_time": "HH:MM" in 24h, "end_time": "HH:MM" in 24h}. ' +
-        '"tomorrow" means the next calendar day after today. If no duration is given, default to 1 hour. If parsing fails, still return your best guess -- never omit a field.';
-      const reply = await callAI(system, [{ role: 'user', content: text }]);
-      const json = JSON.parse(reply.replace(/```json|```/g, '').trim());
-      if (!json.title || json.weekday == null || !json.start_time || !json.end_time) throw new Error('Could not understand that -- try something like "chemistry 6 to 7pm on Friday".');
+      const json = parseQuickAdd(text, getChronotype());
       input.value = '';
       openPlannerDialog('slot', null, json);
     } catch (e) {
-      msg.textContent = e.message || 'Could not parse that -- try rephrasing.';
+      msg.textContent = 'Could not understand that \u2014 try something like "chemistry 6 to 7pm on Friday".';
       msg.hidden = false;
-    } finally {
-      btn.disabled = false; btn.textContent = 'Add';
     }
   };
   btn.addEventListener('click', go);
@@ -10009,6 +10095,28 @@ function reviewRow(item) {
     chip);
 }
 
+// Plain-code rebalance advice from planned-vs-actual minutes (no AI): a short paragraph built from the numbers.
+function plannerRebalanceText(items, period) {
+  const nxt = period === 'month' ? 'month' : 'week', now = period === 'month' ? 'the last 30 days' : 'this week';
+  const planned = items.reduce((a, d) => a + d.planned, 0), actual = items.reduce((a, d) => a + d.actual, 0);
+  const over = items.filter(d => d.diffPct >= 25 && d.actual > d.planned).sort((a, b) => (b.actual - b.planned) - (a.actual - a.planned));
+  const under = items.filter(d => d.diffPct <= -25 && d.planned > d.actual).sort((a, b) => (b.planned - b.actual) - (a.planned - a.actual));
+  const list = arr => arr.slice(0, 2).map(d => d.title).join(' and ');
+  const out = [];
+  if (planned > 0) {
+    const pct = Math.round(actual / planned * 100);
+    out.push(pct >= 90 ? 'You studied ' + fmtMinutes(actual) + ' of the ' + fmtMinutes(planned) + ' you planned ' + now + ' \u2014 a solid match.'
+      : 'You studied ' + fmtMinutes(actual) + ' of the ' + fmtMinutes(planned) + ' you planned ' + now + ' (' + pct + '%), so next ' + nxt + ' works best with a plan that fits the time you really have.');
+  } else out.push('You logged ' + fmtMinutes(actual) + ' ' + now + ' without a plan for it, so next ' + nxt + ' is a good time to give those subjects planned slots.');
+  if (over.length && under.length) {
+    const move = Math.max(15, Math.round(Math.min(over[0].actual - over[0].planned, under[0].planned - under[0].actual) / 15) * 15);
+    out.push('Trim ' + list(over) + ' (you spent more than planned) and give that time to ' + list(under) + ', which fell short \u2014 try moving about ' + fmtMinutes(move) + ' from ' + over[0].title + ' to ' + under[0].title + '.');
+  } else if (under.length) out.push(list(under) + (under.length > 1 ? ' fell' : ' fell') + ' short of the plan \u2014 put ' + (under.length > 1 ? 'them' : 'it') + ' early in the ' + nxt + ' and protect a fixed slot so ' + (under.length > 1 ? 'they get' : 'it gets') + ' done first.');
+  else if (over.length) out.push(list(over) + ' ran over its plan \u2014 either raise its planned time to match reality or trim the extra so other subjects are not squeezed.');
+  else out.push('Your time is well balanced across subjects \u2014 keep the same plan for next ' + nxt + '.');
+  return out.join(' ');
+}
+
 function reviewSection(rows, slots, monthSessionRows) {
   const periodDays = plannerReviewPeriod === 'month' ? 30 : 7;
   const data = buildReviewData(rows, slots, monthSessionRows, periodDays);
@@ -10028,8 +10136,7 @@ function reviewSection(rows, slots, monthSessionRows) {
   const list = h('div', { class: 'list' }, withPlan.map(reviewRow));
 
   // The two furthest-off subjects -- one over, one under -- so "apply a
-  // rebalance" has a concrete, one-tap action even without waiting on the
-  // AI call below: jump straight to that subject's slot and adjust its time.
+  // rebalance" has a concrete, one-tap action: jump straight to that subject's slot and adjust its time.
   const over = withPlan.filter(d => d.diffPct >= 25).sort((a, b) => b.diffPct - a.diffPct)[0];
   const under = withPlan.filter(d => d.diffPct <= -25).sort((a, b) => a.diffPct - b.diffPct)[0];
   const quickActions = (over || under) ? h('div', { class: 'review-actions' },
@@ -10042,22 +10149,7 @@ function reviewSection(rows, slots, monthSessionRows) {
   const aiBtn = h('button', { class: 'btn small', type: 'button', text: 'Suggest a rebalance' });
   const aiMsg = h('p', { class: 'msg err', hidden: true });
   const aiOut = h('p', { class: 'ai-suggestion', hidden: true });
-  aiBtn.addEventListener('click', async () => {
-    aiMsg.hidden = true; aiOut.hidden = true;
-    aiBtn.disabled = true; aiBtn.textContent = 'Thinking…';
-    try {
-      const lines = withPlan.map(d => '- ' + d.title + ': planned ' + fmtMinutes(d.planned) + ', actually studied ' + fmtMinutes(d.actual) + ' (' + (d.diffPct > 0 ? '+' : '') + d.diffPct + '%)').join('\n');
-      const system = 'You are a study planning assistant inside a student\'s planner app. Given planned-vs-actual study minutes by subject for a period, write one short, encouraging paragraph (3-4 sentences max, no markdown headers, no bullet list) suggesting a concrete rebalance for next ' + (plannerReviewPeriod === 'month' ? 'month' : 'week') + ' -- which subject(s) to trim time from and which to give more time to, based only on the numbers given.';
-      const reply = await callAI(system, [{ role: 'user', content: lines }]);
-      aiOut.textContent = reply;
-      aiOut.hidden = false;
-    } catch (e) {
-      aiMsg.textContent = e.message || 'Could not get a suggestion.';
-      aiMsg.hidden = false;
-    } finally {
-      aiBtn.disabled = false; aiBtn.textContent = 'Suggest a rebalance';
-    }
-  });
+  aiBtn.addEventListener('click', () => { aiOut.textContent = plannerRebalanceText(withPlan, plannerReviewPeriod); aiOut.hidden = false; });
 
   return h('div', {}, seg, list, quickActions,
     h('div', { class: 'review-ai' }, aiBtn, aiMsg, aiOut));
