@@ -152,11 +152,12 @@
   }
   .topbar h2 { font-size: 24px; }
   .who {
+    width: 44px; height: 44px; flex: none;
     min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
     background: var(--paper-hi); border: 1px solid var(--line); color: var(--chalk); font-weight: 700; font-size: 16px;
     overflow: hidden; padding: 0;
   }
-  .who img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .who img { width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: cover; display: block; }
   .tb-right { display: flex; align-items: center; gap: 6px; flex: none; }
   .bell {
     position: relative; min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
@@ -317,9 +318,9 @@
   .item .expr { display: block; padding: 8px 10px; background: var(--paper-hi); border-radius: 8px; overflow-x: auto; white-space: pre; font-size: 15px; }
   /* flashcards in a browse list stay flipped face-down (front only) until tapped */
   .item.flashcard .body { display: none; }
-  .item.flashcard.expanded .body { display: -webkit-box; -webkit-line-clamp: unset; overflow: visible; }
+  .item.flashcard.flipped strong { display: none; }
+  .item.flashcard.flipped .body { display: -webkit-box; -webkit-line-clamp: unset; overflow: visible; color: var(--chalk); font-weight: 600; }
   .item.flashcard .fc-hint { display: block; margin-top: 2px; font-size: 13px; color: var(--dim); }
-  .item.flashcard.expanded .fc-hint { display: none; }
   .item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
   .origin { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
   .item-edit, .item-listen {
@@ -573,6 +574,28 @@
     @keyframes rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
   }
 
+  /* themed option picker (replaces the white native <select> popup) */
+  select.control { color-scheme: dark; }
+  select.control option { background: var(--paper-hi); color: var(--chalk); }
+  .pick-scrim { z-index: 40; }
+  .pick-list { display: grid; gap: 6px; max-height: 55vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .pick-opt { text-align: left; min-height: 48px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--paper-hi); color: var(--chalk); font: inherit; font-size: 16px; overflow-wrap: anywhere; }
+  .pick-opt[aria-selected="true"] { border-color: var(--marker); color: var(--marker); }
+  .pick-opt:disabled { opacity: .45; }
+
+  /* multi-share: pick several items, then share them together */
+  .pick-box { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); flex: none; display: grid; place-items: center;
+    font-size: 13px; font-weight: 700; color: var(--marker-ink); }
+  .item.picked { border-color: var(--marker); }
+  .item.picked .pick-box { background: var(--marker); border-color: var(--marker); }
+  .item.dim { opacity: .5; }
+  .multi-bar { flex: none; background: var(--paper); border-top: 1px solid var(--line); padding: 10px 16px; display: grid; gap: 8px; }
+  .multi-bar .mb-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .multi-bar .mb-actions { display: flex; gap: 8px; }
+  .multi-bar .btn { width: auto; flex: 1; }
+  .multi-bar .mb-top .btn { flex: none; }
+
   /* Flashcard review (B1) */
   .fc-sheet { max-width: 480px; }
   .fc-top { display: flex; align-items: center; justify-content: space-between; }
@@ -584,7 +607,8 @@
   }
   .fc-card.revealed { border-color: var(--accent, #F3C955); }
   .fc-text { font-family: var(--serif); font-size: 20px; margin: 0; overflow-wrap: anywhere; }
-  .fc-grades { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .fc-grades { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .fc-grades .btn:disabled { opacity: .4; }
 </style>
 </head>
 
@@ -1024,6 +1048,9 @@ function aiParentHash(ids) {
 let renderToken = 0;
 let lastHash = null;
 let backTarget = null;
+// Pages visited, with where each was scrolled to, so Back returns you to the same spot.
+const navStack = [];
+let viewReady = false;
 
 function setHeader(title, back) {
   $('#page-title').textContent = title;
@@ -1033,6 +1060,7 @@ function setHeader(title, back) {
 
 async function route() {
   const token = ++renderToken;
+  multiShareReset();
   const { tab, ids } = parseHash();
 
   document.querySelectorAll('nav.tabs button').forEach(b => {
@@ -1042,7 +1070,14 @@ async function route() {
 
   const view = $('#view');
   const same = lastHash === location.hash;          // a refresh of the same page keeps its scroll position
-  const keepScroll = same ? view.scrollTop : 0;
+  let keepScroll = same ? view.scrollTop : 0;
+  if (!same) {
+    if (navStack.length && viewReady) navStack[navStack.length - 1].scroll = view.scrollTop; // remember where you left this page
+    const prev = navStack.length >= 2 ? navStack[navStack.length - 2] : null;
+    if (prev && prev.hash === location.hash) { navStack.pop(); keepScroll = prev.scroll || 0; } // going back: restore its scroll
+    else { navStack.push({ hash: location.hash, scroll: 0 }); if (navStack.length > 60) navStack.shift(); }
+    viewReady = false;
+  }
   lastHash = location.hash;
   if (!same) itemsView.folder = null;
 
@@ -1068,6 +1103,7 @@ async function route() {
   setHeader(res.title || TABS[tab].title, back);
   view.replaceChildren(...res.nodes);
   view.scrollTop = keepScroll;
+  viewReady = true;
 }
 
 function errorCard(err) {
@@ -1278,6 +1314,124 @@ function listenButton(getText, opts = {}) {
   return btn;
 }
 
+/* ---------- multi-share ----------
+   "Select to share" on a subject/chapter/topic page turns the item cards into
+   tick-able cards; a bar above the tabs then shares everything ticked as posts
+   (same as the single share icon) or straight into one of your study groups. */
+const multiShare = { on: false, picked: new Map(), bar: null, sync: null };
+const SHAREABLE = { note: 1, definition: 1, mnemonic: 1 };
+const pickKey = it => it.type + ':' + it.row.id;
+function multiShareReset() {
+  multiShare.on = false; multiShare.picked.clear(); multiShare.sync = null;
+  if (multiShare.bar) { multiShare.bar.remove(); multiShare.bar = null; }
+}
+function openMultiBar(getVisible, repaint) {
+  const count = h('strong'), allBtn = h('button', { class: 'btn quiet small', type: 'button' });
+  const postBtn = h('button', { class: 'btn small', type: 'button', text: 'Share as posts', onclick: () => multiSharePosts() });
+  const grpBtn = h('button', { class: 'btn small', type: 'button', text: 'Share to a group', onclick: () => multiShareGroup() });
+  const cancel = h('button', { class: 'btn quiet small', type: 'button', text: 'Cancel', onclick: () => { multiShareReset(); repaint(); } });
+  const sync = () => {
+    const n = multiShare.picked.size, vis = getVisible();
+    count.textContent = n ? n + ' selected' : 'Tap items to select';
+    postBtn.disabled = grpBtn.disabled = !n;
+    allBtn.textContent = vis.length && vis.every(it => multiShare.picked.has(pickKey(it))) ? 'Clear' : 'Select all';
+  };
+  allBtn.addEventListener('click', () => {
+    const vis = getVisible(), all = vis.length && vis.every(it => multiShare.picked.has(pickKey(it)));
+    vis.forEach(it => { if (all) multiShare.picked.delete(pickKey(it)); else multiShare.picked.set(pickKey(it), it); });
+    repaint(); sync();
+  });
+  multiShare.sync = sync;
+  const bar = h('div', { class: 'multi-bar' }, h('div', { class: 'mb-top' }, count, allBtn), h('div', { class: 'mb-actions' }, postBtn, grpBtn, cancel));
+  const nav = document.querySelector('nav.tabs');
+  if (nav) nav.before(bar); else document.body.append(bar);
+  multiShare.bar = bar; sync();
+}
+function multiSharePreview(list) {
+  return h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:4px;min-width:0;max-height:180px;overflow-y:auto' },
+    list.map(it => h('small', { style: 'overflow-wrap:anywhere', text: ITEM_TYPES[it.type].label + ' \u00b7 ' + (it.row.title || String(it.row.body || '').slice(0, 40) || 'Untitled') })));
+}
+function multiSharePosts() {
+  const list = [...multiShare.picked.values()];
+  if (!list.length) return;
+  let vis = 'private';
+  showDialog({
+    title: 'Share ' + plural(list.length, 'item', 'items') + ' as posts', submitLabel: 'Post',
+    render(form) {
+      const hint = h('p');
+      const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Who can see these posts' },
+        [['public', 'Public'], ['private', 'Private']].map(([k, l]) => h('button', { type: 'button', 'data-vis': k, text: l, onclick: () => { vis = k; sync(); } })));
+      const sync = () => {
+        seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.vis === vis)));
+        hint.textContent = (vis === 'public' ? 'Any signed-in Athenaeum user can see these posts.' : 'Only you can see these posts. You can make them public later in My posts.') + ' Anything you already posted is refreshed with its current version.';
+      };
+      sync();
+      form.append(multiSharePreview(list), h('div', { class: 'field' }, h('label', { text: 'Who can see them' }), seg), hint);
+      return () => ({});
+    },
+    async onSubmit() {
+      const srcs = list.map(it => postSrc(it.type, it.row));
+      const cur = await sb.from('posts').select('id,source_table,source_id').eq('user_id', currentUser.id)
+        .in('source_table', [...new Set(srcs.map(x => x.table))]).in('source_id', srcs.map(x => x.id));
+      if (cur.error) throw cur.error;
+      const have = new Map((cur.data || []).map(r => [r.source_table + ':' + r.source_id, r.id]));
+      const now = new Date().toISOString();
+      for (const x of srcs) {
+        const payload = { kind: x.kind, title: x.title.slice(0, 200), body: x.body.slice(0, 20000), url: x.url, category: x.category, visibility: vis, source_table: x.table, source_id: x.id, updated_at: now };
+        const id = have.get(x.table + ':' + x.id);
+        const res = id ? await sb.from('posts').update(payload).eq('id', id) : await sb.from('posts').insert(payload);
+        if (res.error) throw res.error;
+      }
+      const n = list.length, pub = vis === 'public';
+      route(); // also leaves select mode
+      setTimeout(() => showDialog({
+        title: 'Posted', text: plural(n, 'item', 'items') + (pub ? ' posted publicly: any signed-in user can see them.' : ' posted privately: only you can see them.'),
+        submitLabel: 'Done', onSubmit() {},
+        extras: [{ label: 'Open My posts', danger: false, onClick: () => { closeDialog(); go('#workspace/posts'); } }]
+      }), 0);
+    }
+  });
+}
+async function multiShareGroup() {
+  const list = [...multiShare.picked.values()], me = currentUser.id;
+  if (!list.length) return;
+  const [gr, mr] = await Promise.all([sb.from('study_groups').select('id,name,owner_id').order('created_at', { ascending: false }).limit(200),
+    sb.from('group_members').select('group_id,status').eq('user_id', me)]);
+  const bad = gr.error || mr.error;
+  if (bad) { showDialog({ title: 'Study groups are not set up yet', text: 'Run the update SQL in Supabase (schema-update-G8-group-sharing.sql), then reload. (' + bad.message + ')', submitLabel: 'OK', onSubmit() {} }); return; }
+  const active = new Set((mr.data || []).filter(m => m.status === 'active').map(m => m.group_id));
+  const groups = (gr.data || []).filter(g => active.has(g.id) || g.owner_id === me);
+  if (!groups.length) {
+    showDialog({ title: 'You are not in a study group yet', text: 'Join or create a study group first, then you can share straight into it from here.', submitLabel: 'Open study groups', onSubmit() { go('#workspace/groups'); } });
+    return;
+  }
+  let groupId = groups[0].id;
+  showDialog({
+    title: 'Share ' + plural(list.length, 'item', 'items') + ' to a group', submitLabel: 'Share',
+    render(form) {
+      const sel = h('select', { class: 'control', 'aria-label': 'Study group' }, groups.map(g => h('option', { value: g.id, text: g.name })));
+      sel.addEventListener('change', () => { groupId = sel.value; });
+      form.append(multiSharePreview(list), h('div', { class: 'field' }, h('label', { text: 'Study group' }), sel),
+        h('p', { class: 'hint-line', text: 'Only members of the group can see what you share.' }));
+      return () => ({});
+    },
+    async onSubmit() {
+      const rows = list.map(it => ({ group_id: groupId, user_id: me, kind: 'note', request_id: null, url: null, item_type: it.type,
+        title: String(it.row.title || it.row.body || 'Untitled').slice(0, it.row.title ? 200 : 60), body: String(it.row.body || '').slice(0, 5000) }));
+      let r = await sb.from('group_items').insert(rows);
+      // Until schema-update-G13-group-item-type.sql has been run there is no item_type column: share as plain notes.
+      if (r.error && /item_type/.test(r.error.message || '')) r = await sb.from('group_items').insert(rows.map(({ item_type, ...rest }) => rest));
+      if (r.error) throw r.error;
+      const n = list.length, gid = groupId, gname = (groups.find(g => g.id === gid) || {}).name || 'the group';
+      route(); // also leaves select mode
+      setTimeout(() => showDialog({
+        title: 'Shared', text: plural(n, 'item', 'items') + ' shared to ' + gname + '.', submitLabel: 'Done', onSubmit() {},
+        extras: [{ label: 'Open the group', danger: false, onClick: () => { closeDialog(); go('#workspace/groups/' + gid); } }]
+      }), 0);
+    }
+  });
+}
+
 // Tapping the card expands/collapses its clamped body text (harmless if the
 // text was already short enough to show in full); the small pencil button is
 // the only way to open the edit dialog, and stops the tap from also toggling.
@@ -1300,8 +1454,13 @@ function itemCard(scope, it) {
   // Flashcards behave like an actual flashcard even when just browsing: the
   // back stays hidden until tapped, same tap that expands other item types.
   const isFlashcard = type === 'flashcard';
-  const card = h('div', { class: 'item' + (isFlashcard ? ' flashcard' : ''), tabindex: '0', role: 'button', 'aria-expanded': 'false' },
+  // multi-share: in select mode a tap ticks a note, definition or mnemonic instead of expanding it
+  const selecting = multiShare.on, shareable = !!SHAREABLE[type];
+  const isPicked = () => multiShare.picked.has(pickKey(it));
+  const pickBox = selecting && shareable ? h('span', { class: 'pick-box', 'aria-hidden': 'true', text: isPicked() ? '\u2713' : '' }) : null;
+  const card = h('div', { class: 'item' + (isFlashcard ? ' flashcard' : '') + (selecting && !shareable ? ' dim' : '') + (pickBox && isPicked() ? ' picked' : ''), tabindex: '0', role: 'button', 'aria-expanded': 'false' },
     h('span', { class: 'item-head' },
+      pickBox,
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
       listenBtn, shareBtn, editBtn),
@@ -1310,7 +1469,24 @@ function itemCard(scope, it) {
     detail ? h('span', { class: 'body', text: detail }) : null,
     isFlashcard ? h('span', { class: 'fc-hint', text: 'Tap to flip' }) : null);
 
+  // Flashcards flip between question and answer on every tap; other items
+  // expand/collapse their clamped body text.
   const toggle = () => {
+    if (pickBox) {
+      const k = pickKey(it);
+      if (multiShare.picked.has(k)) multiShare.picked.delete(k); else multiShare.picked.set(k, it);
+      card.classList.toggle('picked', isPicked());
+      pickBox.textContent = isPicked() ? '\u2713' : '';
+      if (multiShare.sync) multiShare.sync();
+      return;
+    }
+    if (isFlashcard) {
+      const flipped = card.classList.toggle('flipped');
+      card.setAttribute('aria-pressed', String(flipped));
+      const hint = card.querySelector('.fc-hint');
+      if (hint) hint.textContent = flipped ? 'Answer · tap to flip back' : 'Tap to flip';
+      return;
+    }
     const open = card.classList.toggle('expanded');
     card.setAttribute('aria-expanded', String(open));
   };
@@ -1349,6 +1525,17 @@ function itemsSection(scope, items, heading, hint) {
         paint(true);
       }
     }));
+
+    if (items.some(it => SHAREABLE[it.type])) {
+      const visible = () => (itemsView.mode === 'folders' && itemsView.folder ? items.filter(it => it.type === itemsView.folder) : items).filter(it => SHAREABLE[it.type]);
+      bar.append(h('button', {
+        class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel selecting' : 'Select to share',
+        onclick: () => {
+          if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(visible, () => paint(false)); }
+          paint(true);
+        }
+      }));
+    }
 
     const itemArrangeOpts = {
       label: it => it.row.title || ('Untitled ' + ITEM_TYPES[it.type].label.toLowerCase()),
@@ -1473,7 +1660,7 @@ function openFlashcardReview(queue) {
   const scrim = h('div', { class: 'scrim' });
   const panel = h('div', { class: 'sheet fc-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Flashcard review' });
   scrim.append(panel);
-  const close = () => { scrim.remove(); if (reviewedCount) route(); };
+  const close = () => { scrim.remove(); };
   scrim.addEventListener('click', e => { if (e.target === scrim) close(); });
 
   function paint() {
@@ -1493,15 +1680,15 @@ function openFlashcardReview(queue) {
     card.addEventListener('click', flip);
     card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
 
-    const grades = revealed ? h('div', { class: 'fc-grades' }, GRADE_BTNS.map(g =>
-      h('button', {
-        class: 'btn small', type: 'button', text: g.label,
-        onclick: async e => {
-          e.stopPropagation();
-          try { await gradeFlashcard(row, g.grade); } catch (err) { /* keep going even if the sync failed */ }
-          reviewedCount++; i++; revealed = false; paint();
-        }
-      }))) : null;
+    const prevBtn = h('button', {
+      class: 'btn quiet small', type: 'button', text: 'Previous', disabled: i === 0,
+      onclick: e => { e.stopPropagation(); if (i > 0) { i--; revealed = false; paint(); } }
+    });
+    const nextBtn = h('button', {
+      class: 'btn small', type: 'button', text: 'Next',
+      onclick: e => { e.stopPropagation(); reviewedCount = Math.max(reviewedCount, i + 1); i++; revealed = false; paint(); }
+    });
+    const grades = h('div', { class: 'fc-grades' }, prevBtn, nextBtn);
 
     panel.replaceChildren(
       h('div', { class: 'fc-top' },
@@ -2960,6 +3147,8 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'posts')    return postsPage();
   if (ids[0] === 'community') return communityPage();
   if (ids[0] === 'people')   return peoplePage(ids[1]);
+  if (ids[0] === 'peers')    return schPeersPage();
+  if (ids[0] === 'classes')  return schClassesPage();
   if (ids[0] === 'planner')  return plannerHub();
   if (ids[0] === 'projects') return projectsHub();
   if (ids[0] === 'wiki')     return wikiHub(ids[1]);
@@ -2987,6 +3176,11 @@ function hubsSection() {
       linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' }),
       linkRow({ href: '#workspace/library',  title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' }),
       linkRow({ href: '#workspace/groups',   title: 'Study groups',       meta: 'Join or create a group around a subject or chapter' }),
+      linkRow({ href: '#workspace/peers',    title: 'Peers',              meta: 'Other students applying to the same scholarships this year' }),
+      linkRow({ href: '#workspace/classes',  title: 'Live classes',       meta: 'Links to online and live classes \u2014 watch or join, with start times' }),
+      linkRow({ href: '#workspace/profile',  title: 'Public profile',     meta: 'Your name, photo, country and field of study' }),
+      linkRow({ href: '#workspace/community', title: 'Community posts',   meta: 'Public notes, mnemonics and links from other students \u2014 save the ones you like' }),
+      linkRow({ href: '#workspace/posts',    title: 'My posts',           meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' }),
       linkRow({ href: '#workspace/consult',  title: 'Consult a teacher', meta: 'Book a scheduled, study-focused session with a teacher' }),
       linkRow({ href: '#workspace/books',    title: 'Book reviews',       meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }),
       linkRow({ href: '#workspace/qa',       title: 'Q&A',                meta: 'Ask a question, answer others, or request a teacher' }),
@@ -3785,12 +3979,24 @@ function youtubeVideoId(url) {
 function youtubePlayer(url) {
   const id = youtubeVideoId(url);
   if (!id) return null;
-  return h('div', { class: 'yt-embed' },
-    h('iframe', {
-      src: 'https://www.youtube.com/embed/' + id, title: 'YouTube video player', frameborder: '0',
-      allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share',
-      allowfullscreen: true
-    }));
+  // Error 153 ("Video player configuration error") means YouTube could not
+  // identify the embedding page. Inside the Android app the page's referrer can
+  // be stripped, so send it explicitly and pass the page origin when it is a
+  // real web origin.
+  let q = '?playsinline=1&rel=0';
+  try {
+    const o = window.location.origin;
+    if (/^https?:\/\//.test(o) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(o)) q += '&origin=' + encodeURIComponent(o);
+  } catch (e) { /* no origin available */ }
+  return h('div', { class: 'yt-wrap' },
+    h('div', { class: 'yt-embed' },
+      h('iframe', {
+        src: 'https://www.youtube.com/embed/' + id + q, title: 'YouTube video player', frameborder: '0',
+        referrerpolicy: 'strict-origin-when-cross-origin',
+        allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share',
+        allowfullscreen: true
+      })),
+    h('a', { class: 'hint-line', href: 'https://www.youtube.com/watch?v=' + id, target: '_blank', rel: 'noopener noreferrer', text: 'Video not playing? Watch it on YouTube \u2197' }));
 }
 
 function youtubeHub(chatId) {
@@ -6381,6 +6587,39 @@ function showDialog(cfg) {
   (first || submit).focus();
 }
 
+/* ---------- themed picker ----------
+   The phone's own <select> popup is a white system dialog that ignores the app
+   theme. Every <select> now opens this dark bottom sheet instead; choosing an
+   option sets the select's value and fires its usual input/change events. */
+function openSelectSheet(sel) {
+  const scrim = h('div', { class: 'scrim pick-scrim' });
+  const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  const close = () => { scrim.remove(); document.removeEventListener('keydown', onKey, true); };
+  const fieldLabel = sel.closest('.field') && sel.closest('.field').querySelector('label');
+  const title = sel.getAttribute('aria-label') || (fieldLabel && fieldLabel.textContent.trim()) || 'Choose an option';
+  const list = h('div', { class: 'pick-list', role: 'listbox' }, Array.from(sel.options).map(o => {
+    const b = h('button', { type: 'button', class: 'pick-opt', role: 'option', 'aria-selected': String(o.selected), disabled: o.disabled, text: o.textContent });
+    b.addEventListener('click', () => {
+      const changed = sel.value !== o.value;
+      sel.value = o.value; close();
+      if (changed) { sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true })); }
+    });
+    return b;
+  }));
+  scrim.addEventListener('click', e => { if (e.target === scrim) close(); });
+  scrim.append(h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+    h('h3', { text: title }), list, h('button', { class: 'btn quiet', type: 'button', text: 'Cancel', onclick: close })));
+  document.body.append(scrim);
+  document.addEventListener('keydown', onKey, true);
+  const cur = list.querySelector('[aria-selected="true"]');
+  if (cur) cur.scrollIntoView({ block: 'center' });
+}
+(function themedSelects() {
+  const pick = e => { const sel = e.target && e.target.closest ? e.target.closest('select') : null; return sel && !sel.disabled && !sel.multiple && !(sel.size > 1) ? sel : null; };
+  document.addEventListener('mousedown', e => { if (pick(e)) e.preventDefault(); }, true);
+  document.addEventListener('click', e => { const sel = pick(e); if (sel) { e.preventDefault(); openSelectSheet(sel); } }, true);
+})();
+
 function entityDialog(kind, existing, ctx) {
   const E = ENTITY[kind];
   let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
@@ -6828,14 +7067,9 @@ async function scholarshipsHub(sub) {
     linkRow({ href: '#workspace/scholarships/roadmap', title: 'My roadmap', meta: 'Your step-by-step application checklist' }),
     linkRow({ href: '#workspace/scholarships/whatif', title: 'What-if simulator', meta: 'Change a score and see which scholarships open up' }),
     linkRow({ href: '#workspace/scholarships/gap', title: 'Gap analysis', meta: 'How you compare with admitted applicants, in numbers' }),
-    linkRow({ href: '#workspace/scholarships/peers', title: 'Peers', meta: 'Other students applying to the same scholarships this year' }),
-    linkRow({ href: '#workspace/scholarships/classes', title: 'Live classes', meta: 'Links to online and live classes \u2014 watch or join, with start times' }),
     linkRow({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines, test dates and prep milestones on one line' }),
     linkRow({ href: '#workspace/scholarships/search', title: 'Find scholarships', meta: 'Search by destination, level and funding type' }),
-    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }),
-    linkRow({ href: '#workspace/profile', title: 'Public profile', meta: 'Your name, photo, country and field of study' }),
-    linkRow({ href: '#workspace/community', title: 'Community posts', meta: 'Public notes, mnemonics and links from other students \u2014 save the ones you like' }),
-    linkRow({ href: '#workspace/posts', title: 'My posts', meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' }));
+    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }));
 
   let row = res.data || null;
   let mode = row ? 'summary' : 'wizard';
@@ -7242,11 +7476,11 @@ async function schSearchPage() {
    for any link saved by hand. Cached on this device for a week so reopening
    doesn't spend another Gemini call. E11 added When/How to apply; E12 added What you need (exams & eligibility); E13 added Chance of success. */
 // E22: numeric minimums read off the page (used by the what-if simulator).
-const SCH_DETAIL_KEY = 'sch-detail5:';
+const SCH_DETAIL_KEY = 'sch-detail6:'; // 6: min gained sat and gre
 function schCleanMin(m) {
   m = m && typeof m === 'object' ? m : {};
   const n = (v, lo, hi) => { v = typeof v === 'string' ? parseFloat(v) : v; return typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : null; };
-  return { ielts: n(m.ielts, 3, 9), toefl: n(m.toefl, 20, 120), gpaPct: n(m.gpaPct, 30, 100) };
+  return { ielts: n(m.ielts, 3, 9), toefl: n(m.toefl, 20, 120), gpaPct: n(m.gpaPct, 30, 100), sat: n(m.sat, 400, 1600), gre: n(m.gre, 260, 340) };
 }
 function schPeekDetail(url) { try { const c = JSON.parse(store.get(SCH_DETAIL_KEY + url) || 'null'); if (c && c.at > Date.now() - 7 * 864e5) return c.d; } catch (e) { /* not cached */ } return null; }
 // E13: keep only a sane 0-100 range; anything else becomes 'unknown'.
@@ -7263,10 +7497,10 @@ async function schReadDetail(url, force) {
   const s = aiSettings();
   if (!s.geminiKey || !s.geminiModel) throw new Error('Reading a scholarship page uses Gemini \u2014 add your key and model in AI Settings.');
   const prompt = 'Open this scholarship page and reply with ONLY a JSON object (no prose, no markdown): ' +
-    '{"name":"","provider":"","country":"","levels":"","subjects":"","duration":"","summary":"","covers":[],"applyWindow":"","steps":[],"exams":[],"eligibility":[],"successRate":{"low":null,"high":null,"basis":"unknown","note":""},"min":{"ielts":null,"toefl":null,"gpaPct":null}}. ' +
+    '{"name":"","provider":"","country":"","levels":"","subjects":"","duration":"","summary":"","covers":[],"applyWindow":"","steps":[],"exams":[],"eligibility":[],"successRate":{"low":null,"high":null,"basis":"unknown","note":""},"min":{"ielts":null,"toefl":null,"gpaPct":null,"sat":null,"gre":null}}. ' +
     'summary: 2-3 plain sentences on what the scholarship is. covers: short items for everything it pays for or gives (tuition, monthly stipend with the amount, flights, insurance, accommodation, etc.). ' +
     'duration: how long the funding or programme lasts. subjects: the fields of study it is open to. ' +
-    'applyWindow: when applications open and close and how often (for example yearly), worded as the page states it. steps: the application procedure as short ordered steps (register, documents, submit, interview, results\u2026), in the order the page gives them. exams: every test the page requires or accepts, one item each as {"name":"IELTS","requirement":"minimum overall 6.5","required":true} (SAT, IELTS, TOEFL, GRE, GMAT, entrance or intake exams, etc.; required false when it is optional or only one accepted option). eligibility: each other condition as a short plain sentence (nationality, age limit, minimum GPA or grades, work experience, prior degree, not already studying abroad, etc.). successRate: the approximate chance an applicant is awarded it, as whole percentages low and high (a range, 0-100). basis \"stated\" only when the page itself gives the number of awards and applicants or an acceptance rate; basis \"estimated\" when you infer a range from the awards offered and how competitive similar scholarships are; basis \"unknown\" (low and high null) when you cannot give a defensible range. note: one sentence saying exactly what the range rests on. Use \"\" or [] for anything else the page does not state. min: the numeric minimums the page states \u2014 ielts (overall band), toefl (iBT total), gpaPct (minimum academic result as a percentage; convert only when the page gives the scale, e.g. 3.0 out of 4.0 is 75) \u2014 and null for any it does not state. Never guess.\n' + url;
+    'applyWindow: when applications open and close and how often (for example yearly), worded as the page states it. steps: the application procedure as short ordered steps (register, documents, submit, interview, results\u2026), in the order the page gives them. exams: every test the page requires or accepts, one item each as {"name":"IELTS","requirement":"minimum overall 6.5","required":true} (SAT, IELTS, TOEFL, GRE, GMAT, entrance or intake exams, etc.; required false when it is optional or only one accepted option). eligibility: each other condition as a short plain sentence (nationality, age limit, minimum GPA or grades, work experience, prior degree, not already studying abroad, etc.). successRate: the approximate chance an applicant is awarded it, as whole percentages low and high (a range, 0-100). basis \"stated\" only when the page itself gives the number of awards and applicants or an acceptance rate; basis \"estimated\" when you infer a range from the awards offered and how competitive similar scholarships are; basis \"unknown\" (low and high null) when you cannot give a defensible range. note: one sentence saying exactly what the range rests on. Use \"\" or [] for anything else the page does not state. min: the numeric minimums the page states \u2014 ielts (overall band), toefl (iBT total), sat (SAT total out of 1600), gre (GRE total, verbal plus quantitative, 260-340), gpaPct (minimum academic result as a percentage; convert only when the page gives the scale, e.g. 3.0 out of 4.0 is 75) \u2014 and null for any it does not state. Never guess.\n' + url;
   const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
   let o; try { o = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); } catch (e) { throw new Error('Could not read that page. Try again in a moment.'); }
   const str = v => (typeof v === 'string' ? v.trim() : '');
@@ -7745,7 +7979,7 @@ async function schTimelinePage() {
     if (layers.deadlines) rows.filter(r => r.deadline).forEach(r => ev.push({ kind: 'deadline', date: r.deadline, title: r.name, href: '#workspace/scholarships/detail-' + r.id, sub: r.funding || '' }));
     if (layers.tests) tests.forEach(t => ev.push({ kind: 'test', color: SCH_TEST_COLOR, date: t.test_date, title: t.name, sub: 'Test date', href: '#workspace/scholarships/timeline' }));
     if (layers.prep) prep.forEach(r => ev.push({ kind: 'prep', color: SCH_PREP_COLOR, tone: r.done ? 'done' : '', date: r.milestone_date, title: r.title, sub: r.done ? 'Prep milestone \u00b7 done' : 'Prep milestone', href: '#workspace/planner' }));
-    if (layers.classes) classes.forEach(c => ev.push({ kind: 'class', color: SCH_CLASS_COLOR, date: c.day, title: c.title, sub: 'Live class \u00b7 ' + new Date(c.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }), href: '#workspace/scholarships/classes' }));
+    if (layers.classes) classes.forEach(c => ev.push({ kind: 'class', color: SCH_CLASS_COLOR, date: c.day, title: c.title, sub: 'Live class \u00b7 ' + new Date(c.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }), href: '#workspace/classes' }));
     return ev;
   }
   const chip = (key, label, color) => h('button', { class: 'chip-btn', type: 'button', 'aria-pressed': String(layers[key]),
@@ -7917,22 +8151,48 @@ async function schGapPage() {
    numeric minimums -- other conditions (nationality, age, ...) aren't judged,
    and a scholarship stating no numeric minimum is listed separately. */
 function schToeflToIelts(v) { return (SCH_TOEFL_IELTS.find(([m]) => v >= m) || [0, 5])[1]; }
+function schTestBest(p, name) {
+  let best = null;
+  (p.test_scores || []).forEach(t => {
+    const sc = parseFloat(t.score);
+    if (t.test === name && isFinite(sc) && (best == null || sc > best)) best = sc;
+  });
+  return best;
+}
 function schWhatIf(d, have) {
   const m = d.min || {};
-  const eng = [m.ielts, m.toefl != null ? schToeflToIelts(m.toefl) : null].filter(v => v != null);
   const checks = [];
-  if (eng.length) checks.push({ name: 'IELTS', need: Math.min(...eng), have: have.ielts, fmt: v => v });
-  if (m.gpaPct != null) checks.push({ name: 'academic result', need: m.gpaPct, have: have.gpa, fmt: v => v + '%' });
+  const txt = v => (v == null ? 'none' : String(v));
+  if (m.ielts != null || m.toefl != null) {
+    // a page that lists both usually accepts either, so passing one is enough
+    const okI = m.ielts != null && have.ielts != null && have.ielts >= m.ielts - 1e-9;
+    const okT = m.toefl != null && have.toefl != null && have.toefl >= m.toefl - 1e-9;
+    checks.push({
+      need: [m.ielts != null ? 'IELTS ' + m.ielts : null, m.toefl != null ? 'TOEFL ' + m.toefl : null].filter(Boolean).join(' or '),
+      ok: okI || okT,
+      haveText: [m.ielts != null ? 'IELTS ' + txt(have.ielts) : null, m.toefl != null ? 'TOEFL ' + txt(have.toefl) : null].filter(Boolean).join(', ')
+    });
+  }
+  if (m.gpaPct != null) checks.push({ need: 'academic result ' + m.gpaPct + '%', ok: have.gpa != null && have.gpa >= m.gpaPct - 1e-9, haveText: have.gpa == null ? 'none' : Math.round(have.gpa * 10) / 10 + '%' });
+  if (m.sat != null) checks.push({ need: 'SAT ' + m.sat, ok: have.sat != null && have.sat >= m.sat, haveText: txt(have.sat) });
+  if (m.gre != null) checks.push({ need: 'GRE ' + m.gre, ok: have.gre != null && have.gre >= m.gre, haveText: txt(have.gre) });
   if (!checks.length) return { status: 'unknown', missing: [], checks };
-  const missing = checks.filter(c => c.have == null || c.have < c.need - 1e-9);
+  const missing = checks.filter(c => !c.ok);
   return { status: missing.length ? 'blocked' : 'open', missing, checks };
 }
 async function schWhatIfPage() {
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
-  const [pr, sl] = await Promise.all([sb.from('scholarship_profiles').select('*').maybeSingle(), sb.from('scholarship_shortlist').select('id,name,link').order('created_at', { ascending: false })]);
+  const [pr, sl, rr, jr] = await Promise.all([
+    sb.from('scholarship_profiles').select('*').maybeSingle(),
+    sb.from('scholarship_shortlist').select('id,name,link').order('created_at', { ascending: false }),
+    sb.from('scholarship_roadmap').select('stage,text,done'),
+    sb.from('projects').select('title').eq('kind', 'project')]);
   if (!pr.data) return { title: 'What-if', nodes: [crumb, emptyBlock('Set up your profile first', 'The simulator starts from your current GPA and English score.'),
     h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#workspace/scholarships', text: 'Go to Scholarship Center' }))] };
-  const now = schGapYou(pr.data, [], []), nowHave = { ielts: now.english_ielts, gpa: now.gpa_pct };
+  const p = pr.data;
+  const now = schGapYou(p, rr.data || [], (jr.data || []).map(x => x.title));
+  const nowHave = { ielts: schTestBest(p, 'IELTS'), toefl: schTestBest(p, 'TOEFL'), sat: schTestBest(p, 'SAT'), gre: schTestBest(p, 'GRE'),
+    gpa: now.gpa_pct, eca: now.eca_count, projects: now.project_count };
   const pool = [], seen = new Set();
   (sl.data || []).forEach(r => { if (/^https?:\/\//i.test(r.link || '') && !seen.has(r.link)) { seen.add(r.link); pool.push({ name: r.name, url: r.link, href: '#workspace/scholarships/detail-' + r.id }); } });
   const cached = schJson('sch-paths:v1', null);
@@ -7942,14 +8202,40 @@ async function schWhatIfPage() {
     h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#workspace/scholarships/search', text: 'Find scholarships' }))] };
   pool.forEach(x => { x.d = schPeekDetail(x.url); });
 
-  const hyp = { ielts: now.english_ielts != null ? now.english_ielts : 6, gpa: now.gpa_pct != null ? Math.round(now.gpa_pct) : 70 };
+  // Start from your real numbers; null means "not taken / not recorded".
+  const hyp = { ...nowHave };
+  let typical = null; // the typical admitted applicant, loaded on demand (ECAs and projects are judged against it)
   const out = h('div'), status = h('p', { class: 'hint-line', hidden: true }), err = h('p', { class: 'msg err', role: 'alert', hidden: true });
-  const slider = (label, key, min, max, step, cur, unit) => {
-    const val = h('strong', { text: hyp[key] + unit }), r = h('input', { type: 'range', min, max, step, value: hyp[key], 'aria-label': label, style: 'width:100%' });
-    r.addEventListener('input', () => { hyp[key] = Number(r.value); val.textContent = hyp[key] + unit; paintOut(); });
-    return h('div', { class: 'field' }, h('label', {}, label + ': ', val, h('small', { style: 'margin-left:8px', text: cur == null ? '(not on your profile yet)' : '(now ' + cur + unit + ')' })), r);
+  const strength = h('div', { class: 'proj', style: 'padding:12px 14px;margin:12px 0;display:grid;gap:4px', hidden: true });
+  // Score sliders have a lowest position that means "none"; count sliders (ECAs, projects) start at 0.
+  const slider = (label, key, min, max, step, unit, count) => {
+    const lo = count ? min : min - step, show = v => (v == null ? 'none' : (Math.round(v * 10) / 10) + unit);
+    const val = h('strong', { text: show(hyp[key]) });
+    const r = h('input', { type: 'range', min: lo, max, step, value: hyp[key] == null ? lo : hyp[key], 'aria-label': label, style: 'width:100%' });
+    r.addEventListener('input', () => { const n = Number(r.value); hyp[key] = !count && n < min ? null : n; val.textContent = show(hyp[key]); paintOut(); });
+    const cur = nowHave[key];
+    return h('div', { class: 'field' }, h('label', {}, label + ': ', val, h('small', { style: 'margin-left:8px', text: cur == null ? '(not on your profile yet)' : '(now ' + show(cur) + ')' })), r);
   };
   const line = (x, b) => h('a', { class: 'proj', href: x.href, style: 'padding:10px 14px;display:grid;gap:2px;text-decoration:none;color:inherit' }, h('strong', { text: x.name }), h('small', { text: b }));
+  const fmt1 = v => String(Math.round(Number(v) * 10) / 10);
+  function paintStrength() {
+    if (!typical) return;
+    const eng = [hyp.ielts, hyp.toefl != null ? schToeflToIelts(hyp.toefl) : null].filter(v => v != null);
+    const rows = [
+      ['Academic result', hyp.gpa, typical.v.gpa_pct, '%', 3],
+      ['English (IELTS-equivalent)', eng.length ? Math.max(...eng) : null, typical.v.english_ielts, '', 0.25],
+      ['ECAs', hyp.eca, typical.v.eca_count, '', 0],
+      ['Projects', hyp.projects, typical.v.project_count, '', 0]
+    ].filter(r => r[2] != null && isFinite(r[2]));
+    strength.hidden = false;
+    strength.replaceChildren(
+      h('strong', { text: 'Against a typical admitted applicant' }),
+      h('small', { text: typical.source === 'community' ? 'Based on ' + typical.n + ' admitted applicants who reported to Athenaeum.' : 'A rough AI estimate, not real data.' }),
+      ...rows.map(([label, mine, typ, unit, tol]) => {
+        const st = mine == null ? 'not set' : mine > typ + tol ? 'ahead' : mine >= typ - tol ? 'on par' : 'behind';
+        return h('small', { text: label + ': ' + (mine == null ? 'none' : fmt1(mine) + unit) + ' vs typical ' + fmt1(typ) + unit + ' \u2014 ' + st });
+      }));
+  }
   function paintOut() {
     const read = pool.filter(x => x.d), pending = pool.length - read.length;
     const rs = read.map(x => ({ x, a: schWhatIf(x.d, nowHave), b: schWhatIf(x.d, hyp) }));
@@ -7959,8 +8245,8 @@ async function schWhatIfPage() {
       else if (r.b.status === 'open') (r.a.status === 'open' ? g.both : g.newly).push(r);
       else (r.a.status === 'open' ? g.lost : g.still).push(r);
     });
-    const need = r => r.b.missing.map(c => 'needs ' + c.name + ' ' + c.fmt(c.need) + ' \u2014 you\u2019d have ' + (c.have == null ? 'none' : c.fmt(c.have))).join('; ');
-    const meets = r => r.a.checks.map(c => c.name + ' minimum ' + c.fmt(c.need) + (r.a.status === 'blocked' ? ' (' + (r.a.missing.includes(c) ? 'you have ' + (nowHave[c.name === 'IELTS' ? 'ielts' : 'gpa'] == null ? 'none' : c.fmt(nowHave[c.name === 'IELTS' ? 'ielts' : 'gpa'])) : 'already met') + ')' : '')).join('; ');
+    const need = r => r.b.missing.map(c => 'needs ' + c.need + ' \u2014 you\u2019d have ' + c.haveText).join('; ');
+    const meets = r => r.a.checks.map(c => 'minimum ' + c.need + (r.a.status === 'blocked' ? ' (' + (c.ok ? 'already met' : 'you have ' + c.haveText) + ')' : '')).join('; ');
     const open = g.newly.length + g.both.length, was = rs.filter(r => r.a.status === 'open').length;
     const group = (title, list, sub, tone) => list.length ? section(title + ' (' + list.length + ')', null, null, h('div', { class: 'list', style: 'display:grid;gap:8px' }, list.map(r => line(r.x, sub(r)))), tone) : null;
     out.replaceChildren(
@@ -7971,8 +8257,9 @@ async function schWhatIfPage() {
       group('Open either way', g.both, meets),
       group('Still out of reach', g.still, need),
       group('No longer open', g.lost, need),
-      group('No numeric minimum stated', g.unknown, () => 'The page states no IELTS or result minimum, so this can\u2019t be tested.'),
+      group('No numeric minimum stated', g.unknown, () => 'The page states no test-score or result minimum, so this can\u2019t be tested.'),
       pending ? h('p', { class: 'hint-line', text: pending + ' scholarship' + (pending === 1 ? '' : 's') + ' not tested yet \u2014 read their requirements below.' }) : null);
+    paintStrength();
   }
   const readBtn = h('button', { class: 'btn small', type: 'button' });
   const syncBtn = () => { const n = pool.filter(x => !x.d).length; readBtn.hidden = !n; readBtn.textContent = 'Read requirements for ' + n + ' more'; };
@@ -7988,12 +8275,24 @@ async function schWhatIfPage() {
     } catch (e) { err.textContent = (e && e.message) || 'Could not read requirements.'; err.hidden = false; }
     status.hidden = true; readBtn.disabled = false; syncBtn(); paintOut();
   });
+  const typBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Compare with typical admitted applicants' });
+  typBtn.addEventListener('click', async () => {
+    err.hidden = true; typBtn.disabled = true;
+    try {
+      const dest = (p.destinations || []).find(d => d && d !== 'Open to anywhere') || '';
+      typical = await schGapTypical(p, JSON.stringify([p.target_level, p.target_major, dest, p.home_country]));
+      typBtn.hidden = true; paintStrength();
+    } catch (e) { err.textContent = (e && e.message) || 'Could not compare right now.'; err.hidden = false; }
+    typBtn.disabled = false;
+  });
   const reset = h('button', { class: 'btn quiet small', type: 'button', text: 'Reset to my numbers', onclick: () => route() });
   syncBtn(); paintOut();
   return { title: 'What-if', nodes: [crumb, section('What-if simulator', null, null,
-    h('p', { class: 'hint-line', text: 'Move a slider to see which of your shortlisted and matched scholarships would open up. Only IELTS/TOEFL and minimum-result requirements are tested \u2014 always check the rest on each scholarship\u2019s page.' }),
-    slider('IELTS band', 'ielts', 4, 9, 0.5, now.english_ielts, ''), slider('Academic result', 'gpa', 40, 100, 1, now.gpa_pct != null ? Math.round(now.gpa_pct) : null, '%'),
-    h('div', { class: 'actions' }, reset), status, err, out, h('div', { class: 'actions' }, readBtn))] };
+    h('p', { class: 'hint-line', text: 'Move a slider to see which of your shortlisted and matched scholarships would open up. IELTS, TOEFL, SAT, GRE and minimum-result requirements are tested against each scholarship\u2019s page \u2014 always check the rest there. ECAs and projects are rarely stated as minimums, so they are compared with a typical admitted applicant instead. Drag a score slider to its far left for \u201cnone\u201d.' }),
+    slider('GPA / academic result', 'gpa', 40, 100, 1, '%'), slider('IELTS band', 'ielts', 4, 9, 0.5, ''), slider('TOEFL iBT', 'toefl', 40, 120, 1, ''),
+    slider('SAT', 'sat', 400, 1600, 10, ''), slider('GRE', 'gre', 260, 340, 1, ''),
+    slider('ECAs', 'eca', 0, 15, 1, '', true), slider('Projects', 'projects', 0, 15, 1, '', true),
+    h('div', { class: 'actions' }, reset, typBtn), strength, status, err, out, h('div', { class: 'actions' }, readBtn))] };
 }
 
 /* ---------- E23: Scholarship Center -- application bundle: collect ----------
@@ -9628,10 +9927,8 @@ function launchPage(title, url, crumbList, actions = [], tip = '') {
   return { title, nodes: [
     crumbs(crumbList),
     h('div', { class: 'launch-card' },
-      h('p', { text: 'This opens in your browser, outside the app.' }),
       h('div', { class: 'dl-actions' }, openLink, actions),
-      tip ? h('p', { class: 'hint-line', text: tip }) : null,
-      h('p', { class: 'hint-line', text: 'When you\u2019re done, use your phone\u2019s back button or back gesture to return here.' }))
+      tip ? h('p', { class: 'hint-line', text: tip }) : null)
   ] };
 }
 
@@ -10705,7 +11002,7 @@ const communitySetupCard = e => h('div', { class: 'status bad' }, h('strong', { 
   h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
 
 async function communityPage() {
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   try {
     const feed = await communityFeed({ emptyTitle: 'No public posts yet', emptyBody: 'When other people share notes, mnemonics or links publicly, they show up here. You can share your own from any note, mnemonic or saved link.' });
     return { title: 'Community', nodes: [crumb, h('p', { class: 'hint-line', text: 'Public posts from other students. Tap a name to see their profile, and Save to copy a post into your own workspace.' }), feed] };
@@ -11444,18 +11741,20 @@ const REQ_TEMPLATE = { notes: 'Notes', explain: 'An explanation', practice: 'Pra
 async function itemDialog(g, kind, req) {
   let mine = [];
   if (kind === 'note') {
-    const [a, b] = await Promise.all([sb.from('notes').select('title,body').order('created_at', { ascending: false }).limit(40), sb.from('mnemonics').select('title,body').order('created_at', { ascending: false }).limit(20)]);
-    mine = [...(a.data || []), ...(b.data || [])].filter(x => x.body);
+    const [a, b] = await Promise.all([sb.from('notes').select('title,body,kind').order('created_at', { ascending: false }).limit(40), sb.from('mnemonics').select('title,body').order('created_at', { ascending: false }).limit(20)]);
+    // remember what each saved item is, so a shared definition or mnemonic keeps its type
+    mine = [...(a.data || []).map(x => ({ ...x, type: x.kind === 'definition' ? 'definition' : 'note' })), ...(b.data || []).map(x => ({ ...x, type: 'mnemonic' }))].filter(x => x.body);
   }
   showDialog({
     title: (req ? 'Answer: ' : '') + (kind === 'note' ? 'Share a note' : 'Share a link'), submitLabel: 'Share',
     render(form) {
+      let chosenType = 'note';
       const t = makeField(kind === 'note' ? 'Title' : 'Label', { maxlength: 200, placeholder: kind === 'note' ? 'e.g. Motion \u2014 key formulas' : 'e.g. My YouTube channel, my Instagram' });
       const b = makeField(kind === 'note' ? 'Note' : 'Description (optional)', { maxlength: 5000, multiline: true, rows: kind === 'note' ? 6 : 2 });
       const u = makeField('Link (https)', { maxlength: 500, placeholder: 'https://\u2026' });
       if (mine.length) {
-        const sel = h('select', { class: 'control', 'aria-label': 'Start from a saved note' }, h('option', { value: '', text: 'Or start from one of my saved notes\u2026' }), mine.map((x, i) => h('option', { value: String(i), text: x.title || x.body.slice(0, 40) })));
-        sel.addEventListener('change', () => { const x = mine[Number(sel.value)]; if (x) { t.input.value = x.title || ''; b.input.value = x.body; } });
+        const sel = h('select', { class: 'control', 'aria-label': 'Start from a saved note' }, h('option', { value: '', text: 'Or start from one of my saved notes\u2026' }), mine.map((x, i) => h('option', { value: String(i), text: ITEM_TYPES[x.type].label + ' \u00b7 ' + (x.title || x.body.slice(0, 40)) })));
+        sel.addEventListener('change', () => { const x = mine[Number(sel.value)]; chosenType = x ? x.type : 'note'; if (x) { t.input.value = x.title || ''; b.input.value = x.body; } });
         form.append(h('div', { class: 'field' }, sel));
       }
       form.append(t.wrap); if (kind === 'link') form.append(u.wrap); form.append(b.wrap);
@@ -11463,11 +11762,14 @@ async function itemDialog(g, kind, req) {
         const title = t.input.value.trim(), body = b.input.value.trim();
         if (!title) throw new Error('Enter a ' + (kind === 'note' ? 'title' : 'label') + '.');
         if (kind === 'note' && !body) throw new Error('Write the note.');
-        return { title, body, url: kind === 'link' ? normalizeUrl(u.input.value) : null };
+        return { title, body, url: kind === 'link' ? normalizeUrl(u.input.value) : null, item_type: kind === 'note' ? chosenType : null };
       };
     },
     async onSubmit(v) {
-      const r = await sb.from('group_items').insert({ ...v, kind, group_id: g.id, user_id: currentUser.id, request_id: req ? req.id : null });
+      const row = { ...v, kind, group_id: g.id, user_id: currentUser.id, request_id: req ? req.id : null };
+      let r = await sb.from('group_items').insert(row);
+      // Until schema-update-G13-group-item-type.sql has been run there is no item_type column: share as a plain note.
+      if (r.error && /item_type/.test(r.error.message || '')) { const { item_type, ...plain } = row; r = await sb.from('group_items').insert(plain); }
       if (r.error) throw r.error; route();
     }
   });
@@ -11494,7 +11796,7 @@ function groupSharing(g, items, names, err) {
   const who = uid => h('a', { href: '#workspace/people/' + uid, text: names[uid] || 'Athenaeum user' });
   const del = i => (i.user_id === me || owner) ? btn('Delete', () => confirmDeleteRow('group_items', i, i.kind === 'request' ? 'request' : 'shared item'), ' danger-text') : null;
   const card = (i, extra) => h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:8px' }, ...extra);
-  const shareCard = i => card(i, [h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip', text: i.kind === 'note' ? 'Note' : 'Link' }), who(i.user_id)),
+  const shareCard = i => card(i, [h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'chip', text: i.kind === 'note' ? ((ITEM_TYPES[i.item_type] || ITEM_TYPES.note).label) : 'Link' }), who(i.user_id)),
     h('strong', { style: 'overflow-wrap:anywhere', text: i.title }),
     i.body ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: i.body }) : null,
     i.url && safeHref(i.url) ? h('a', { href: i.url, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:13px', text: i.url }) : null,
@@ -11914,7 +12216,7 @@ function openSchClassDialog(existing) {
 }
 
 async function schClassesPage() {
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   const res = await sb.from('scholarship_classes').select('*');
   if (res.error) {
     return { title: 'Live classes', nodes: [crumb,
@@ -12170,7 +12472,7 @@ function schCohort(url, getName, deadlineYear) {
 }
 
 async function schPeersPage() {
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   try {
     const me = currentUser.id;
     const mr = await sb.from('scholarship_cohorts').select('*').eq('user_id', me).order('cycle', { ascending: false }).order('created_at', { ascending: false });
