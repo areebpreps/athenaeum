@@ -8452,6 +8452,39 @@ function schDeriveFields(blocks) {
   const min = schCleanMin({ ielts: g(/IELTS.{0,60}?\b([4-9](?:\.[05])?)\b/, 3, 9), toefl: g(/TOEFL.{0,60}?\b(\d{2,3})\b/, 20, 120), sat: g(/\bSAT\b.{0,60}?\b(\d{3,4})\b/, 400, 1600), gre: g(/\bGRE\b.{0,60}?\b(\d{3})\b/, 260, 340), gpaPct });
   return { provider, country, levels, subjects, duration, exams: exams.slice(0, 8), min, deadline: schFindDeadline(blocks) };
 }
+// No official link on the page? Find the university's own website from its name: the name is read off the
+// page (the Provider field, the title, or the most repeated "University of ..." in the text), then Wikidata
+// (free, open, no key) is asked for that university's official website. No AI involved.
+const SCH_UNI_KEY = 'sch-unisite1:';
+const SCH_UNI_WORD = /universit|college|institut|polytechn|politecnico|hochschule|academy|\bschool\b|\bETH\b|\bMIT\b/i;
+function schUniName(d, rowName) {
+  if (d && d.provider && SCH_UNI_WORD.test(d.provider)) return d.provider.replace(/\s*\(.*?\)\s*/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
+  const W = "[A-Z][\\w'\u2019.-]*";
+  const re = new RegExp('\\b(?:University|Universit[\u00e9\u00e0y\u00e4]t?|College|Institute|Polytechnic|Politecnico)\\s+(?:of|de|di|du|des|degli|della)\\s+(?:the\\s+)?' + W + '(?:\\s+' + W + '){0,2}|\\b' + W + '(?:\\s+' + W + '){0,3}\\s+(?:University|College|Institute of Technology|Polytechnic|Universit[\u00e4a]t)\\b', 'g');
+  const texts = [rowName || '', (d && d.name) || ''];
+  ((d && d.blocks) || []).slice(0, 25).forEach(b => texts.push(b.t === 'p' || b.t === 'h' ? b.text : b.t === 'ul' || b.t === 'ol' ? b.items.join(' ') : ''));
+  const count = {}; let order = 0;
+  texts.join(' \n ').replace(/\s+/g, ' ').replace(re, m => { m = m.trim(); if (!count[m]) count[m] = { n: 0, o: order++ }; count[m].n++; return m; });
+  const best = Object.entries(count).sort((a, b) => (b[1].n - a[1].n) || (a[1].o - b[1].o))[0];
+  return best ? best[0].replace(/^(the|at|in|to)\s+/i, '').slice(0, 90) : '';
+}
+async function schUniSite(name) {
+  const key = SCH_UNI_KEY + name.toLowerCase();
+  try { const c = JSON.parse(store.get(key) || 'null'); if (c && c.u && c.at > Date.now() - 60 * 864e5) return c.u; } catch (e) { /* not cached */ }
+  const api = 'https://www.wikidata.org/w/api.php?format=json&origin=*&';
+  const getJson = async u => { const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 9000); try { const r = await fetch(u, { signal: ctl.signal }); return await r.json(); } finally { clearTimeout(t); } };
+  const found = await getJson(api + 'action=wbsearchentities&type=item&language=en&limit=8&search=' + encodeURIComponent(name));
+  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const list = (found.search || []).filter(x => /universit|college|institut|school|academy|polytechnic|hochschule|campus/i.test(x.description || ''));
+  const hit = list.find(x => norm(x.label) === norm(name)) || list[0];
+  if (!hit) return '';
+  const ent = await getJson(api + 'action=wbgetentities&props=claims&ids=' + encodeURIComponent(hit.id));
+  const cl = ((((ent.entities || {})[hit.id] || {}).claims || {}).P856) || [];
+  const best = cl.find(c => c.rank === 'preferred') || cl.find(c => c.rank !== 'deprecated');
+  const u = best && best.mainsnak && best.mainsnak.datavalue && best.mainsnak.datavalue.value;
+  if (typeof u === 'string' && /^https?:\/\//i.test(u)) { store.set(key, JSON.stringify({ at: Date.now(), u })); return u; }
+  return '';
+}
 function schParseDetail(html, url) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const h1 = doc.querySelector('h1');
@@ -8559,8 +8592,22 @@ async function schDetailPage(ref) {
       schMinBlock(d.min),
       h('p', { class: 'hint-line', text: 'Copied from the scholarship page \u2014 confirm the details on the university\u2019s own site before applying.' }));
     box.replaceChildren(section(d.name || (row && row.name) || 'Scholarship', null, null, ...kids));
-    openBtn.hidden = !d.official; note.hidden = !!d.official;
-    if (d.official) openBtn.href = d.official;
+    if (d.official) { openBtn.href = d.official; openBtn.textContent = 'Open the university\u2019s portal'; openBtn.hidden = false; note.hidden = true; }
+    else findSite(d);
+  }
+  async function findSite(d) {   // no link on the page: look the university's website up from its name
+    openBtn.hidden = true; note.hidden = false; note.textContent = 'Looking for the university\u2019s official website\u2026';
+    const uni = schUniName(d, (row && row.name) || '');
+    let site = '';
+    try { if (uni) site = await schUniSite(uni); } catch (e) { /* offline or blocked -- fall back to a search link */ }
+    const q = uni || d.name || (row && row.name) || '';
+    if (site) {
+      openBtn.href = site; openBtn.textContent = 'Open the official website'; openBtn.hidden = false;
+      note.textContent = uni + ' \u2014 official website found from the university\u2019s name. Check that it lists this scholarship.';
+    } else if (q) {
+      openBtn.href = 'https://www.google.com/search?q=' + encodeURIComponent(q + ' official website scholarships admissions'); openBtn.textContent = 'Search for the official website'; openBtn.hidden = false;
+      note.textContent = 'The official site couldn\u2019t be identified automatically, so this opens a web search for ' + q + '.';
+    } else { note.textContent = 'No official university link was found on this page, so there is nothing to open.'; }
   }
   async function load(force) {
     err.hidden = true; again.hidden = true; status.hidden = false; status.textContent = 'Loading the scholarship page\u2026';
