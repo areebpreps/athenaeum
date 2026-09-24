@@ -1060,6 +1060,7 @@ async function submitNewPassword(evt) {
 
 async function logout() {
   myProfile = null;
+  isAppAdmin = null;
   closeDialog();
   closeSheet();
   closeViewer();
@@ -1081,6 +1082,7 @@ function enterApp(user) {
   ttsLoad(user);
   const name = usernameFrom(user);
   myProfile = null;
+  isAppAdmin = null;
   $('#who-btn').textContent = (name[0] || '?').toUpperCase();
   $('#sheet-user').textContent = 'Signed in as ' + name;
   loadMyProfile(); // E25: swap in the chosen name/photo once it loads
@@ -3343,6 +3345,7 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'notifications') return notificationsPage();
   if (ids[0] === 'search')   return globalSearchPage();
   if (ids[0] === 'communityhub') return communityHubPage();
+  if (ids[0] === 'admin' && ids[1] === 'verifications') return adminVerificationsPage();
   return buildWorkspaceRoot();
 }
 
@@ -3351,7 +3354,8 @@ function buildWorkspace(ids = []) {
 // existing routes (#workspace/groups etc.) unchanged — this just adds one
 // shared front door instead of listing all seven separately under Hubs.
 const COMMUNITY_HUB_KEYS = ['groups', 'classes', 'community', 'consult', 'qa', 'market', 'teach'];
-function communityHubPage() {
+async function communityHubPage() {
+  const admin = await loadAdminFlag();
   return { title: 'Community Hub', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     h('div', { class: 'list' },
@@ -3361,8 +3365,50 @@ function communityHubPage() {
       linkRow({ href: '#workspace/consult',  title: 'Consult a teacher', meta: 'Book a scheduled, study-focused session with a teacher' }),
       linkRow({ href: '#workspace/qa',       title: 'Q&A',                meta: 'Ask a question, answer others, or request a teacher' }),
       linkRow({ href: '#workspace/market',   title: 'Course marketplace', meta: 'Courses from teachers \u2014 free or unlocked with a payment' }),
-      linkRow({ href: '#workspace/teach',    title: 'Teach on Athenaeum', meta: 'Apply for teacher status \u2014 you are a student until approved' }))
+      linkRow({ href: '#workspace/teach',    title: 'Teach on Athenaeum', meta: 'Turn teaching on for yourself \u2014 live right away, no waiting' }),
+      admin ? linkRow({ href: '#workspace/admin/verifications', title: 'Verification requests', meta: 'Review teacher verification requests \u2014 accept, reject, or restore from the dump' }) : null)
   ] };
+}
+
+/* ---------- G15: in-app verification review (owner/admin only) ----------
+   #workspace/admin/verifications. Pending requests get Accept/Reject; a rejected
+   request is kept, not deleted, and shown in a "Dump" list below so a mistaken
+   rejection can be restored (Accept). app_admins, teacher_verification_requests,
+   decide_teacher_verification(); schema-update-G15-teacher-selfserve-verification.sql.
+   After running the SQL, add yourself once: insert into app_admins (user_id) values
+   ('<your-auth-user-id>'); */
+async function adminVerificationsPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community Hub', href: '#workspace/communityhub' }]);
+  const admin = await loadAdminFlag();
+  if (!admin) return { title: 'Verification requests', nodes: [crumb, emptyBlock('Not available', 'This page is for the Athenaeum owner.')] };
+  const res = await sb.from('teacher_verification_requests').select('*').order('created_at', { ascending: false });
+  if (res.error) return { title: 'Verification requests', nodes: [crumb, h('div', { class: 'status bad' }, h('strong', { text: 'Not set up yet' }),
+    'Run schema-update-G15-teacher-selfserve-verification.sql in Supabase, then reload. (' + res.error.message + ')')] };
+  const rows = res.data || [];
+  const pending = rows.filter(r => r.status === 'pending'), dump = rows.filter(r => r.status === 'rejected');
+  const names = await profNames(rows.map(r => r.teacher_id));
+  const when = d => new Date(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  const decide = async (row, decision) => {
+    const r = await sb.rpc('decide_teacher_verification', { req_id: row.id, decision, note: null });
+    if (r.error) return showDialog({ title: 'Could not save', text: r.error.message, submitLabel: 'OK', onSubmit() {} });
+    route();
+  };
+  const card = (row, actions) => h('div', { class: 'proj', style: 'padding:10px 14px;display:grid;gap:4px;min-width:0;margin-bottom:8px' },
+    h('strong', {}, h('a', { href: '#workspace/people/' + row.teacher_id, text: names[row.teacher_id] || 'Athenaeum user' })),
+    h('small', { text: 'Requested ' + when(row.created_at) }),
+    row.message ? h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: row.message }) : null,
+    row.status === 'rejected' && row.reviewed_at ? h('small', { text: 'Rejected ' + when(row.reviewed_at) }) : null,
+    h('div', { class: 'vault-actions' }, actions));
+  const pendingList = pending.length ? pending.map(row => card(row,
+    [h('button', { class: 'btn small', type: 'button', text: 'Accept', onclick: () => decide(row, 'approved') }),
+     h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Reject', onclick: () => decide(row, 'rejected') })]))
+    : [emptyBlock('Nothing pending', 'New verification requests will show up here.')];
+  const dumpList = dump.length ? dump.map(row => card(row,
+    [h('button', { class: 'btn quiet small', type: 'button', text: 'Restore (accept)', onclick: () => decide(row, 'approved') })]))
+    : [emptyBlock('Dump is empty', 'Rejected requests land here so a mistaken rejection can be restored.')];
+  return { title: 'Verification requests', nodes: [crumb,
+    section('Pending', null, null, pendingList),
+    section('Dump (rejected)', null, null, dumpList)] };
 }
 
 // Hub row order is stored locally (there's no server table for this list),
@@ -11959,6 +12005,16 @@ function openLibraryDialog(existing, presetUrl, presetTitle, presetCat) {
    and shrunk on this device before upload. */
 const AVATAR_BUCKET = 'avatars';
 let myProfile = null;
+// null = not checked yet, true/false once known. app_admins; schema-update-G15.
+let isAppAdmin = null;
+async function loadAdminFlag() {
+  if (isAppAdmin !== null) return isAppAdmin;
+  try {
+    const r = await sb.from('app_admins').select('user_id').eq('user_id', currentUser.id).maybeSingle();
+    isAppAdmin = !r.error && !!r.data;
+  } catch (e) { isAppAdmin = false; }
+  return isAppAdmin;
+}
 const avatarUrl = path => (path ? sb.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl : '');
 const nameInitial = name => (Array.from(String(name || '').trim())[0] || '?').toUpperCase();
 function avatarFill(el, name, url) {
@@ -12628,86 +12684,109 @@ async function peoplePage(uid) {
   } catch (e) { return { title: 'Profile', nodes: [crumb, communitySetupCard(e)] }; }
 }
 
-/* ---------- G1: teacher application flow ----------
-   #workspace/teach. Everyone is a Student by default; this is the application for
-   Teacher status (teacher_applications; schema-update-G1-teacher-application.sql).
-   One open application per person: pending (can edit or withdraw), approved, or
-   closed (rejected / withdrawn, then apply again). Decisions are made from the
-   Supabase SQL editor with review_teacher_application(). */
-const TEACH_STATUS = { pending: ['In review', ''], approved: ['Approved teacher', 'pub'], rejected: ['Not approved', ''], withdrawn: ['Withdrawn', ''] };
+/* ---------- G1: teacher profile (self-serve) ----------
+   #workspace/teach. Everyone can turn teaching on for themselves \u2014 no review needed
+   (teacher_applications.active; schema-update-G15-teacher-selfserve-verification.sql).
+   Verification (the badge) is the thing that still needs review, now requested and
+   decided in-app instead of by hand in the Supabase SQL editor \u2014 see the block this
+   function adds below the profile form (teacher_verification_requests, G15). */
 async function teacherPage() {
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
-  const res = await sb.from('teacher_applications').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false });
+  const res = await sb.from('teacher_applications').select('*').eq('user_id', currentUser.id).order('created_at', { ascending: false }).limit(1).maybeSingle();
   if (res.error) {
     return { title: 'Become a teacher', nodes: [crumb,
-      h('div', { class: 'status bad' }, h('strong', { text: 'Teacher applications are not set up yet' }),
-        'Run the update SQL in Supabase (schema-update-G1-teacher-application.sql), then reload. (' + res.error.message + ') ',
+      h('div', { class: 'status bad' }, h('strong', { text: 'Teacher profiles are not set up yet' }),
+        'Run the update SQL in Supabase (schema-update-G15-teacher-selfserve-verification.sql), then reload. (' + res.error.message + ') ',
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
   }
-  const apps = res.data || [], last = apps[0] || null;
-  const open = last && (last.status === 'pending' || last.status === 'approved') ? last : null;
+  const last = res.data || null, active = !!(last && last.active);
   if (!myProfile) await loadMyProfile();
   const nodes = [crumb];
 
-  if (last) {
-    const [label, cls] = TEACH_STATUS[last.status];
-    const when = d => new Date(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-    nodes.push(h('div', { class: 'status' + (last.status === 'approved' ? ' good' : last.status === 'rejected' ? ' bad' : '') },
-      h('strong', { text: last.status === 'approved' ? 'You are a teacher' : last.status === 'pending' ? 'Your application is in review' : last.status === 'rejected' ? 'Your application was not approved' : 'Your application was withdrawn' }),
-      last.status === 'approved' ? 'Approved ' + when(last.reviewed_at || last.updated_at) + '. You can build courses now; selling them comes later.'
-        : last.status === 'pending' ? 'Sent ' + when(last.created_at) + '. You will see the decision here \u2014 there are no notifications yet.'
-        : last.status === 'rejected' ? 'Reviewed ' + when(last.reviewed_at || last.updated_at) + '. You can fix the points below and apply again.'
-        : 'You can apply again whenever you like.'));
-    if (last.review_note) nodes.push(h('p', { class: 'hint-line', text: 'Reviewer note: ' + last.review_note }));
+  if (active) {
+    nodes.push(h('div', { class: 'status good' }, h('strong', { text: 'You are teaching' }), 'Your teacher profile is live \u2014 students can find you, ask you Q&A questions, book consults and see your courses.'));
     nodes.push(h('div', { class: 'proj', style: 'padding:12px 14px;display:grid;gap:6px;min-width:0;margin-bottom:12px' },
-      h('span', { class: 'chip ' + cls, text: label }),
       h('strong', { style: 'overflow-wrap:anywhere', text: last.subjects }),
-      h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.qualifications }),
+      last.qualifications ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.qualifications }) : null,
       last.experience ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.experience }) : null,
-      h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.about }),
+      last.about ? h('small', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: last.about }) : null,
       last.proof_url && safeHref(last.proof_url) ? h('a', { href: last.proof_url, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere', text: last.proof_url }) : null));
   } else {
-    nodes.push(h('p', { class: 'hint-line', text: 'Everyone starts as a student. Teachers will be able to build and sell courses. Tell us what you teach and why you are qualified; your application is reviewed by hand.' }));
+    nodes.push(h('p', { class: 'hint-line', text: 'Everyone starts as a student. Turn teaching on to build and sell courses, answer Q&A as a teacher and open consults \u2014 it goes live right away, no waiting on a review.' }));
   }
 
-  if (last && last.status === 'approved') { nodes.push(h('div', { class: 'list', style: 'margin-bottom:16px' }, linkRow({ href: '#workspace/courses', title: 'My courses', meta: 'Build courses from videos, notes, mnemonics, photos and live classes' }))); return { title: 'Become a teacher', nodes }; }
   if (!myProfile) {
-    nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Add a public profile first' }), 'Reviewers and students see your name, country and field of study. ',
+    nodes.push(h('div', { class: 'status' }, h('strong', { text: 'Add a public profile first' }), 'Students see your name, country and field of study. ',
       h('a', { href: '#workspace/profile', text: 'Set up your profile' })));
     return { title: 'Become a teacher', nodes };
   }
 
-  const editing = last && last.status === 'pending';
-  const seed = last || {};
-  const fSub = makeField('Subjects you would teach', { value: seed.subjects, maxlength: 200, placeholder: 'e.g. SSC Physics, Higher Math' });
-  const fQual = makeField('Qualifications', { value: seed.qualifications, maxlength: 1500, multiline: true, rows: 4, placeholder: 'Degrees, results, certificates (10+ characters)' });
-  const fExp = makeField('Teaching experience (optional)', { value: seed.experience, maxlength: 1500, multiline: true, rows: 3, placeholder: 'Tutoring, classes taught, students helped' });
-  const fAbout = makeField('Why do you want to teach here?', { value: seed.about, maxlength: 1000, multiline: true, rows: 3, placeholder: 'A few sentences (10+ characters)' });
-  const fProof = makeField('Link to proof (optional, https)', { value: seed.proof_url, maxlength: 500, placeholder: 'Certificate, portfolio or channel link' });
+  const fSub = makeField('Subjects you teach', { value: last && last.subjects, maxlength: 200, placeholder: 'e.g. SSC Physics, Higher Math' });
+  const fQual = makeField('Qualifications (optional)', { value: last && last.qualifications, maxlength: 1500, multiline: true, rows: 4, placeholder: 'Degrees, results, certificates' });
+  const fExp = makeField('Teaching experience (optional)', { value: last && last.experience, maxlength: 1500, multiline: true, rows: 3, placeholder: 'Tutoring, classes taught, students helped' });
+  const fAbout = makeField('About your teaching (optional)', { value: last && last.about, maxlength: 1000, multiline: true, rows: 3, placeholder: 'A few sentences students will see' });
+  const fProof = makeField('Link to proof (optional, https)', { value: last && last.proof_url, maxlength: 500, placeholder: 'Certificate, portfolio or channel link' });
   const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
   const say = t => { msg.textContent = t; msg.hidden = !t; };
-  const send = h('button', { class: 'btn', type: 'button', text: editing ? 'Save changes' : last ? 'Apply again' : 'Submit application' });
+  const send = h('button', { class: 'btn', type: 'button', text: active ? 'Save changes' : 'Publish my teacher profile' });
   send.addEventListener('click', async () => {
     say('');
-    const subjects = fSub.input.value.trim(), qualifications = fQual.input.value.trim(), experience = fExp.input.value.trim(), about = fAbout.input.value.trim();
-    if (subjects.length < 2) return say('Enter the subjects you would teach.');
-    if (qualifications.length < 10) return say('Describe your qualifications (at least 10 characters).');
-    if (about.length < 10) return say('Tell us why you want to teach (at least 10 characters).');
+    const subjects = fSub.input.value.trim();
+    if (subjects.length < 2) return say('Enter the subjects you teach.');
     let proof_url = null;
     if (fProof.input.value.trim()) { try { proof_url = normalizeUrl(fProof.input.value); } catch (e) { return say(e.message); } }
     send.disabled = true;
-    const body = { subjects, qualifications, experience, about, proof_url, updated_at: new Date().toISOString() };
-    const r = editing ? await sb.from('teacher_applications').update(body).eq('id', last.id)
+    const body = { subjects, qualifications: fQual.input.value.trim() || null, experience: fExp.input.value.trim() || null,
+      about: fAbout.input.value.trim() || null, proof_url, active: true, updated_at: new Date().toISOString() };
+    const r = last ? await sb.from('teacher_applications').update(body).eq('id', last.id)
       : await sb.from('teacher_applications').insert({ ...body, user_id: currentUser.id });
-    if (r.error) { send.disabled = false; return say('Could not send: ' + r.error.message); }
+    if (r.error) { send.disabled = false; return say('Could not save: ' + r.error.message); }
     route();
   });
-  const withdraw = editing ? h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Withdraw application', onclick: () => showDialog({
-    title: 'Withdraw your application?', text: 'It will be closed and you can apply again later.', submitLabel: 'Withdraw', danger: true,
-    async onSubmit() { const r = await sb.from('teacher_applications').update({ status: 'withdrawn', updated_at: new Date().toISOString() }).eq('id', last.id); if (r.error) throw r.error; route(); } }) }) : null;
-  nodes.push(section(editing ? 'Edit your application' : 'Application', null, null, fSub.wrap, fQual.wrap, fExp.wrap, fAbout.wrap, fProof.wrap, msg,
-    h('div', { class: 'actions' }, send, withdraw)));
+  const stop = active ? h('button', { class: 'btn quiet danger-text', type: 'button', text: 'Stop teaching', onclick: () => showDialog({
+    title: 'Stop teaching?', text: 'Your teacher profile goes offline \u2014 students will not be able to find, ask or book you. You can turn it back on any time.', submitLabel: 'Stop teaching', danger: true,
+    async onSubmit() { const r = await sb.from('teacher_applications').update({ active: false, updated_at: new Date().toISOString() }).eq('id', last.id); if (r.error) throw r.error; route(); } }) }) : null;
+  nodes.push(section(active ? 'Edit your teacher profile' : 'Set up your teacher profile', null, null, fSub.wrap, fQual.wrap, fExp.wrap, fAbout.wrap, fProof.wrap, msg,
+    h('div', { class: 'actions' }, send, stop)));
+
+  if (active) {
+    nodes.push(h('div', { class: 'list', style: 'margin:12px 0 16px' }, linkRow({ href: '#workspace/courses', title: 'My courses', meta: 'Build courses from videos, notes, mnemonics, photos and live classes' })));
+    nodes.push(await teacherVerificationBlock());
+  }
   return { title: 'Become a teacher', nodes };
+}
+
+/* Verification request + status, for the signed-in teacher's own profile.
+   teacher_verification_requests / teacher_verification; schema-update-G15. */
+async function teacherVerificationBlock() {
+  const [vr, rr] = await Promise.all([
+    sb.from('teacher_verification').select('teacher_id').eq('teacher_id', currentUser.id).maybeSingle(),
+    sb.from('teacher_verification_requests').select('*').eq('teacher_id', currentUser.id).order('created_at', { ascending: false }).limit(1).maybeSingle()]);
+  if (vr.error || rr.error) return section('Verification', null, null, h('p', { class: 'hint-line', text: 'Verification is not set up yet (schema-update-G15-teacher-selfserve-verification.sql).' }));
+  const verified = !!vr.data, last = rr.data || null;
+  const when = d => new Date(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  const send = msgField => {
+    const btn = h('button', { class: 'btn quiet small', type: 'button', text: last && last.status === 'rejected' ? 'Request verification again' : 'Request verification' });
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const r = await sb.from('teacher_verification_requests').insert({ teacher_id: currentUser.id, message: (msgField.input.value || '').trim() || null });
+      if (r.error) { btn.disabled = false; return showDialog({ title: 'Could not send', text: r.error.message, submitLabel: 'OK', onSubmit() {} }); }
+      route();
+    });
+    return btn;
+  };
+  if (verified) return section('Verification', null, null, h('span', { class: 'chip pub', text: 'Verified \u2713' }), h('p', { class: 'hint-line', text: 'Students see a Verified badge on your profile.' }));
+  if (last && last.status === 'pending') return section('Verification', null, null,
+    h('div', { class: 'status' }, h('strong', { text: 'Verification requested' }), 'Sent ' + when(last.created_at) + '. You will see the decision here.'));
+  const msgField = makeField('Message to the reviewer (optional)', { maxlength: 500, multiline: true, rows: 2, placeholder: 'Anything that helps \u2014 e.g. where you teach or a link to proof' });
+  const nodes = [];
+  if (last && last.status === 'rejected') {
+    nodes.push(h('div', { class: 'status bad' }, h('strong', { text: 'Not verified' }), 'Reviewed ' + when(last.reviewed_at || last.created_at) + '.' + (last.review_note ? ' Note: ' + last.review_note : '')));
+  } else {
+    nodes.push(h('p', { class: 'hint-line', text: 'Optional: request a Verified badge, reviewed by the Athenaeum owner.' }));
+  }
+  nodes.push(msgField.wrap, h('div', { class: 'actions' }, send(msgField)));
+  return section('Verification', null, null, nodes);
 }
 
 /* ---------- G2: course creation ----------
@@ -12790,9 +12869,9 @@ function lessonDialog(course, row, nextPos) {
 
 async function coursesPage(id) {
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Teach', href: '#workspace/teach' }]);
-  const t = await sb.from('teacher_applications').select('id').eq('user_id', currentUser.id).eq('status', 'approved').maybeSingle();
+  const t = await sb.from('teacher_applications').select('id').eq('user_id', currentUser.id).eq('active', true).maybeSingle();
   if (t.error) return { title: 'My courses', nodes: [crumb, courseSetup(t.error)] };
-  if (!t.data) return { title: 'My courses', nodes: [crumb, emptyBlock('Teachers only', 'Courses are for approved teachers. Apply on the Become a teacher page.'), h('a', { class: 'btn quiet', href: '#workspace/teach', text: 'Become a teacher' })] };
+  if (!t.data) return { title: 'My courses', nodes: [crumb, emptyBlock('Teachers only', 'Courses are for published teacher profiles. Turn on teaching from the Become a teacher page.'), h('a', { class: 'btn quiet', href: '#workspace/teach', text: 'Become a teacher' })] };
   const [cr, lr] = await Promise.all([
     sb.from('courses').select('*').eq('teacher_id', currentUser.id).order('created_at', { ascending: false }),
     sb.from('course_lessons').select('*').order('position')]);
@@ -13516,8 +13595,10 @@ function groupChat(g, names) {
    A Teacher section on a teacher's public profile (#workspace/people/<id>): Teacher and
    Verified badges, average rating and ratings with comments. Only people who have used the
    teacher can rate (an unlocked paid course, a completed consult, or an accepted answer);
-   the rule is enforced in the database. Verification is granted by the owner in the
-   Supabase SQL editor. teacher_reviews, teacher_verification, teacher_ratings;
+   the rule is enforced in the database. Verification itself is requested and decided
+   in-app now (see teacherVerificationBlock() on the Become a teacher page and
+   adminVerificationsPage(), G15) instead of being granted by hand in the Supabase SQL
+   editor. teacher_reviews, teacher_verification, teacher_ratings;
    schema-update-G10-teacher-reputation.sql. */
 function teacherRateDialog(tid, ex) {
   let rating = ex ? ex.rating : 5;
@@ -13671,7 +13752,7 @@ async function notificationsPage() {
   return { title: 'Notifications', nodes: [crumb,
     unread.length || rows.length ? h('div', { class: 'edit-row' }, markAll) : null,
     rows.length ? h('div', { class: 'list' }, rows.map(row))
-                : emptyBlock('Nothing yet', 'Q&A answers, teacher application decisions, consult updates, group requests and scholarship deadlines will show up here.')] };
+                : emptyBlock('Nothing yet', 'Q&A answers, verification decisions, consult updates, group requests and scholarship deadlines will show up here.')] };
 }
 
 /* ---------- G13: global search ----------
