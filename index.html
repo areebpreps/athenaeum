@@ -7478,7 +7478,7 @@ async function scholarshipsHub(sub) {
    combination has no page, progressively broader pages are tried and the
    cards filtered down to match. Nothing is stored -- E9 adds Save to shortlist. */
 const SCH_SRC = 'https://www.scholarshipsads.com/';
-const SCH_PROXY = ''; // your Cloudflare Worker URL, e.g. 'https://sch-proxy.yourname.workers.dev/'
+const SCH_PROXY = 'https://scholarships-proxy.pages.dev/'; // your Cloudflare Worker URL, e.g. 'https://sch-proxy.yourname.workers.dev/'
 const SCH_LEVEL_SLUGS = { 'Bachelor\u2019s': 'bachelor', 'Master\u2019s': 'masters', 'PhD': 'phd' };
 const SCH_DEST_RE = { USA: /usa|united states/i, UK: /\buk\b|united kingdom|england|scotland/i };
 // [use funding, use level, use destination, use nationality] -- tried in order until one has cards.
