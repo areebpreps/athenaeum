@@ -7484,6 +7484,8 @@ const CV_MORE_SECTIONS = [
   { key: 'awards',        title: 'Awards & Scholarships',    itemLabel: 'Award name',        detailsLabel: 'Issuer & date' },
   { key: 'certifications', title: 'Certifications',          itemLabel: 'Certification name', detailsLabel: 'Issuer & date' },
   { key: 'volunteering',  title: 'Volunteering & Activities', itemLabel: 'Role',             detailsLabel: 'Organisation & details' },
+  { key: 'courses',       title: 'Courses & Training',       itemLabel: 'Course name',       detailsLabel: 'Provider & date' },
+  { key: 'interests',     title: 'Interests & Hobbies',      itemLabel: 'Interest',          detailsLabel: 'Details (optional)' },
   { key: 'references',    title: 'References',               itemLabel: 'Name',              detailsLabel: 'Title, organisation, contact' }
 ];
 const CV_ACCENTS = ['#1B3A6B', '#334155', '#1F5C4A', '#6B1B3A', '#0F6E6E', '#7A4B1B'];
@@ -7699,15 +7701,12 @@ function cvMoreAccordion(draft, meta) {
 function cvStepMore(draft, body) {
   body.append(
     h('p', { class: 'hint-line', text: 'Add what applies to you. Empty sections are left off your CV.' }),
-    CV_MORE_SECTIONS.map(meta => cvMoreAccordion(draft, meta)));
+    ...CV_MORE_SECTIONS.map(meta => cvMoreAccordion(draft, meta)));
 }
 
 function cvStepDesign(draft, body) {
   const d = draft.design;
-  const templates = [
-    { key: 'classic', title: 'Classic', meta: 'Traditional single column \u2014 the safest ATS bet.' },
-    { key: 'sidebar', title: 'Sidebar', meta: 'Accent-coloured header with a contact & skills sidebar.' }
-  ];
+  const templates = CV_TEMPLATES;
   const tplBox = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px' });
   const paintTpl = () => tplBox.replaceChildren(...templates.map(t =>
     h('button', { class: 'btn' + (d.template === t.key ? '' : ' quiet'), type: 'button', style: 'height:auto;padding:12px;text-align:left;display:block', onclick: () => { d.template = t.key; cvSaveDraft(draft); paintTpl(); } },
@@ -7728,10 +7727,76 @@ function cvStepDesign(draft, body) {
     h('label', { class: 'check-lab', style: 'margin-top:4px' }, caps, h('span', { text: 'Capital-letter section headings' })));
 }
 
+const CV_TEMPLATES = [
+  { key: 'classic',       title: 'Classic',        meta: 'Traditional single column \u2014 the safest ATS bet.', layout: 'single', hdr: 'plain' },
+  { key: 'sidebar',       title: 'Sidebar',        meta: 'Accent-coloured header with a contact & skills sidebar.', layout: 'left', hdr: 'band' },
+  { key: 'modern',        title: 'Modern',         meta: 'Clean sans-serif with accent bars on headings. ATS-safe.', layout: 'single', hdr: 'plain' },
+  { key: 'minimal',       title: 'Minimal',        meta: 'Light, airy and understated. ATS-safe.', layout: 'single', hdr: 'plain' },
+  { key: 'compact',       title: 'Compact',        meta: 'Tight spacing to fit more on one page. ATS-safe.', layout: 'single', hdr: 'plain' },
+  { key: 'bold',          title: 'Bold',           meta: 'Full-width coloured header and filled headings.', layout: 'single', hdr: 'band' },
+  { key: 'elegant',       title: 'Elegant',        meta: 'Centred serif header with fine rules.', layout: 'single', hdr: 'center' },
+  { key: 'academic',      title: 'Academic',       meta: 'Formal black-and-white style for study applications.', layout: 'single', hdr: 'center' },
+  { key: 'timeline',      title: 'Timeline',       meta: 'A vertical line with dots down your history.', layout: 'single', hdr: 'plain' },
+  { key: 'executive',     title: 'Executive',      meta: 'Name left, contact right, strong header rule.', layout: 'single', hdr: 'split' },
+  { key: 'sidebar-right', title: 'Sidebar Right',  meta: 'Coloured header with the sidebar on the right.', layout: 'right', hdr: 'band' },
+  { key: 'dark-sidebar',  title: 'Colour Sidebar', meta: 'Full-height coloured sidebar with your name on it.', layout: 'dark', hdr: 'none' },
+  { key: 'two-column',    title: 'Two Column',     meta: 'Main story left, skills & extras on the right.', layout: 'split', hdr: 'plain' },
+  { key: 'tech',          title: 'Tech',           meta: 'Monospace headings with a developer feel.', layout: 'single', hdr: 'plain' },
+  { key: 'cards',         title: 'Soft Cards',     meta: 'Each section sits on a soft tinted card.', layout: 'single', hdr: 'plain' }
+];
+
+function cvLayoutCss(layout, accent) {
+  if (layout === 'left' || layout === 'right') return `
+  .cv-wrap { display:flex; gap:28px; ${layout === 'right' ? 'flex-direction:row-reverse;' : ''} }
+  .cv-side { width: 220px; flex: none; background:#f6f7fb; padding: 20px 16px; border-radius: 10px; align-self:flex-start; }
+  .cv-side h3 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:${accent}; margin: 0 0 8px; }
+  .cv-side-block { margin-bottom: 18px; }
+  .cv-main { flex: 1; min-width:0; }
+  @media (max-width:600px){ .cv-wrap { flex-direction:column; } .cv-side { width:auto; align-self:stretch; } }`;
+  if (layout === 'dark') return `
+  @page { margin: 0; }
+  .cv-page { max-width: 820px; padding: 0; display:flex; min-height:100vh; }
+  .cv-side { width: 250px; flex:none; background:${accent}; color:#fff; padding: 36px 22px; }
+  .cv-side h1 { color:#fff; font-size:26px; margin:0 0 4px; }
+  .cv-side .cv-headline { color:rgba(255,255,255,.85); margin-bottom:22px; }
+  .cv-side h3 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:#fff; margin:0 0 8px; padding-bottom:4px; border-bottom:1px solid rgba(255,255,255,.35); }
+  .cv-side-block { margin-bottom: 20px; }
+  .cv-side .cv-plain { padding-left:0; list-style:none; word-break:break-word; }
+  .cv-side .cv-tag { background:rgba(255,255,255,.18); color:#fff; }
+  .cv-main { flex:1; min-width:0; padding: 36px 30px; }
+  @media (max-width:600px){ .cv-page { flex-direction:column; } .cv-side { width:auto; } }`;
+  if (layout === 'split') return `
+  .cv-cols { display:flex; gap:28px; }
+  .cv-colL { flex:1.7; min-width:0; } .cv-colR { flex:1; min-width:0; }
+  @media (max-width:600px){ .cv-cols { flex-direction:column; } }`;
+  return '';
+}
+
+function cvTemplateCss(key, accent, caps) {
+  const sans = "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+  const textSkills = `.cv-tags{display:block} .cv-tag{background:none;color:inherit;padding:0;border-radius:0;font-size:inherit;display:inline} .cv-tag:not(:last-child)::after{content:' \\u00b7 '}`;
+  switch (key) {
+    case 'modern': return `body{font:14.5px/1.55 ${sans}} h1{font-size:32px;letter-spacing:-.5px} h2{border-bottom:0;border-left:4px solid ${accent};padding:2px 0 2px 10px;font-size:13.5px} .cv-tag{border-radius:4px}`;
+    case 'minimal': return `body{font:14px/1.6 ${sans};color:#222} h1{color:#111;font-weight:300;font-size:34px} .cv-headline{color:${accent}} h2{color:#111;border-bottom:1px solid #ddd;font-weight:600;font-size:12.5px;letter-spacing:.12em} .cv-tag{background:none;color:#333;border:1px solid #ccc;border-radius:3px}`;
+    case 'compact': return `body{font:13px/1.4 Arial,Helvetica,sans-serif} .cv-page{padding:26px 28px} h1{font-size:24px} h2{font-size:12px;margin:14px 0 6px;border-bottom:1px solid ${accent}} .cv-item{margin-bottom:8px} .cv-details,.cv-list{font-size:12.5px} ${textSkills}`;
+    case 'bold': return `body{font:14.5px/1.55 ${sans}} h1{color:#fff;font-size:36px} .cv-header-band .cv-headline{color:rgba(255,255,255,.92)} .cv-header-band .cv-contact{color:rgba(255,255,255,.85);margin:0} h2{background:${accent};color:#fff;border:0;padding:5px 10px;border-radius:3px}`;
+    case 'elegant': return `.cv-hdr-center{text-align:center;margin-bottom:10px} h1{font-weight:400;font-size:34px;letter-spacing:.06em} h2{text-align:center;font-weight:400;letter-spacing:.2em;border-top:1px solid ${accent};border-bottom:1px solid ${accent};padding:5px 0}`;
+    case 'academic': return `body{font:14px/1.45 'Times New Roman',Times,serif} .cv-hdr-center{text-align:center;margin-bottom:6px} h1{color:#000;font-size:26px} h2{color:#000;border-bottom:1px solid #000;font-size:13px} .cv-headline,.cv-contact{color:#333} ${textSkills}`;
+    case 'timeline': return `body{font:14.5px/1.55 ${sans}} h2{border:0;font-size:15px} .cv-item{position:relative;border-left:2px solid ${accent}55;padding-left:16px;margin-left:4px} .cv-item::before{content:'';position:absolute;left:-6px;top:6px;width:10px;height:10px;border-radius:50%;background:${accent}}`;
+    case 'executive': return `body{font:14.5px/1.55 ${sans}} .cv-hdr-split{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;border-bottom:4px solid ${accent};padding-bottom:14px;margin-bottom:20px} .cv-hdr-split h1{margin:0} .cv-contact-col{text-align:right;font-size:12.5px;color:#444} h2{border:0;background:${accent}14;border-left:4px solid ${accent};padding:5px 10px}`;
+    case 'sidebar-right': return '';
+    case 'dark-sidebar': return `body{font:14.5px/1.55 ${sans}} .cv-main h2{border-bottom:2px solid ${accent}}`;
+    case 'two-column': return `body{font:14px/1.5 ${sans}} h2{border-bottom:0;border-top:3px solid ${accent};padding-top:6px}`;
+    case 'tech': return `body{font:14px/1.55 ${sans}} h1{font-family:Menlo,Consolas,'Courier New',monospace;font-size:28px} h2{font-family:Menlo,Consolas,'Courier New',monospace;border:0} h2::before{content:'// ';opacity:.6} .cv-tag{border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:12px}`;
+    case 'cards': return `body{font:14.5px/1.55 ${sans}} .cv-sec{background:#f5f6fa;border-radius:10px;padding:14px 16px;margin:0 0 14px} h2{border:0;margin:0 0 10px;padding:0} .cv-tag{background:#fff}`;
+    default: return '';
+  }
+}
+
 function cvGenerateHtml(draft) {
   const p = draft.personal, accent = draft.design.accent || CV_ACCENTS[0];
   const caps = !!draft.design.capsHeadings;
-  const sidebar = draft.design.template === 'sidebar';
+  const tpl = CV_TEMPLATES.find(t => t.key === draft.design.template) || CV_TEMPLATES[0];
   const name = p.fullName.trim() || 'Your Name';
   const contactBits = [p.email, p.phone, p.city, p.linkedin, p.website].map(x => String(x || '').trim()).filter(Boolean);
 
@@ -7750,7 +7815,7 @@ function cvGenerateHtml(draft) {
     </div>`).join('');
 
   const moreHtml = CV_MORE_SECTIONS.map(meta => {
-    const items = draft.more[meta.key] || [];
+    const items = (draft.more[meta.key] || []).filter(it => (it.title && it.title.trim()) || (it.details && it.details.trim()));
     if (!items.length) return '';
     return `<section class="cv-sec"><h2>${cvEsc(meta.title)}</h2>${items.map(it => `
       <div class="cv-item">
@@ -7763,20 +7828,32 @@ function cvGenerateHtml(draft) {
   const langs = draft.languages.filter(l => l.name && l.name.trim());
   const langHtml = langs.length ? `<ul class="cv-plain">${langs.map(l => `<li>${cvEsc(l.name)}${l.level ? ' \u2014 ' + cvEsc(l.level) : ''}</li>`).join('')}</ul>` : '';
 
-  const mainSections = `
-    ${draft.profile ? `<section class="cv-sec"><h2>Profile</h2><p class="cv-details">${cvEsc(draft.profile)}</p></section>` : ''}
-    ${draft.education.length ? `<section class="cv-sec"><h2>Education</h2>${eduHtml}</section>` : ''}
-    ${draft.experience.length ? `<section class="cv-sec"><h2>Experience</h2>${expHtml}</section>` : ''}
-    ${!sidebar && skillsHtml ? `<section class="cv-sec"><h2>Skills</h2>${skillsHtml}</section>` : ''}
-    ${!sidebar && langHtml ? `<section class="cv-sec"><h2>Languages</h2>${langHtml}</section>` : ''}
-    ${moreHtml}`;
+  const sec = (title, inner) => inner ? `<section class="cv-sec"><h2>${title}</h2>${inner}</section>` : '';
+  const profileSec = draft.profile ? sec('Profile', `<p class="cv-details">${cvEsc(draft.profile)}</p>`) : '';
+  const eduSec = draft.education.length ? sec('Education', eduHtml) : '';
+  const expSec = draft.experience.length ? sec('Experience', expHtml) : '';
+  const skillsSec = sec('Skills', skillsHtml), langSec = sec('Languages', langHtml);
+  const side = (title, inner) => inner ? `<div class="cv-side-block"><h3>${title}</h3>${inner}</div>` : '';
+  const contactBlock = side('Contact', contactBits.length ? `<ul class="cv-plain">${contactBits.map(c => `<li>${cvEsc(c)}</li>`).join('')}</ul>` : '');
+  const headline = p.headline ? `<p class="cv-headline">${cvEsc(p.headline)}</p>` : '';
+  const contactLine = `<p class="cv-contact">${contactBits.map(cvEsc).join(' \u00b7 ')}</p>`;
+  const h1 = `<h1>${cvEsc(name)}</h1>`;
 
-  const sidebarHtml = sidebar ? `
-    <aside class="cv-side">
-      <div class="cv-side-block"><h3>Contact</h3><ul class="cv-plain">${contactBits.map(c => `<li>${cvEsc(c)}</li>`).join('')}</ul></div>
-      ${skillsHtml ? `<div class="cv-side-block"><h3>Skills</h3>${skillsHtml}</div>` : ''}
-      ${langHtml ? `<div class="cv-side-block"><h3>Languages</h3>${langHtml}</div>` : ''}
-    </aside>` : '';
+  const header = tpl.hdr === 'band' ? `<div class="cv-header-band">${h1}${headline}${tpl.layout === 'single' ? contactLine : ''}</div>`
+    : tpl.hdr === 'center' ? `<div class="cv-hdr-center">${h1}${headline}${contactLine}</div>`
+    : tpl.hdr === 'split' ? `<div class="cv-hdr-split"><div>${h1}${headline}</div><div class="cv-contact-col">${contactBits.map(c => `<div>${cvEsc(c)}</div>`).join('')}</div></div>`
+    : `${h1}${headline}${contactLine}`;
+
+  let inner;
+  if (tpl.layout === 'left' || tpl.layout === 'right') {
+    inner = `${header}<div class="cv-wrap"><aside class="cv-side">${contactBlock}${side('Skills', skillsHtml)}${side('Languages', langHtml)}</aside><div class="cv-main">${profileSec}${eduSec}${expSec}${moreHtml}</div></div>`;
+  } else if (tpl.layout === 'dark') {
+    inner = `<aside class="cv-side">${h1}${headline}${contactBlock}${side('Skills', skillsHtml)}${side('Languages', langHtml)}</aside><div class="cv-main">${profileSec}${eduSec}${expSec}${moreHtml}</div>`;
+  } else if (tpl.layout === 'split') {
+    inner = `${header}<div class="cv-cols"><div class="cv-colL">${profileSec}${eduSec}${expSec}</div><div class="cv-colR">${skillsSec}${langSec}${moreHtml}</div></div>`;
+  } else {
+    inner = `${header}${profileSec}${eduSec}${expSec}${skillsSec}${langSec}${moreHtml}`;
+  }
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7803,27 +7880,15 @@ function cvGenerateHtml(draft) {
   .cv-tag { background:${accent}1a; color:${accent}; border-radius:20px; padding:3px 10px; font-size:12.5px; }
   .cv-plain { margin:0; padding-left:16px; font-size:13px; }
   .cv-plain li { margin-bottom:3px; }
-  ${sidebar ? `
-  .cv-wrap { display:flex; gap:28px; }
-  .cv-side { width: 220px; flex: none; background:#f6f7fb; padding: 20px 16px; border-radius: 10px; }
-  .cv-side h3 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:${accent}; margin: 0 0 8px; }
-  .cv-side-block { margin-bottom: 18px; }
-  .cv-main { flex: 1; min-width:0; }
   .cv-header-band { background:${accent}; color:#fff; padding: 26px 36px; margin: -40px -36px 22px; }
   .cv-header-band h1 { color:#fff; }
   .cv-header-band .cv-headline { color: rgba(255,255,255,.85); }
-  ` : ''}
+  ${cvLayoutCss(tpl.layout, accent)}
+  ${cvTemplateCss(tpl.key, accent, caps)}
   @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 </style></head>
 <body>
-  <div class="cv-page">
-    ${sidebar ? `
-    <div class="cv-header-band"><h1>${cvEsc(name)}</h1>${p.headline ? `<p class="cv-headline">${cvEsc(p.headline)}</p>` : ''}</div>
-    <div class="cv-wrap">${sidebarHtml}<div class="cv-main">${mainSections}</div></div>` : `
-    <h1>${cvEsc(name)}</h1>
-    ${p.headline ? `<p class="cv-headline">${cvEsc(p.headline)}</p>` : ''}
-    <p class="cv-contact">${contactBits.map(cvEsc).join(' \u00b7 ')}</p>
-    ${mainSections}`}
+  <div class="cv-page">${inner}
   </div>
 </body></html>`;
 }
@@ -8227,7 +8292,8 @@ async function schSearchPage() {
    for any link saved by hand. Cached on this device for a week so reopening
    doesn't spend another Gemini call. E11 added When/How to apply; E12 added What you need (exams & eligibility); E13 added Chance of success. */
 // E22: numeric minimums read off the page (used by the what-if simulator).
-const SCH_DETAIL_KEY = 'sch-detail6:'; // 6: min gained sat and gre
+const SCH_DETAIL_KEY = 'sch-detail7:'; // 7: read from the page by code (no AI), full content kept
+const SCH_OWN_HOST = /scholarshipsads/i;
 function schCleanMin(m) {
   m = m && typeof m === 'object' ? m : {};
   const n = (v, lo, hi) => { v = typeof v === 'string' ? parseFloat(v) : v; return typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : null; };
@@ -8242,25 +8308,145 @@ function schCleanRate(r) {
   if (basis === 'unknown' || !isFinite(lo) || !isFinite(hi) || lo < 0 || hi > 100 || lo > hi) return { low: null, high: null, basis: 'unknown', note: typeof r.note === 'string' ? r.note.trim() : '' };
   return { low: lo, high: hi, basis, note: typeof r.note === 'string' ? r.note.trim() : '' };
 }
+// Fix 3: the page is loaded through the proxy and read by plain code -- no AI. Ads, share bars, related posts
+// and other promotions are dropped; the real content is kept in order and shown inside the app.
+const SCH_NOISE = 'script,style,noscript,template,nav,header,footer,aside,form,iframe,ins,svg,video,audio,canvas,button,select,input,textarea,img,' +
+  '[class*="share"],[class*="social"],[class*="related"],[class*="comment"],[class*="sidebar"],[class*="advert"],[class*="sponsor"],[class*="newsletter"],' +
+  '[class*="subscribe"],[class*="breadcrumb"],[class*="cookie"],[class*="popup"],[id*="comment"],[id*="sidebar"],[id*="related"],[id*="share"],[aria-hidden="true"]';
+const SCH_STOP_HEAD = /^(related|you may also like|you might also like|more scholarships|latest scholarships|popular|share\b|leave a (reply|comment)|comments?\b|recent posts|follow us|join us|similar)/i;
+const SCH_PROMO = /(whatsapp|telegram)\s+(channel|group)|join (our|the) (whatsapp|telegram|community|channel)|follow us on|subscribe (to|now)|sponsored|advertisement|click here to (join|subscribe)|sign up for (our )?newsletter|all rights reserved/i;
+const SCH_PAGE_TESTS = [
+  ['IELTS', /\bIELTS\b/], ['TOEFL', /\bTOEFL\b/], ['Duolingo English Test', /duolingo/i], ['PTE Academic', /\bPTE\b/],
+  ['Cambridge English', /cambridge (english|c1|c2|advanced|proficiency)/i], ['SAT', /\bSAT\b/], ['ACT', /\bACT\b/], ['GRE', /\bGRE\b/], ['GMAT', /\bGMAT\b/],
+  ['TOPIK', /\bTOPIK\b/], ['JLPT', /\bJLPT\b/], ['HSK', /\bHSK\b/], ['TestDaF', /testdaf/i]
+];
+async function schFetchHtml(url) {
+  const tries = []; if (SCH_PROXY) tries.push(SCH_PROXY + '?url=' + encodeURIComponent(url)); tries.push(url);
+  for (const u of tries) {
+    try {
+      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 20000);
+      const r = await fetch(u, { signal: ctl.signal }); clearTimeout(t);
+      if (r.ok) { const txt = await r.text(); if (txt && txt.length > 500) return txt; }
+    } catch (e) { /* try the next route */ }
+  }
+  throw new Error('Could not load that page right now. Check your connection and tap Read again.');
+}
+function schApplyLink(doc) {
+  let hit = '';
+  doc.querySelectorAll('a[href]').forEach(a => {
+    if (hit || !/apply (for|now|here|online)|official (website|link|page|site)|application (link|portal|page)|scholarship (link|website|page)|visit (the )?(official|university)/i.test(a.textContent)) return;
+    let u; try { u = new URL(a.getAttribute('href'), SCH_SRC); } catch (e) { return; }
+    if (/^https?:$/.test(u.protocol) && !SCH_SKIP_HOST.some(x => u.hostname.includes(x))) hit = u.href;
+  });
+  return hit;
+}
+function schExtractBlocks(root) {
+  const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const out = []; let stop = false;
+  root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,ul,ol,table,dl,blockquote').forEach(el => {
+    if (stop) return;
+    const par = el.parentElement && el.parentElement.closest('ul,ol,table,dl,blockquote');
+    if (par && root.contains(par)) return;
+    const tag = el.tagName;
+    if (/^H\d$/.test(tag)) {
+      const text = clean(el.textContent); if (!text) return;
+      if (SCH_STOP_HEAD.test(text)) { stop = true; return; }
+      out.push({ t: 'h', l: Math.min(4, Math.max(2, +tag[1])), text });
+    } else if (tag === 'P' || tag === 'BLOCKQUOTE') {
+      const text = clean(el.textContent);
+      if (text.length < 3 || SCH_PROMO.test(text)) return;
+      if (tag === 'P' && el.children.length === 1 && el.firstElementChild.tagName === 'A' && clean(el.firstElementChild.textContent) === text && text.length < 60) return; // a lone link line is a promo or CTA
+      out.push({ t: 'p', text });
+    } else if (tag === 'UL' || tag === 'OL') {
+      const items = [...el.querySelectorAll(':scope > li')].map(li => clean(li.textContent)).filter(x => x && !SCH_PROMO.test(x));
+      if (items.length) out.push({ t: tag === 'OL' ? 'ol' : 'ul', items });
+    } else if (tag === 'TABLE') {
+      const rows = [...el.querySelectorAll('tr')].map(tr => [...tr.children].map(c => clean(c.textContent))).filter(r => r.some(Boolean)).slice(0, 40);
+      if (rows.length) out.push({ t: 'table', rows });
+    } else if (tag === 'DL') {
+      const rows = []; let k = '';
+      [...el.children].forEach(c => { if (c.tagName === 'DT') k = clean(c.textContent); else if (c.tagName === 'DD') { rows.push([k, clean(c.textContent)]); k = ''; } });
+      if (rows.length) out.push({ t: 'table', rows });
+    }
+  });
+  const res = []; out.forEach(b => { const prev = res[res.length - 1]; if (!(prev && JSON.stringify(prev) === JSON.stringify(b))) res.push(b); });
+  return res.slice(0, 220);
+}
+function schDeriveFields(blocks) {
+  const lines = [], kv = [];
+  const add = t => { lines.push(t); const m = t.match(/^([A-Za-z][A-Za-z &\/()'\u2019.\-]{2,40}?)\s*[:\uFF1A]\s*(.{1,240})$/); if (m) kv.push([m[1].trim(), m[2].trim()]); };
+  blocks.forEach(b => {
+    if (b.t === 'p' || b.t === 'h') add(b.text);
+    else if (b.t === 'ul' || b.t === 'ol') b.items.forEach(add);
+    else if (b.t === 'table') b.rows.forEach(r => { lines.push(r.join(' ')); if (r.length >= 2 && r[0]) kv.push([r[0], r.slice(1).join(' ')]); });
+  });
+  const text = lines.join('\n');
+  const pick = re => { const x = kv.find(([k]) => re.test(k)); return x ? x[1] : ''; };
+  const section = re => {   // the items or paragraphs under the first heading that matches
+    const i = blocks.findIndex(b => b.t === 'h' && re.test(b.text)); if (i < 0) return [];
+    const got = [];
+    for (let j = i + 1; j < blocks.length && blocks[j].t !== 'h'; j++) {
+      const b = blocks[j];
+      if (b.t === 'ul' || b.t === 'ol') got.push(...b.items); else if (b.t === 'p') got.push(b.text);
+    }
+    return got;
+  };
+  let subjects = pick(/^(available )?(subjects?|fields?( of study)?|disciplines?|majors?)\b/i);
+  if (!subjects) { const it = section(/subject|field.*study|discipline|majors?\b/i); if (it.length) subjects = it.slice(0, 14).join(', '); }
+  if (!subjects && /\b(all|any) (subjects|fields|disciplines|majors|programmes|programs)\b/i.test(text)) subjects = 'All subjects';
+  let levels = pick(/^(study levels?|levels?|degrees?|available (degree|level)s?|category)\b/i);
+  if (!levels) {
+    const head = text.slice(0, 3000), lv = [];
+    if (/bachelor|undergraduate/i.test(head)) lv.push('Bachelor\u2019s'); if (/master|postgraduate/i.test(head)) lv.push('Master\u2019s'); if (/ph\.?d|doctora/i.test(head)) lv.push('PhD');
+    levels = lv.join(', ');
+  }
+  let duration = pick(/^(duration|length|programme length|program length|scholarship duration|period)\b/i);
+  if (!duration) { const m = text.match(/\b(\d+(?:\.\d+)?|one|two|three|four|five|six)[\s-]+(year|month|semester)s?\b/i); if (m) duration = m[0]; }
+  const provider = pick(/^(host )?(university|institution)\b|^(scholarship )?provider\b|^offered by\b|^awarded by\b|^organi[sz]ation\b|^host\b/i);
+  const country = pick(/^(host country|country|location|study destination|destination)\b/i);
+
+  const sents = []; lines.forEach(l => l.split(/[.!?;]\s+/).forEach(x => { x = x.trim(); if (x.length > 3) sents.push(x); }));
+  const exams = [];
+  SCH_PAGE_TESTS.forEach(([name, re]) => {
+    const hits = sents.filter(x => re.test(x)); if (!hits.length) return;
+    if (name === 'ACT' && !hits.some(x => /score|test|exam|optional|require|SAT|accept/i.test(x))) return;
+    const s1 = hits.find(x => /\d/.test(x) && /requir|minimum|score|band|at least|must/i.test(x)) || hits[0];
+    const optional = hits.some(x => /optional|not required|waived|exempt|no need|not mandatory|not necessary|do not (need|have)/i.test(x));
+    const needed = hits.some(x => /\b(required|must|mandatory|minimum|at least|need to|should)\b/i.test(x) && !/not required/i.test(x));
+    exams.push({ name, requirement: s1.length > 170 ? s1.slice(0, 167).trim() + '\u2026' : s1, required: needed && !optional });
+  });
+
+  const g = (re, lo, hi) => { const m = text.match(re); if (!m) return null; const v = parseFloat(m[1]); return v >= lo && v <= hi ? v : null; };
+  let gpaPct = null;
+  const ga = text.match(/(?:GPA|CGPA|grade point|average|grades?|marks|result)[^.\n]{0,50}?(\d(?:\.\d+)?)\s*(?:\/|out of)\s*(\d(?:\.\d+)?)/i);
+  if (ga && parseFloat(ga[2]) > 0) gpaPct = parseFloat(ga[1]) / parseFloat(ga[2]) * 100;
+  else { const gb = text.match(/(?:GPA|CGPA|average|grades?|marks|percentage|result)[^\n]{0,50}?\b(\d{2,3}(?:\.\d+)?)\s*%/i); if (gb) gpaPct = parseFloat(gb[1]); }
+  const min = schCleanMin({ ielts: g(/IELTS.{0,60}?\b([4-9](?:\.[05])?)\b/, 3, 9), toefl: g(/TOEFL.{0,60}?\b(\d{2,3})\b/, 20, 120), sat: g(/\bSAT\b.{0,60}?\b(\d{3,4})\b/, 400, 1600), gre: g(/\bGRE\b.{0,60}?\b(\d{3})\b/, 260, 340), gpaPct });
+  return { provider, country, levels, subjects, duration, exams: exams.slice(0, 8), min };
+}
 async function schReadDetail(url, force) {
-  const key = SCH_DETAIL_KEY + url; // 5: E22 added min (4: E13 added successRate (3: E12 exams/eligibility, 2: E11 applyWindow/steps), so older cached overviews are re-read
+  const key = SCH_DETAIL_KEY + url;
   if (!force) { try { const c = JSON.parse(store.get(key) || 'null'); if (c && c.at > Date.now() - 7 * 864e5) return c.d; } catch (e) { /* re-read */ } }
-  const s = aiSettings();
-  if (!s.geminiKey || !s.geminiModel) throw new Error('Reading a scholarship page uses Gemini \u2014 add your key and model in AI Settings.');
-  const prompt = 'Open this scholarship page and reply with ONLY a JSON object (no prose, no markdown): ' +
-    '{"name":"","provider":"","country":"","levels":"","subjects":"","duration":"","summary":"","covers":[],"applyWindow":"","steps":[],"exams":[],"eligibility":[],"successRate":{"low":null,"high":null,"basis":"unknown","note":""},"min":{"ielts":null,"toefl":null,"gpaPct":null,"sat":null,"gre":null}}. ' +
-    'summary: 2-3 plain sentences on what the scholarship is. covers: short items for everything it pays for or gives (tuition, monthly stipend with the amount, flights, insurance, accommodation, etc.). ' +
-    'duration: how long the funding or programme lasts. subjects: the fields of study it is open to. ' +
-    'applyWindow: when applications open and close and how often (for example yearly), worded as the page states it. steps: the application procedure as short ordered steps (register, documents, submit, interview, results\u2026), in the order the page gives them. exams: every test the page requires or accepts, one item each as {"name":"IELTS","requirement":"minimum overall 6.5","required":true} (SAT, IELTS, TOEFL, GRE, GMAT, entrance or intake exams, etc.; required false when it is optional or only one accepted option). eligibility: each other condition as a short plain sentence (nationality, age limit, minimum GPA or grades, work experience, prior degree, not already studying abroad, etc.). successRate: the approximate chance an applicant is awarded it, as whole percentages low and high (a range, 0-100). basis \"stated\" only when the page itself gives the number of awards and applicants or an acceptance rate; basis \"estimated\" when you infer a range from the awards offered and how competitive similar scholarships are; basis \"unknown\" (low and high null) when you cannot give a defensible range. note: one sentence saying exactly what the range rests on. Use \"\" or [] for anything else the page does not state. min: the numeric minimums the page states \u2014 ielts (overall band), toefl (iBT total), sat (SAT total out of 1600), gre (GRE total, verbal plus quantitative, 260-340), gpaPct (minimum academic result as a percentage; convert only when the page gives the scale, e.g. 3.0 out of 4.0 is 75) \u2014 and null for any it does not state. Never guess.\n' + url;
-  const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
-  let o; try { o = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); } catch (e) { throw new Error('Could not read that page. Try again in a moment.'); }
-  const str = v => (typeof v === 'string' ? v.trim() : '');
-  const d = { name: str(o.name), provider: str(o.provider), country: str(o.country), levels: str(o.levels), subjects: str(o.subjects),
-    duration: str(o.duration), summary: str(o.summary), applyWindow: str(o.applyWindow),
-    successRate: schCleanRate(o.successRate), min: schCleanMin(o.min),
-    exams: (Array.isArray(o.exams) ? o.exams : []).map(x => x && typeof x === 'object' ? { name: str(x.name), requirement: str(x.requirement), required: x.required !== false } : { name: str(x), requirement: '', required: true }).filter(x => x.name).slice(0, 12),
-    eligibility: (Array.isArray(o.eligibility) ? o.eligibility : []).map(str).filter(Boolean).slice(0, 15),
-    steps: (Array.isArray(o.steps) ? o.steps : []).map(str).filter(Boolean).slice(0, 15), covers: (Array.isArray(o.covers) ? o.covers : []).map(str).filter(Boolean).slice(0, 12) };
+  const html = await schFetchHtml(url);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const h1 = doc.querySelector('h1');
+  let name = h1 ? h1.textContent.replace(/\s+/g, ' ').trim() : '';
+  if (!name) name = ((doc.querySelector('title') || {}).textContent || '').split(/\s[|\u2013\u2014-]\s/)[0].trim();
+  let official = '';
+  try { const own = new URL(url); official = SCH_OWN_HOST.test(own.hostname) ? (schApplyLink(doc) || schPickOfficial(html)) : url; } catch (e) { official = ''; }
+  doc.querySelectorAll(SCH_NOISE).forEach(n => n.remove());
+  let root = null;
+  for (const sel of ['.entry-content', '.post-content', '.single-post-content', '.article-content', '.post-body', '[itemprop="articleBody"]', 'article', 'main', '#content', '.content']) {
+    let best = null, len = 0;
+    doc.querySelectorAll(sel).forEach(el => { const n = (el.textContent || '').trim().length; if (n > len) { len = n; best = el; } });
+    if (best && len >= 800) { root = best; break; }
+  }
+  root = root || doc.body;
+  const blocks = schExtractBlocks(root);
+  if (blocks.length && blocks[0].t === 'h' && blocks[0].text === name) blocks.shift();
+  if (!blocks.length) throw new Error('That page has no readable content. Tap Read again, or open it from the button below.');
+  const d = { name, blocks, official, ...schDeriveFields(blocks) };
+  if (official && SCH_OWN_HOST.test(url)) store.set(SCH_OFFICIAL_KEY + url, JSON.stringify({ at: Date.now(), u: official }));
   store.set(key, JSON.stringify({ at: Date.now(), d }));
   return d;
 }
@@ -8317,37 +8503,37 @@ async function schDetailPage(ref) {
   const tips = schAlumniTips(url, () => (row && row.name) || detailName || '');
   const cohort = schCohort(url, () => (row && row.name) || detailName || '', row && row.deadline ? Number(String(row.deadline).slice(0, 4)) : null);
 
+  const openBtn = h('a', { class: 'btn', target: '_blank', rel: 'noopener noreferrer', hidden: true, text: 'Open the university\u2019s portal' });
+  const note = h('p', { class: 'hint-line', hidden: true, text: 'No official university link was found on this page, so there is nothing to open.' });
   function paint(d) {
     detailName = d.name || detailName;
-    box.replaceChildren(section(d.name || (row && row.name) || 'Overview', null, null,
-      d.summary ? h('p', { text: d.summary }) : h('p', { class: 'none', text: 'The page doesn\u2019t give a summary.' }),
-      h('h3', { text: 'What it covers', style: 'margin:16px 0 8px;font-size:16px' }),
-      d.covers.length ? h('ul', { style: 'margin:0;padding-left:20px;display:grid;gap:6px' }, d.covers.map(t => h('li', { text: t })))
-        : h('p', { class: 'none', text: 'The page doesn\u2019t list what it covers.' }),
-      h('h3', { text: 'Programme', style: 'margin:16px 0 8px;font-size:16px' }),
-      facts([['Duration', d.duration], ['Available subjects', d.subjects], ['Levels', d.levels], ['Provider', d.provider], ['Country', d.country]]),
-      h('h3', { text: 'Chance of success', style: 'margin:16px 0 8px;font-size:16px' }),
-      schRateBlock(d.successRate),
-      h('h3', { text: 'What you need', style: 'margin:16px 0 8px;font-size:16px' }),
-      h('h4', { text: 'Exams', style: 'margin:0 0 6px;font-size:14px' }),
+    const H3 = t => h('h3', { text: t, style: 'margin:18px 0 8px;font-size:17px' });
+    const kids = [];
+    (d.blocks || []).forEach(b => {
+      if (b.t === 'h') kids.push(b.l <= 2 ? H3(b.text) : h('h4', { text: b.text, style: 'margin:14px 0 6px;font-size:15px' }));
+      else if (b.t === 'p') kids.push(h('p', { text: b.text, style: 'margin:0 0 10px;line-height:1.55' }));
+      else if (b.t === 'ul') kids.push(h('ul', { style: 'margin:0 0 12px;padding-left:20px;display:grid;gap:6px' }, b.items.map(t => h('li', { text: t }))));
+      else if (b.t === 'ol') kids.push(h('ol', { style: 'margin:0 0 12px;padding-left:22px;display:grid;gap:8px' }, b.items.map(t => h('li', { text: t }))));
+      else if (b.t === 'table') kids.push(h('div', { style: 'overflow-x:auto;margin:0 0 12px' }, h('table', { style: 'border-collapse:collapse;width:100%;font-size:14px' },
+        b.rows.map(r => h('tr', {}, r.map(c => h('td', { text: c, style: 'border:1px solid var(--line);padding:6px 8px;vertical-align:top' })))))));
+    });
+    kids.push(
+      H3('Programme'),
+      facts([['Duration', d.duration || 'N/A'], ['Available subjects', d.subjects || 'N/A'], ['Levels', d.levels || 'N/A'], ['Provider', d.provider || 'N/A'], ['Country', d.country || 'N/A']]),
+      H3('Exams'),
       (d.exams || []).length ? h('div', { style: 'display:grid;gap:8px' }, d.exams.map(x => h('div', { class: 'proj', style: 'padding:10px 14px' },
         h('strong', { text: x.name }), h('span', { class: 'chip', style: 'margin-left:8px', text: x.required ? 'Required' : 'Optional' }),
         x.requirement ? h('small', { style: 'display:block', text: x.requirement }) : null)))
-        : h('p', { class: 'none', text: 'The page doesn\u2019t list any required exams.' }),
-      h('h4', { text: 'Minimum requirements', style: 'margin:14px 0 6px;font-size:14px' }),
+        : h('p', { class: 'none', text: 'The page doesn\u2019t list any exams.' }),
+      H3('Minimum requirements'),
       schMinBlock(d.min),
-      h('h4', { text: 'Eligibility', style: 'margin:14px 0 6px;font-size:14px' }),
-      (d.eligibility || []).length ? h('ul', { style: 'margin:0;padding-left:20px;display:grid;gap:6px' }, d.eligibility.map(t => h('li', { text: t })))
-        : h('p', { class: 'none', text: 'The page doesn\u2019t state eligibility conditions.' }),
-      h('h3', { text: 'When to apply', style: 'margin:16px 0 8px;font-size:16px' }),
-      d.applyWindow ? h('p', { text: d.applyWindow }) : h('p', { class: 'none', text: 'The page doesn\u2019t say when applications open and close.' }),
-      h('h3', { text: 'How to apply', style: 'margin:16px 0 8px;font-size:16px' }),
-      (d.steps || []).length ? h('ol', { style: 'margin:0;padding-left:22px;display:grid;gap:8px' }, d.steps.map(t => h('li', { text: t })))
-        : h('p', { class: 'none', text: 'The page doesn\u2019t list the application steps.' }),
-      h('p', { class: 'hint-line', text: 'Read from the scholarship\u2019s own page by Gemini \u2014 confirm the details there before applying.' })));
+      h('p', { class: 'hint-line', text: 'Copied from the scholarship page \u2014 confirm the details on the university\u2019s own site before applying.' }));
+    box.replaceChildren(section(d.name || (row && row.name) || 'Scholarship', null, null, ...kids));
+    openBtn.hidden = !d.official; note.hidden = !!d.official;
+    if (d.official) openBtn.href = d.official;
   }
   async function load(force) {
-    err.hidden = true; again.hidden = true; status.hidden = false; status.textContent = 'Reading the scholarship page\u2026';
+    err.hidden = true; again.hidden = true; status.hidden = false; status.textContent = 'Loading the scholarship page\u2026';
     try { paint(await schReadDetail(url, force)); again.hidden = false; }
     catch (e) { err.textContent = (e && e.message) || 'Could not read that page.'; err.hidden = false; again.hidden = false; }
     status.hidden = true;
@@ -8355,9 +8541,9 @@ async function schDetailPage(ref) {
   again.addEventListener('click', () => load(true));
 
   if (url) load(false);
-  else status.textContent = 'No link saved for this scholarship. Add one with the pencil icon in your Shortlist and its overview will be read here.';
+  else status.textContent = 'No link saved for this scholarship. Add one with the pencil icon in your Shortlist and its page will be loaded here.';
   return { title: (row && row.name) || 'Scholarship', nodes: [crumb, saved, status, err, box, tips, cohort,
-    url ? h('div', { class: 'actions' }, h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener noreferrer', text: 'Open the full page' }), again) : null] };
+    url ? h('div', { class: 'actions' }, openBtn, again) : null, note] };
 }
 
 /* ---------- E14: Scholarship Center -- roadmap screen & checklist ----------
