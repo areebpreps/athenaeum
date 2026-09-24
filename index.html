@@ -7226,11 +7226,8 @@ const SCH_EDU_LEVELS = [
 ];
 const SCH_TARGET_LEVELS = ['Bachelor\u2019s', 'Master\u2019s', 'PhD', 'Diploma / other'];
 const SCH_TESTS = ['IELTS', 'TOEFL', 'Duolingo', 'SAT', 'GRE', 'GMAT', 'Other'];
-const SCH_DESTINATIONS = ['USA', 'Canada', 'UK', 'Australia', 'Germany', 'Japan', 'South Korea', 'China', 'Turkey',
-  'Malaysia', 'Netherlands', 'Sweden', 'Finland', 'Italy', 'Hungary', 'Open to anywhere'];
-const SCH_COUNTRIES = ['Bangladesh', 'India', 'Pakistan', 'Nepal', 'Sri Lanka', 'Bhutan', 'Maldives', 'Afghanistan', 'Indonesia',
-  'Malaysia', 'Philippines', 'Vietnam', 'Thailand', 'Nigeria', 'Ghana', 'Kenya', 'Egypt', 'Ethiopia', 'Uganda', 'Tanzania',
-  'Turkey', 'Iran', 'Iraq', 'Jordan', 'Brazil', 'Mexico', 'Colombia', 'United States', 'United Kingdom', 'Canada', 'Other'];
+const SCH_DESTINATIONS = ['USA', 'Canada', 'UK', 'Australia', 'Germany', 'Japan', 'South Korea', 'China', 'Turkey', 'Malaysia', 'Netherlands', 'Sweden', 'Finland', 'Italy', 'Hungary', 'Abu Dhabi', 'Afghanistan', 'Africa', 'Albania', 'Andorra', 'Armenia', 'Austria', 'Azerbaijan', 'Bahrain', 'Bangladesh', 'Belgium', 'Berlin', 'Botswana', 'Brazil', 'Brunei Darussalam', 'Bulgaria', 'Cambodia', 'Chile', 'Colombia', 'Croatia', 'Cyprus', 'Czech Republic', 'Denmark', 'Egypt', 'Erasmus Mundus', 'Estonia', 'Eswatini', 'Ethiopia', 'Europe', 'Fiji', 'France', 'Georgia', 'Ghana', 'Greece', 'Hong Kong', 'Iceland', 'India', 'Indonesia', 'Iran', 'Iraq', 'Ireland', 'Israel', 'Jamaica', 'Jordan', 'Kazakhstan', 'Kenya', 'Korea', 'Kuwait', 'Kyrgyzstan', 'Latvia', 'Lebanon', 'Liechtenstein', 'Lithuania', 'Luxembourg', 'Macedonia', 'Malawi', 'Malta', 'Mauritius', 'Mexico', 'Monaco', 'Morocco', 'Myanmar', 'Namibia', 'Nepal', 'New Zealand', 'Nigeria', 'North Cyprus', 'Norway', 'Oman', 'Online', 'Pakistan', 'Papua New Guinea', 'Philippines', 'Poland', 'Portugal', 'Qatar', 'Romania', 'Russia', 'Rwanda', 'Saudi Arabia', 'Scotland', 'Senegal', 'Serbia', 'Singapore', 'Slovakia', 'Slovenia', 'South Africa', 'Spain', 'Sri Lanka', 'Study Abroad', 'Switzerland', 'Taiwan', 'Tanzania', 'Thailand', 'Tunisia', 'UAE', 'Uganda', 'Uruguay', 'Uzbekistan', 'Vietnam', 'West Indies', 'Worldwide', 'Zambia', 'Open to anywhere'];
+const SCH_COUNTRIES = ['Bangladesh', 'India', 'Pakistan', 'Nepal', 'Sri Lanka', 'Bhutan', 'Maldives', 'Afghanistan', 'Indonesia', 'Albania', 'Algeria', 'Andorra', 'Angola', 'Argentina', 'Armenia', 'Aruba', 'Australia', 'Austria', 'Azerbaijan', 'Bahrain', 'Belarus', 'Belgium', 'Belize', 'Benin', 'Bolivia', 'Bosnia And Herzegovina', 'Botswana', 'Brazil', 'Brunei', 'Bulgaria', 'Burkina Faso', 'Burma', 'Burundi', 'Cambodia', 'Cameroon', 'Canada', 'Cape Verde', 'Chad', 'Chile', 'China', 'Colombia', 'Comoros', 'Congo', 'Costa Rica', 'Croatia', 'Cuba', 'Cyprus', 'Czech Republic', 'Denmark', 'Djibouti', 'Dominica', 'Dominican Republic', 'Ecuador', 'Egypt', 'El Salvador', 'Equatorial Guinea', 'Eritrea', 'Estonia', 'Ethiopia', 'Federated States Of Micronesia', 'Fiji', 'Finland', 'France', 'Gabon', 'Gambia', 'Georgia', 'Germany', 'Ghana', 'Greece', 'Grenada', 'Guatemala', 'Guinea', 'Guinea Bissau', 'Guyana', 'Haiti', 'Honduras', 'Hong Kong', 'Hungary', 'Iceland', 'Iran', 'Iraq', 'Ireland', 'Israel', 'Italy', 'Ivory Coast', 'Jamaica', 'Japan', 'Jordan', 'Kazakhstan', 'Kenya', 'Kiribati', 'Korea', 'Kosovo', 'Kuwait', 'Kyrgyzstan', 'Laos', 'Latvia', 'Lebanon', 'Lesotho', 'Liberia', 'Libya', 'Liechtenstein', 'Lithuania', 'Luxembourg', 'Macau', 'Macedonia', 'Madagascar', 'Malawi', 'Malaysia', 'Mali', 'Malta', 'Mauritania', 'Mauritius', 'Mexico', 'Moldova', 'Monaco', 'Mongolia', 'Montenegro', 'Morocco', 'Mozambique', 'Myanmar', 'Namibia', 'Nauru', 'Netherlands', 'New Zealand', 'Nicaragua', 'Niger', 'Nigeria', 'Norway', 'Oman', 'Palau', 'Palestine', 'Panama', 'Papua New Guinea', 'Paraguay', 'Peru', 'Philippines', 'Poland', 'Portugal', 'Puerto Rico', 'Qatar', 'Romania', 'Russia', 'Rwanda', 'Samoa', 'San Marino', 'Saudi Arabia', 'Senegal', 'Serbia', 'Seychelles', 'Sierra Leone', 'Singapore', 'Slovakia', 'Slovenia', 'Solomon Islands', 'Somalia', 'South Africa', 'South Korea', 'South Sudan', 'Spain', 'St Lucia', 'Sudan', 'Suriname', 'Swaziland', 'Sweden', 'Switzerland', 'Taiwan', 'Tajikistan', 'Tanzania', 'Thailand', 'Timor Leste', 'Togo', 'Tonga', 'Tunisia', 'Turkey', 'Turkmenistan', 'Tuvalu', 'Uganda', 'Ukraine', 'United Arab Emirates', 'United Kingdom', 'United States', 'Uruguay', 'Uzbekistan', 'Vanuatu', 'Vatican City', 'Venezuela', 'Vietnam', 'Yemen', 'Zambia', 'Zimbabwe', 'Other'];
 const SCH_STEPS = ['Education', 'Goals', 'Tests', 'Review'];
 
 function schDraftFromRow(row) {
@@ -7481,6 +7478,7 @@ async function scholarshipsHub(sub) {
    combination has no page, progressively broader pages are tried and the
    cards filtered down to match. Nothing is stored -- E9 adds Save to shortlist. */
 const SCH_SRC = 'https://www.scholarshipsads.com/';
+const SCH_PROXY = ''; // your Cloudflare Worker URL, e.g. 'https://sch-proxy.yourname.workers.dev/'
 const SCH_LEVEL_SLUGS = { 'Bachelor\u2019s': 'bachelor', 'Master\u2019s': 'masters', 'PhD': 'phd' };
 const SCH_DEST_RE = { USA: /usa|united states/i, UK: /\buk\b|united kingdom|england|scotland/i };
 // [use funding, use level, use destination, use nationality] -- tried in order until one has cards.
@@ -7538,18 +7536,12 @@ async function schFetchListing(url) {
     if (res.status === 404) return [];
     if (res.ok) { const cards = schParseListing(await res.text()); if (cards.length) return cards; }
   } catch (e) { /* blocked by CORS or offline -- read it through Gemini instead */ }
-  const s = aiSettings();
-  if (!s.geminiKey || !s.geminiModel) throw new Error('Search reads ScholarshipsAds through Gemini here \u2014 add your Gemini key and model in AI Settings.');
-  const prompt = 'Open this ScholarshipsAds listing page and reply with ONLY a JSON array (no prose, no markdown) of every scholarship card on it, ' +
-    'in page order. Each item: {"name","url","funding","provider","levels","subjects","country"}, copied from what the card shows. ' +
-    'Never invent anything. If the page has no scholarship cards or does not exist, reply [].\n' + url;
-  const text = await callGeminiRaw(s.geminiModel, s.geminiKey, '', [{ role: 'user', parts: [{ text: prompt }] }], [{ url_context: {} }]);
-  try {
-    const arr = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
-    return arr.filter(c => c && c.name && String(c.url || '').startsWith(SCH_SRC)).map(c => ({
-      name: String(c.name), url: c.url, funding: c.funding || '', provider: c.provider || '', levels: c.levels || '',
-      subjects: c.subjects || '', country: c.country || '' }));
-  } catch (e) { return []; }
+  // Blocked by CORS: read the page through your own tiny proxy (see scholarships-proxy.js).
+  if (!SCH_PROXY) throw new Error('Search needs the ScholarshipsAds proxy. Deploy scholarships-proxy.js and paste its URL into SCH_PROXY.');
+  const pr = await fetch(SCH_PROXY + '?url=' + encodeURIComponent(url));
+  if (pr.status === 404) return [];
+  if (!pr.ok) throw new Error('The scholarship proxy returned an error (' + pr.status + '). Try again shortly.');
+  return schParseListing(await pr.text());
 }
 
 async function schLoadResults(f, page, from) {
@@ -8041,7 +8033,7 @@ async function schRoadmapPage() {
     box.replaceChildren(
       h('div', { class: 'proj', style: 'padding:14px 16px;margin-bottom:16px' },
         h('strong', { style: 'font-size:22px', text: pct + '% complete' }), ...meter(done, rows.length, 'steps done')),
-      schRoadLogCard(paint), ...groups, msg,
+      schRoadLogCard(paint), ...groups.filter(Boolean), msg,
       section('Add a step', null, null, h('div', { class: 'check-add' }, input, addBtn)),
       h('p', { class: 'hint-line', text: 'Your starter steps came from your profile. Tick them off as you go, and add or remove steps to fit your plan.' }));
     suggBoxes.forEach(x => x.paintS());
