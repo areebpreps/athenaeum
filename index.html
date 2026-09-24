@@ -614,6 +614,71 @@
 
 <body>
 
+<!-- Full-width "get the app" banner (web only) — GitHub-mobile-web style: sits above
+     everything, pushing the rest of the page down. Dismiss with the × and it comes
+     back after a while, so it isn't gone for good by accident. -->
+<div id="apk-banner" role="region" aria-label="Get the app">
+  <a id="apk-banner-link" href="https://github.com/areebpreps/athenaeum/releases/latest/download/athenaeum.apk"
+     target="_blank" rel="noopener">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/>
+    </svg>
+    <span>Get the Athenaeum app — download it here</span>
+  </a>
+  <button id="apk-banner-close" type="button" aria-label="Dismiss">&times;</button>
+</div>
+<style>
+  #apk-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    display: flex; align-items: center; gap: 8px;
+    padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px;
+    background: #F3C955; color: #1A1400;
+    font: 700 14px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  #apk-banner[hidden] { display: none; }
+  /* Reserve exactly the banner's own height above the app shell, so it pushes
+     everything down rather than covering it — set by the script below. */
+  body { padding-top: var(--banner-h, 0px); }
+  #screen-app { height: calc(100dvh - var(--banner-h, 0px)); }
+  #apk-banner-link { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; color: inherit; text-decoration: none; }
+  #apk-banner-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #apk-banner-link:active { opacity: .75; }
+  #apk-banner-close {
+    flex: none; width: 30px; height: 30px; display: grid; place-items: center;
+    border: 0; background: transparent; color: #1A1400; font-size: 20px; line-height: 1; border-radius: 50%;
+  }
+  #apk-banner-close:active { background: rgba(0,0,0,.1); }
+</style>
+<script>
+(function () {
+  // Hide entirely when running inside the installed app itself —
+  // window.AndroidDownloader only exists there (a bridge object the Android
+  // app injects; a plain web page never has it).
+  var banner = document.getElementById('apk-banner');
+  if (window.AndroidDownloader) { banner.remove(); document.documentElement.style.setProperty('--banner-h', '0px'); }
+  else {
+    var DISMISS_KEY = 'apkBannerDismissedAt';
+    var REAPPEAR_MS = 24 * 60 * 60 * 1000; // reappear a day after being dismissed, like GitHub's mobile-web banner
+    function shouldShow() {
+      var since = Number(localStorage.getItem(DISMISS_KEY) || 0);
+      return !since || (Date.now() - since) > REAPPEAR_MS;
+    }
+    function syncHeight() {
+      document.documentElement.style.setProperty('--banner-h', banner.hidden ? '0px' : banner.offsetHeight + 'px');
+    }
+    banner.hidden = !shouldShow();
+    syncHeight();
+    window.addEventListener('resize', syncHeight);
+    document.getElementById('apk-banner-close').addEventListener('click', function () {
+      try { localStorage.setItem(DISMISS_KEY, String(Date.now())); } catch (e) {}
+      banner.hidden = true;
+      syncHeight();
+    });
+  }
+})();
+</script>
+
 <!-- ========== Not configured yet ========== -->
 <section id="screen-config" hidden>
   <h1>Almost ready</h1>
@@ -689,6 +754,9 @@
       <h2 id="page-title">General workspace</h2>
     </div>
     <div class="tb-right">
+      <button class="bell" id="search-btn" type="button" aria-label="Search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      </button>
       <button class="bell" id="bell-btn" type="button" aria-label="Notifications">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
         <span class="bell-dot" id="bell-dot" hidden></span>
@@ -1036,7 +1104,11 @@ function parseHash() {
 function parentHash(ids) { return ids.length <= 1 ? '#subjects' : '#subjects/' + ids.slice(0, -1).join('/'); }
 // Hubs (Phase 3.1) are one or two segments deep under #workspace, e.g.
 // #workspace/planner or #workspace/wiki/<article>. Back always goes up one segment.
-function workspaceParentHash(ids) { if (ids[0] === 'people') return '#workspace/community'; return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0]; }
+function workspaceParentHash(ids) {
+  if (ids[0] === 'people') return '#workspace/community';
+  if (ids.length <= 1 && COMMUNITY_HUB_KEYS.includes(ids[0])) return '#workspace/communityhub';
+  return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0];
+}
 // AI tools (Phase 3.2) follow the same shape: #ai/<tool>[/<chat id>]. Back always goes up one segment.
 function aiParentHash(ids) {
   if (ids.length <= 1) return '#ai';
@@ -1067,6 +1139,15 @@ async function route() {
     if (b.dataset.tab === tab) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
+
+  // Search icon (in the header, beside Notifications) is scoped to whichever
+  // tab you're currently on — each tab searches only its own content.
+  const SEARCH_HASH = { workspace: '#workspace/search', subjects: '#subjects/search', ai: '#ai/search' };
+  const searchBtn = $('#search-btn');
+  if (searchBtn) {
+    if (SEARCH_HASH[tab]) { searchBtn.hidden = false; searchBtn.onclick = () => go(SEARCH_HASH[tab]); }
+    else searchBtn.hidden = true;
+  }
 
   const view = $('#view');
   const same = lastHash === location.hash;          // a refresh of the same page keeps its scroll position
@@ -3158,34 +3239,107 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'library')  return libraryHub(ids[1]);
   if (ids[0] === 'notifications') return notificationsPage();
   if (ids[0] === 'search')   return globalSearchPage();
+  if (ids[0] === 'communityhub') return communityHubPage();
   return buildWorkspaceRoot();
 }
 
-function hubsSection() {
-  return section('Hubs', null, null,
+// Community Hub (folder like Portals / 3D simulation hub): a landing page
+// grouping the social/teaching hubs. The pages themselves keep their own
+// existing routes (#workspace/groups etc.) unchanged — this just adds one
+// shared front door instead of listing all seven separately under Hubs.
+const COMMUNITY_HUB_KEYS = ['groups', 'classes', 'community', 'consult', 'qa', 'market', 'teach'];
+function communityHubPage() {
+  return { title: 'Community Hub', nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }]),
     h('div', { class: 'list' },
-      linkRow({ href: '#workspace/search',   title: 'Search everything',  meta: 'One search across notes, posts, courses, Q&A, scholarships and subjects' }),
-      linkRow({ href: '#workspace/today',    title: 'Today',              meta: 'Everything due or scheduled today, in one place' }),
-      linkRow({ href: '#workspace/notifications', title: 'Notifications', meta: 'Answers, deadlines, decisions and requests, in one inbox' }),
-      linkRow({ href: '#workspace/scholarships', title: 'Scholarship Center', meta: 'Your profile and scholarship planning' }),
-      linkRow({ href: '#workspace/planner',  title: 'Planner',            meta: 'Weekly routine and milestones' }),
-      linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' }),
-      linkRow({ href: '#workspace/wiki',     title: 'Wikipedia reader',   meta: 'Search and read articles' }),
-      linkRow({ href: '#workspace/portals',  title: 'Portals',            meta: 'Question banks — Bangladesh & international' }),
-      linkRow({ href: '#workspace/threed',   title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' }),
-      linkRow({ href: '#workspace/youtube',  title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' }),
-      linkRow({ href: '#workspace/library',  title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' }),
       linkRow({ href: '#workspace/groups',   title: 'Study groups',       meta: 'Join or create a group around a subject or chapter' }),
-      linkRow({ href: '#workspace/peers',    title: 'Peers',              meta: 'Other students applying to the same scholarships this year' }),
       linkRow({ href: '#workspace/classes',  title: 'Live classes',       meta: 'Links to online and live classes \u2014 watch or join, with start times' }),
-      linkRow({ href: '#workspace/profile',  title: 'Public profile',     meta: 'Your name, photo, country and field of study' }),
-      linkRow({ href: '#workspace/community', title: 'Community posts',   meta: 'Public notes, mnemonics and links from other students \u2014 save the ones you like' }),
-      linkRow({ href: '#workspace/posts',    title: 'My posts',           meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' }),
+      linkRow({ href: '#workspace/community', title: 'Community posts',  meta: 'Public notes, mnemonics and links from other students \u2014 save the ones you like' }),
       linkRow({ href: '#workspace/consult',  title: 'Consult a teacher', meta: 'Book a scheduled, study-focused session with a teacher' }),
-      linkRow({ href: '#workspace/books',    title: 'Book reviews',       meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }),
       linkRow({ href: '#workspace/qa',       title: 'Q&A',                meta: 'Ask a question, answer others, or request a teacher' }),
       linkRow({ href: '#workspace/market',   title: 'Course marketplace', meta: 'Courses from teachers \u2014 free or unlocked with a payment' }),
-      linkRow({ href: '#workspace/teach',    title: 'Teach on Athenaeum', meta: 'Apply for teacher status \u2014 you are a student until approved' })));
+      linkRow({ href: '#workspace/teach',    title: 'Teach on Athenaeum', meta: 'Apply for teacher status \u2014 you are a student until approved' }))
+  ] };
+}
+
+// Hub row order is stored locally (there's no server table for this list),
+// keyed by hub id, so "Arrange" persists across visits without needing a
+// schema change. Any hub not yet in a saved order is appended at the end,
+// which also covers new hubs added after someone has already reordered.
+const HUB_ORDER_KEY = 'hubOrder';
+function hubEntries() {
+  return [
+    { key: 'today',        href: '#workspace/today',        title: 'Today',              meta: 'Everything due or scheduled today, in one place' },
+    { key: 'scholarships', href: '#workspace/scholarships', title: 'Scholarship Center', meta: 'Your profile and scholarship planning' },
+    { key: 'planner',      href: '#workspace/planner',      title: 'Planner',            meta: 'Weekly routine and milestones' },
+    { key: 'projects',     href: '#workspace/projects',     title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' },
+    { key: 'wiki',         href: '#workspace/wiki',         title: 'Wikipedia reader',   meta: 'Search and read articles' },
+    { key: 'portals',      href: '#workspace/portals',      title: 'Portals',            meta: 'Question banks — Bangladesh & international' },
+    { key: 'threed',       href: '#workspace/threed',       title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' },
+    { key: 'youtube',      href: '#workspace/youtube',      title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' },
+    { key: 'library',      href: '#workspace/library',      title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' },
+    { key: 'communityhub', href: '#workspace/communityhub', title: 'Community Hub',      meta: 'Study groups, live classes, posts, Q&A, teacher consults and the marketplace' },
+    { key: 'posts',        href: '#workspace/posts',        title: 'My posts',           meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' },
+    { key: 'books',        href: '#workspace/books',        title: 'Book reviews',       meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }
+  ];
+}
+function orderedHubs() {
+  const list = hubEntries();
+  let order = null;
+  try { order = JSON.parse(store.get(HUB_ORDER_KEY) || 'null'); } catch (e) { order = null; }
+  if (!Array.isArray(order)) return list;
+  const byKey = {}; list.forEach(e => { byKey[e.key] = e; });
+  const out = order.map(k => byKey[k]).filter(Boolean);
+  list.forEach(e => { if (!out.includes(e)) out.push(e); });
+  return out;
+}
+function saveHubOrder(list) { store.set(HUB_ORDER_KEY, JSON.stringify(list.map(e => e.key))); }
+
+function hubsSection() {
+  const list = orderedHubs();
+  let arranging = false;
+  const head = h('div', { class: 'sec-head' });
+  const body = h('div');
+  const wrap = h('section', { class: 'sec' }, head, body);
+
+  function paintBody() {
+    body.replaceChildren(arranging
+      ? h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
+          h('span', { class: 'grow', text: e.title }),
+          h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
+          h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }))))
+      : h('div', { class: 'list' }, list.map(e => linkRow({ href: e.href, title: e.title, meta: e.meta }))));
+  }
+  function move(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    saveHubOrder(list);
+    paintBody();
+  }
+  function paintHead() {
+    head.replaceChildren(
+      h('h3', { text: 'Hubs' }),
+      arranging
+        ? h('button', { class: 'btn quiet small', type: 'button', text: 'Done', onclick: () => { arranging = false; paintHead(); paintBody(); } })
+        : h('button', {
+            class: 'btn quiet small', type: 'button', text: 'Sort', 'aria-label': 'Sort hubs',
+            onclick: () => showDialog({
+              title: 'Sort hubs',
+              text: 'Choose how to arrange your hubs list.',
+              submitLabel: 'Sort A\u2013Z',
+              async onSubmit() {
+                list.sort((a, b) => a.title.localeCompare(b.title));
+                saveHubOrder(list);
+                paintBody();
+              },
+              extras: [{ label: 'Arrange manually', danger: false, onClick: () => { closeDialog(); arranging = true; paintHead(); paintBody(); } }]
+            })
+          }));
+  }
+  paintHead();
+  paintBody();
+  return wrap;
 }
 
 async function buildWorkspaceRoot() {
@@ -3384,6 +3538,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'infographic') return notebookHub(ids[1]); // merged into Notebook Studio (B4)
   if (ids[0] === 'notebook')    return notebookHub(ids[1]);
   if (ids[0] === 'export')      return exportHub();
+  if (ids[0] === 'search')      return aiSearchPage();
   return buildAIRoot();
 }
 
@@ -3392,26 +3547,53 @@ function disabledRow(title, meta) {
     h('span', { class: 'grow' }, h('strong', { text: title }), h('small', { text: meta })));
 }
 
+// Shared by buildAIRoot and aiSearchPage, so the tools list only lives once.
+// meta can be a plain string or a function (re-evaluated each render), for
+// the one row (Settings) whose subtitle depends on live app state.
+const AI_TOOLS_LIST = [
+  { href: '#ai/settings', title: 'Settings', meta: () => aiConfigured() ? 'Gemini key added' : 'Add your Gemini key to begin' },
+  { href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' },
+  { href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' },
+  { href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, checked against live info' },
+  { href: '#ai/ocr', title: 'OCR (image to text)', meta: 'Photos of handwriting and equations, turned into editable text' },
+  { href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or transcript \u2014 or one tap from the YouTube hub' },
+  { href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' },
+  { href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' },
+  { href: '#ai/flashgen', title: 'Flashcard Generator', meta: 'Turn notes into spaced-repetition flashcards' },
+  { href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' },
+  { href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation, plus grammar & citation checking' },
+  { href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' },
+  { href: '#ai/notebook', title: 'Notebook Studio', meta: 'Synthesis, audio, slides, mind maps, tables & infographics from your own material' },
+  { href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' }
+];
+const aiToolMeta = t => typeof t.meta === 'function' ? t.meta() : t.meta;
+
 function buildAIRoot() {
-  const configured = aiConfigured();
   return { nodes: [
     section('AI tools', null, null,
-      h('div', { class: 'list' },
-        linkRow({ href: '#ai/settings', title: 'Settings', meta: configured ? 'Gemini key added' : 'Add your Gemini key to begin' }),
-        linkRow({ href: '#ai/ask', title: 'Ask AI', meta: 'General study assistant' }),
-        linkRow({ href: '#ai/solver', title: 'Question Solver', meta: 'Photo in, direct answer first' }),
-        linkRow({ href: '#ai/factcheck', title: 'Fact Checker', meta: 'True / False / Partially true, checked against live info' }),
-        linkRow({ href: '#ai/ocr', title: 'OCR (image to text)', meta: 'Photos of handwriting and equations, turned into editable text' }),
-        linkRow({ href: '#ai/youtube', title: 'YouTube summarizer', meta: 'Summary from a link or transcript — or one tap from the YouTube hub' }),
-        linkRow({ href: '#ai/summarizer', title: 'Summarizer & Formula Excerptor', meta: 'Turn notes into summaries and cheat sheets' }),
-        linkRow({ href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' }),
-        linkRow({ href: '#ai/flashgen', title: 'Flashcard Generator', meta: 'Turn notes into spaced-repetition flashcards' }),
-        linkRow({ href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' }),
-        linkRow({ href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation, plus grammar & citation checking' }),
-        linkRow({ href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' }),
-        linkRow({ href: '#ai/notebook', title: 'Notebook Studio', meta: 'Synthesis, audio, slides, mind maps, tables & infographics from your own material' }),
-        linkRow({ href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' })))
+      h('div', { class: 'list' }, AI_TOOLS_LIST.map(t => linkRow({ href: t.href, title: t.title, meta: aiToolMeta(t) }))))
   ] };
+}
+
+// AI tools tab's own search — a client-side filter over the static tools list
+// above (there's nothing in the database to query; the "search" is just
+// finding the right tool by name or description).
+function aiSearchPage() {
+  const crumb = crumbs([{ text: 'AI tools', href: '#ai' }]);
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search AI tools\u2026', 'aria-label': 'Search AI tools' });
+  const out = h('div');
+
+  function paint() {
+    const term = input.value.trim().toLowerCase();
+    const list = !term ? AI_TOOLS_LIST : AI_TOOLS_LIST.filter(t => (t.title + ' ' + aiToolMeta(t)).toLowerCase().includes(term));
+    out.replaceChildren(list.length
+      ? h('div', { class: 'list' }, list.map(t => linkRow({ href: t.href, title: t.title, meta: aiToolMeta(t) })))
+      : h('p', { class: 'none', text: 'No matching tool.' }));
+  }
+  input.addEventListener('input', paint);
+  paint();
+
+  return { title: 'Search AI tools', nodes: [crumb, input, out] };
 }
 
 function aiNeedsSetup(toolName) {
@@ -3980,14 +4162,20 @@ function youtubePlayer(url) {
   const id = youtubeVideoId(url);
   if (!id) return null;
   // Error 153 ("Video player configuration error") means YouTube could not
-  // identify the embedding page. Inside the Android app the page's referrer can
-  // be stripped, so send it explicitly and pass the page origin when it is a
-  // real web origin.
+  // identify the embedding page. In a browser, window.location.origin is a
+  // real https origin and works. Inside the Android app the shell is loaded
+  // from file:// (or an origin YouTube won't accept), so no usable origin
+  // is ever sent there — that's exactly why playback failed only in-app.
+  // Fall back to the app's real published origin whenever the live one
+  // isn't a usable https address.
   let q = '?playsinline=1&rel=0';
+  let origin = null;
   try {
     const o = window.location.origin;
-    if (/^https?:\/\//.test(o) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(o)) q += '&origin=' + encodeURIComponent(o);
+    if (/^https?:\/\//.test(o) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(o)) origin = o;
   } catch (e) { /* no origin available */ }
+  if (!origin) origin = 'https://athenaeum.eu.cc'; // Android app (file://) fallback — same origin used as the Supabase Site URL
+  q += '&origin=' + encodeURIComponent(origin);
   return h('div', { class: 'yt-wrap' },
     h('div', { class: 'yt-embed' },
       h('iframe', {
@@ -6380,11 +6568,67 @@ async function notebookPast(chatId) {
 
 /* ---------- Subjects > Chapter > Topic pages ---------- */
 async function buildSubjects(ids) {
+  if (ids[0] === 'search') return subjectsSearchPage();
   if (ids.some(id => !UUID.test(id))) return go('#subjects');
   if (ids.length === 0) return subjectsRoot();
   if (ids.length === 1) return subjectPage(ids[0]);
   if (ids.length === 2) return chapterPage(ids[0], ids[1]);
   return topicPage(ids[0], ids[1], ids[2]);
+}
+
+// Subjects tab's own search — subjects/chapters/topics only, not the whole app.
+// Shared with the global search's "subjects" section so the matching logic lives once.
+async function searchSubjectsTree(term) {
+  const clean = term.replace(/[,()]/g, ' ').trim();
+  const q = '%' + clean + '%';
+  const [subR, chR, topR] = await Promise.all([
+    sb.from('subjects').select('id,name').ilike('name', q).limit(15),
+    sb.from('chapters').select('id,subject_id,title').ilike('title', q).limit(15),
+    sb.from('topics').select('id,chapter_id,title').ilike('title', q).limit(15)
+  ]);
+  if (subR.error && chR.error && topR.error) throw (subR.error || new Error('Could not search right now.'));
+
+  const chapters = chR.data || [], subjects = subR.data || [], topics = topR.data || [];
+  const chById = {}; chapters.forEach(c => { chById[c.id] = c; });
+  const missingChIds = [...new Set(topics.map(t => t.chapter_id).filter(id => !chById[id]))];
+  if (missingChIds.length) {
+    const extra = await sb.from('chapters').select('id,subject_id').in('id', missingChIds);
+    (extra.data || []).forEach(c => { chById[c.id] = c; });
+  }
+
+  return [
+    ...subjects.map(s => linkRow({ href: '#subjects/' + s.id, title: s.name, meta: 'Subject' })),
+    ...chapters.map(c => linkRow({ href: '#subjects/' + c.subject_id + '/' + c.id, title: c.title, meta: 'Chapter' })),
+    ...topics.map(t => { const c = chById[t.chapter_id]; return c ? linkRow({ href: '#subjects/' + c.subject_id + '/' + c.id + '/' + t.id, title: t.title, meta: 'Topic' }) : null; }).filter(Boolean)
+  ];
+}
+
+function subjectsSearchPage() {
+  const crumb = crumbs([{ text: 'Subjects', href: '#subjects' }]);
+  const input = h('input', { class: 'control', type: 'search', placeholder: 'Search subjects, chapters, topics\u2026', 'aria-label': 'Search subjects' });
+  const goBtn = h('button', { class: 'btn', type: 'button', text: 'Search' });
+  const msg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+  const status = h('p', { class: 'hint-line', hidden: true });
+  const out = h('div');
+
+  async function run() {
+    const term = input.value.trim();
+    msg.hidden = true;
+    if (term.length < GLOBAL_SEARCH_MIN) { msg.textContent = 'Type at least ' + GLOBAL_SEARCH_MIN + ' characters.'; msg.hidden = false; return; }
+    goBtn.disabled = true; status.hidden = false; status.textContent = 'Searching\u2026'; out.replaceChildren();
+    try {
+      const rows = await searchSubjectsTree(term);
+      status.hidden = true;
+      out.replaceChildren(rows.length ? h('div', { class: 'list' }, rows) : h('p', { class: 'none', text: 'No matches.' }));
+    } catch (e) {
+      status.hidden = true; msg.textContent = (e && e.message) || 'Could not search right now.'; msg.hidden = false;
+    }
+    goBtn.disabled = false;
+  }
+  goBtn.addEventListener('click', run);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run(); } });
+
+  return { title: 'Search subjects', nodes: [crumb, h('div', { class: 'search-row' }, input, goBtn), msg, status, out] };
 }
 
 async function subjectsRoot() {
@@ -7069,7 +7313,8 @@ async function scholarshipsHub(sub) {
     linkRow({ href: '#workspace/scholarships/gap', title: 'Gap analysis', meta: 'How you compare with admitted applicants, in numbers' }),
     linkRow({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines, test dates and prep milestones on one line' }),
     linkRow({ href: '#workspace/scholarships/search', title: 'Find scholarships', meta: 'Search by destination, level and funding type' }),
-    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }));
+    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }),
+    linkRow({ href: '#workspace/scholarships/peers', title: 'Peers', meta: 'Other students applying to the same scholarships this year' }));
 
   let row = res.data || null;
   let mode = row ? 'summary' : 'wizard';
@@ -12660,46 +12905,5 @@ if (window.AndroidDownloader) {
   }, true);
 }
 </script>
-<!-- Floating APK download button (web only) -->
-<a id="apk-download-btn"
-   href="https://github.com/areebpreps/athenaeum/releases/latest/download/athenaeum.apk"
-   target="_blank" rel="noopener" title="Download Android app"
-   style="position:fixed;top:10px;right:64px;z-index:9999;
-   display:flex;align-items:center;gap:8px;
-   height:36px;padding:0 14px;border-radius:8px;
-   background:#F3C955;border:0;
-   box-shadow:0 3px 14px rgba(0,0,0,0.5);transition:background .15s ease,transform .15s ease;
-   text-decoration:none;font:700 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
-   color:#1A1400;white-space:nowrap;">
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A1400" stroke-width="2.4"
-       stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 3v12"/>
-    <path d="M7 10l5 5 5-5"/>
-    <path d="M5 21h14"/>
-  </svg>
-  <span>Download</span>
-</a>
-<style>
-  #apk-download-btn:hover, #apk-download-btn:active {
-    background:#F7D678;
-    transform: scale(1.03);
-    box-shadow: 0 4px 16px rgba(243,201,85,0.35);
-  }
-  /* Only on the login/create-account screen: move it down so it doesn't
-     sit on top of the "Athenaeum" title, since that screen has no header bar. */
-  #screen-auth:not([hidden]) ~ #apk-download-btn {
-    top: auto !important;
-    bottom: 16px !important;
-    right: 16px !important;
-  }
-</style>
-<script>
-  // Hide the button when running inside the installed app itself —
-  // window.AndroidDownloader only exists there (see the bridge hook above).
-  if (window.AndroidDownloader) {
-    var btn = document.getElementById('apk-download-btn');
-    if (btn) btn.style.display = 'none';
-  }
-</script>     
 </body>
 </html>
