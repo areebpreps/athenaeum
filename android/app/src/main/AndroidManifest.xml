@@ -13,10 +13,14 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
-    <!-- F4: Android 11+ hides other apps unless declared here -->
+    <!-- Android 11+ hides other apps unless declared here -->
     <queries>
         <intent>
             <action android:name="android.intent.action.SET_ALARM" />
+        </intent>
+        <!-- read-aloud: lets the app see the phone's speech engine -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 
