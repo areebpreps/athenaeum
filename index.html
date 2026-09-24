@@ -664,6 +664,56 @@
   #apk-banner-close:active { background: rgba(0,0,0,.1); }
 </style>
 <script>
+/* Android WebView has no window.speechSynthesis. Inside the APK, MainActivity
+   exposes the phone's own text-to-speech engine as window.AndroidTTS; this
+   shim rebuilds the small part of the Web Speech API the app uses on top of
+   it, so every Listen button, voice setting and audio overview just works.
+   Does nothing in a normal browser (which has the real thing). */
+(function () {
+  if (window.speechSynthesis || !window.AndroidTTS) return;
+  var bridge = window.AndroidTTS, active = {}, nextId = 1, listeners = [];
+  function Utterance(text) {
+    this.text = String(text == null ? '' : text);
+    this.lang = ''; this.voice = null; this.rate = 1; this.pitch = 1; this.volume = 1;
+    this.onstart = null; this.onend = null; this.onerror = null;
+  }
+  var synth = {
+    speaking: false, pending: false, paused: false, onvoiceschanged: null,
+    getVoices: function () {
+      try {
+        return JSON.parse(bridge.voices() || '[]').map(function (v) {
+          return { name: v.name, lang: v.lang, voiceURI: v.name, localService: !!v.local, default: false };
+        });
+      } catch (e) { return []; }
+    },
+    speak: function (u) {
+      var id = String(nextId++);
+      active[id] = u; synth.speaking = true;
+      bridge.speak(id, u.text, u.lang || '', u.voice && u.voice.voiceURI ? u.voice.voiceURI : '',
+        Number(u.rate) || 1, Number(u.pitch) || 1, u.volume == null ? 1 : Number(u.volume));
+    },
+    cancel: function () { active = {}; synth.speaking = false; try { bridge.cancel(); } catch (e) {} },
+    pause: function () {}, resume: function () {},
+    addEventListener: function (t, fn) { if (t === 'voiceschanged') listeners.push(fn); },
+    removeEventListener: function (t, fn) { listeners = listeners.filter(function (f) { return f !== fn; }); }
+  };
+  window.__athenaeumTts = function (kind, id) {
+    if (kind === 'voices') {
+      if (typeof synth.onvoiceschanged === 'function') try { synth.onvoiceschanged({}); } catch (e) {}
+      listeners.forEach(function (f) { try { f({}); } catch (e) {} });
+      return;
+    }
+    var u = active[id]; if (!u) return;            // cancelled: ignore stale events
+    if (kind === 'start') { if (typeof u.onstart === 'function') try { u.onstart({}); } catch (e) {} return; }
+    delete active[id]; synth.speaking = Object.keys(active).length > 0;
+    var cb = kind === 'end' ? u.onend : u.onerror;
+    if (typeof cb === 'function') try { cb({ error: kind === 'end' ? undefined : 'synthesis-failed' }); } catch (e) {}
+  };
+  window.SpeechSynthesisUtterance = Utterance;
+  window.speechSynthesis = synth;
+})();
+</script>
+<script>
 (function () {
   // Hide entirely when running inside the installed app itself —
   // window.AndroidDownloader only exists there (a bridge object the Android
@@ -14266,7 +14316,7 @@ boot();
 // Only meaningful in a browser (GitHub Pages) — service workers cannot
 // register under file:// at all, so this is a silent no-op inside the
 // Android app, which bundles this same index.html locally instead.
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !window.AndroidDownloader) { // not inside the APK: it loads a local copy under a real https base URL
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   });
