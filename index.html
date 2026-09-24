@@ -1182,7 +1182,7 @@ async function route() {
   if (token !== renderToken || !res) return;         // superseded, or a redirect was issued
 
   setHeader(res.title || TABS[tab].title, back);
-  view.replaceChildren(...res.nodes);
+  view.replaceChildren(...res.nodes.filter(Boolean));
   view.scrollTop = keepScroll;
   viewReady = true;
 }
@@ -7284,6 +7284,7 @@ function schSummaryFacts(row) {
 }
 
 async function scholarshipsHub(sub) {
+  if (sub === 'cv') return schCvPage();
   if (sub === 'shortlist') return schShortlistPage();
   if (sub === 'search') return schSearchPage();
   if (sub === 'roadmap') return schRoadmapPage();
@@ -7310,6 +7311,7 @@ async function scholarshipsHub(sub) {
     linkRow({ href: '#workspace/scholarships/gap', title: 'Gap analysis', meta: 'How you compare with admitted applicants, in numbers' }),
     linkRow({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines, test dates and prep milestones on one line' }),
     linkRow({ href: '#workspace/scholarships/search', title: 'Find scholarships', meta: 'Search by destination, level and funding type' }),
+    linkRow({ href: '#workspace/scholarships/cv', title: 'CV / resume maker', meta: 'Build a CV for scholarship applications \u2014 preview, print or download' }),
     linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }),
     linkRow({ href: '#workspace/scholarships/peers', title: 'Peers', meta: 'Other students applying to the same scholarships this year' }));
 
@@ -7468,6 +7470,418 @@ async function scholarshipsHub(sub) {
   return { title: 'Scholarship Center', nodes: [crumb, shortlistLink, box] };
 }
 
+/* ---------- E24: Scholarship Center -- CV / resume maker -------------------
+   A step-by-step CV builder (personal details, profile, education,
+   experience, skills & languages, extra sections, design), stored locally
+   on this device (localStorage, via `store`) since it doesn't need to be
+   shared or synced like the rest of the Scholarship Center. The final step
+   renders the CV as a standalone, print-ready HTML document that can be
+   downloaded as a file or opened full-page for the browser's own
+   Print / Save as PDF. --------------------------------------------------- */
+const CV_STORE_KEY = 'schCvDraft';
+const CV_STEPS = ['Personal', 'Profile', 'Education', 'Experience', 'Skills', 'More', 'Design'];
+const CV_MORE_SECTIONS = [
+  { key: 'research',      title: 'Research & Publications',  itemLabel: 'Title',            detailsLabel: 'Journal, date, co-authors' },
+  { key: 'projects',      title: 'Projects',                 itemLabel: 'Project name',      detailsLabel: 'Details' },
+  { key: 'awards',        title: 'Awards & Scholarships',    itemLabel: 'Award name',        detailsLabel: 'Issuer & date' },
+  { key: 'certifications', title: 'Certifications',          itemLabel: 'Certification name', detailsLabel: 'Issuer & date' },
+  { key: 'volunteering',  title: 'Volunteering & Activities', itemLabel: 'Role',             detailsLabel: 'Organisation & details' },
+  { key: 'references',    title: 'References',               itemLabel: 'Name',              detailsLabel: 'Title, organisation, contact' }
+];
+const CV_ACCENTS = ['#1B3A6B', '#334155', '#1F5C4A', '#6B1B3A', '#0F6E6E', '#7A4B1B'];
+
+function cvEmptyMore() {
+  const m = {};
+  CV_MORE_SECTIONS.forEach(s => { m[s.key] = []; });
+  return m;
+}
+function cvDefaultDraft() {
+  return {
+    personal: { fullName: '', headline: '', email: '', phone: '', city: '', linkedin: '', website: '' },
+    profile: '',
+    education: [],
+    experience: [],
+    skills: [],
+    languages: [],
+    more: cvEmptyMore(),
+    design: { accent: CV_ACCENTS[0], template: 'classic', capsHeadings: true }
+  };
+}
+function cvLoadDraft() {
+  let parsed = null;
+  try { parsed = JSON.parse(store.get(CV_STORE_KEY) || 'null'); } catch (e) { parsed = null; }
+  const d = cvDefaultDraft();
+  if (!parsed || typeof parsed !== 'object') return d;
+  return {
+    personal: { ...d.personal, ...(parsed.personal || {}) },
+    profile: typeof parsed.profile === 'string' ? parsed.profile : d.profile,
+    education: Array.isArray(parsed.education) ? parsed.education : d.education,
+    experience: Array.isArray(parsed.experience) ? parsed.experience : d.experience,
+    skills: Array.isArray(parsed.skills) ? parsed.skills : d.skills,
+    languages: Array.isArray(parsed.languages) ? parsed.languages : d.languages,
+    more: { ...d.more, ...(parsed.more || {}) },
+    design: { ...d.design, ...(parsed.design || {}) }
+  };
+}
+function cvSaveDraft(draft) { store.set(CV_STORE_KEY, JSON.stringify(draft)); }
+
+function cvEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function cvLines(s) { return String(s || '').split('\n').map(l => l.trim()).filter(Boolean); }
+function cvDateRange(start, end, current) {
+  const a = String(start || '').trim(), b = current ? 'Present' : String(end || '').trim();
+  if (a && b) return a + ' \u2013 ' + b;
+  return a || b || '';
+}
+
+// Generic repeatable-card list editor: list is mutated in place; itemFactory()
+// makes a blank item; renderFields(item, i) returns the field nodes for a
+// card; cardTitle(item, i) labels the card header (e.g. "Education 2").
+function cvListEditor(list, itemFactory, renderFields, addLabel, cardTitle) {
+  const wrap = h('div');
+  function paint() {
+    const cards = list.map((item, i) => {
+      const up = () => { if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; paint(); } };
+      const down = () => { if (i < list.length - 1) { [list[i + 1], list[i]] = [list[i], list[i + 1]]; paint(); } };
+      const remove = () => { list.splice(i, 1); paint(); };
+      return h('div', { class: 'proj', style: 'padding:14px 16px;margin-bottom:12px;display:grid;gap:12px' },
+        h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:8px' },
+          h('strong', { text: cardTitle(item, i) }),
+          h('div', { style: 'display:flex;gap:6px' },
+            h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: up }),
+            h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: down }),
+            h('button', { class: 'btn quiet small', type: 'button', text: '\u00d7', 'aria-label': 'Remove', onclick: remove }))),
+        ...renderFields(item, i));
+    });
+    wrap.replaceChildren(...cards, h('button', { class: 'btn quiet small', type: 'button', text: addLabel, onclick: () => { list.push(itemFactory()); paint(); } }));
+  }
+  paint();
+  return wrap;
+}
+
+function cvStepPersonal(draft, body) {
+  const p = draft.personal;
+  const mk = (label, key, opts = {}) => {
+    const f = makeField(label, { value: p[key], ...opts });
+    if (opts.type) f.input.type = opts.type;
+    f.input.addEventListener('input', () => { p[key] = f.input.value; cvSaveDraft(draft); });
+    return f;
+  };
+  const full = mk('Full name', 'fullName', { maxlength: 80, placeholder: 'e.g. Ayesha Khan' });
+  const headline = mk('Headline', 'headline', { maxlength: 100, placeholder: 'e.g. BS Computer Science student' });
+  const email = mk('Email', 'email', { maxlength: 100, placeholder: 'yourname@gmail.com', type: 'email' });
+  const phone = mk('Phone', 'phone', { maxlength: 30, placeholder: '+92 300 1234567' });
+  const city = mk('City, country', 'city', { maxlength: 80, placeholder: 'e.g. Lahore, Pakistan' });
+  const linkedin = mk('LinkedIn', 'linkedin', { maxlength: 150, placeholder: 'linkedin.com/in/yourname' });
+  const website = mk('Website or portfolio (optional)', 'website', { maxlength: 150, placeholder: 'github.com/yourname' });
+  body.append(
+    h('p', { class: 'hint-line', text: 'How recruiters and scholarship committees will contact you.' }),
+    h('div', { class: 'two-col' }, full.wrap, headline.wrap),
+    h('div', { class: 'two-col' }, email.wrap, phone.wrap),
+    h('div', { class: 'two-col' }, city.wrap, linkedin.wrap),
+    website.wrap);
+}
+
+function cvStepProfile(draft, body) {
+  const count = h('p', { class: 'hint-line' });
+  const paintCount = () => { count.textContent = draft.profile.length + ' characters \u00b7 most profiles are 300\u2013600 characters.'; };
+  const f = makeField('Profile summary', { value: draft.profile, multiline: true, rows: 6, maxlength: 800, placeholder: 'Three or four sentences: who you are, what you are good at, and what you are applying for.' });
+  f.input.addEventListener('input', () => { draft.profile = f.input.value; cvSaveDraft(draft); paintCount(); });
+  paintCount();
+  body.append(f.wrap, count,
+    h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:6px' },
+      h('strong', { text: 'A simple structure that works' }),
+      h('p', { style: 'margin:0', text: '1. Your current study or role, institution and a key result (for example your CGPA).' }),
+      h('p', { style: 'margin:0', text: '2. Your strongest skills or experience, with one concrete example.' }),
+      h('p', { style: 'margin:0', text: '3. What you are applying for and what you want to do next.' })));
+}
+
+function cvStepEducation(draft, body) {
+  body.append(
+    h('p', { class: 'hint-line', text: 'Most recent first. Add your grade, thesis title or relevant courses in the details.' }),
+    cvListEditor(draft.education, () => ({ degree: '', institution: '', city: '', start: '', end: '', details: '' }),
+      (item) => {
+        const mk = (label, key, opts = {}) => {
+          const f = makeField(label, { value: item[key], ...opts });
+          f.input.addEventListener('input', () => { item[key] = f.input.value; cvSaveDraft(draft); });
+          return f;
+        };
+        const degree = mk('Degree or qualification', 'degree', { maxlength: 100, placeholder: 'e.g. BS Computer Science' });
+        const inst = mk('Institution', 'institution', { maxlength: 120, placeholder: 'e.g. COMSATS University Islamabad' });
+        const city = mk('City, country', 'city', { maxlength: 80 });
+        const start = mk('Start', 'start', { maxlength: 20, placeholder: 'e.g. Sep 2022' });
+        const end = mk('End (or expected)', 'end', { maxlength: 20, placeholder: 'e.g. Jun 2026' });
+        const details = mk('Details', 'details', { multiline: true, rows: 3, maxlength: 400, placeholder: 'CGPA 3.62/4.00 \u00b7 Thesis: \u2026 \u00b7 Relevant courses: \u2026' });
+        return [h('div', { class: 'two-col' }, degree.wrap, inst.wrap), h('div', { class: 'two-col' }, city.wrap, start.wrap), end.wrap, details.wrap];
+      }, '+ Add education', (item, i) => 'Education ' + (i + 1)));
+}
+
+function cvStepExperience(draft, body) {
+  body.append(
+    h('p', { class: 'hint-line', text: 'Jobs, internships, teaching or research assistant roles. Write one achievement per line and start each with an action verb.' }),
+    cvListEditor(draft.experience, () => ({ title: '', org: '', city: '', start: '', end: '', current: false, achievements: '' }),
+      (item) => {
+        const mk = (label, key, opts = {}) => {
+          const f = makeField(label, { value: item[key], ...opts });
+          f.input.addEventListener('input', () => { item[key] = f.input.value; cvSaveDraft(draft); });
+          return f;
+        };
+        const title = mk('Job title', 'title', { maxlength: 100, placeholder: 'e.g. Research Assistant' });
+        const org = mk('Organisation', 'org', { maxlength: 120 });
+        const city = mk('City, country', 'city', { maxlength: 80 });
+        const start = mk('Start', 'start', { maxlength: 20, placeholder: 'e.g. Jan 2025' });
+        const end = mk('End', 'end', { maxlength: 20, placeholder: 'e.g. Jun 2025' });
+        end.input.disabled = !!item.current;
+        const cur = h('input', { type: 'checkbox' }); cur.checked = !!item.current;
+        cur.addEventListener('change', () => {
+          item.current = cur.checked; end.input.disabled = cur.checked;
+          if (cur.checked) { item.end = ''; end.input.value = ''; }
+          cvSaveDraft(draft);
+        });
+        const curLab = h('label', { class: 'check-lab', style: 'min-height:36px' }, cur, h('span', { text: 'I currently work here' }));
+        const achievements = mk('Achievements (one per line)', 'achievements', { multiline: true, rows: 4, maxlength: 1000, placeholder: 'Cleaned and analysed survey data from 1,200 households\nPresented findings at the department seminar' });
+        return [h('div', { class: 'two-col' }, title.wrap, org.wrap), h('div', { class: 'two-col' }, city.wrap, start.wrap), end.wrap, curLab, achievements.wrap];
+      }, '+ Add experience', (item, i) => 'Experience ' + (i + 1)));
+}
+
+function cvStepSkills(draft, body) {
+  const tagWrap = h('div', { class: 'chips' });
+  const paintTags = () => tagWrap.replaceChildren(...draft.skills.map((s, i) =>
+    h('button', { class: 'chip-btn', type: 'button', 'aria-pressed': 'true', text: s + ' \u00d7', onclick: () => { draft.skills.splice(i, 1); cvSaveDraft(draft); paintTags(); } })));
+  paintTags();
+  const addSkill = v => { v = v.trim().replace(/,$/, ''); if (v && !draft.skills.includes(v)) { draft.skills.push(v); cvSaveDraft(draft); paintTags(); } };
+  const input = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'e.g. Python, Data analysis, Public speaking', 'aria-label': 'Add a skill' });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addSkill(input.value); input.value = ''; } });
+  input.addEventListener('blur', () => { if (input.value.trim()) { addSkill(input.value); input.value = ''; } });
+
+  const langBox = h('div');
+  const LEVELS = ['Basic', 'Conversational', 'Fluent', 'Native'];
+  function paintLangs() {
+    langBox.replaceChildren(...draft.languages.map((lg, i) => {
+      const name = h('input', { class: 'control', type: 'text', maxlength: 40, placeholder: 'e.g. English', value: lg.name, 'aria-label': 'Language name' });
+      name.addEventListener('input', () => { lg.name = name.value; cvSaveDraft(draft); });
+      const chips = h('div', { class: 'chips' }, LEVELS.map(lv => schChip(lv, lg.level === lv, () => { lg.level = lv; cvSaveDraft(draft); paintLangs(); })));
+      const del = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove', onclick: () => { draft.languages.splice(i, 1); cvSaveDraft(draft); paintLangs(); } });
+      return h('div', { class: 'field' }, name, chips, del);
+    }), h('button', { class: 'btn quiet small', type: 'button', text: '+ Add language', onclick: () => { draft.languages.push({ name: '', level: 'Conversational' }); cvSaveDraft(draft); paintLangs(); } }));
+  }
+  paintLangs();
+
+  body.append(
+    h('div', { class: 'field' }, h('label', { text: 'Skills' }), h('p', { class: 'hint-line', text: 'Press Enter or comma after each skill.' }), tagWrap, input),
+    h('div', { class: 'field' }, h('label', { text: 'Languages' }), langBox));
+}
+
+function cvMoreAccordion(draft, meta) {
+  const list = draft.more[meta.key];
+  let open = list.length > 0;
+  const wrap = h('div', { class: 'proj', style: 'margin-bottom:12px;overflow:hidden' });
+  function paint() {
+    const head = h('button', {
+      type: 'button', style: 'width:100%;border:0;background:transparent;padding:14px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:8px',
+      onclick: () => { open = !open; paint(); }
+    }, h('span', { style: 'flex:1;font-weight:600', text: meta.title + (list.length ? ' (' + list.length + ')' : '') }),
+       h('span', { 'aria-hidden': 'true', text: open ? '\u2212' : '+' }));
+    const kids = [head];
+    if (open) {
+      kids.push(h('div', { style: 'padding:0 16px 16px' },
+        cvListEditor(list, () => ({ title: '', details: '' }),
+          (item) => {
+            const t = makeField(meta.itemLabel, { value: item.title, maxlength: 120 });
+            t.input.addEventListener('input', () => { item.title = t.input.value; cvSaveDraft(draft); });
+            const d = makeField(meta.detailsLabel, { value: item.details, multiline: true, rows: 3, maxlength: 400 });
+            d.input.addEventListener('input', () => { item.details = d.input.value; cvSaveDraft(draft); });
+            return [t.wrap, d.wrap];
+          }, '+ Add', (item, i) => meta.itemLabel + ' ' + (i + 1))));
+    }
+    wrap.replaceChildren(...kids);
+  }
+  paint();
+  return wrap;
+}
+function cvStepMore(draft, body) {
+  body.append(
+    h('p', { class: 'hint-line', text: 'Add what applies to you. Empty sections are left off your CV.' }),
+    CV_MORE_SECTIONS.map(meta => cvMoreAccordion(draft, meta)));
+}
+
+function cvStepDesign(draft, body) {
+  const d = draft.design;
+  const templates = [
+    { key: 'classic', title: 'Classic', meta: 'Traditional single column \u2014 the safest ATS bet.' },
+    { key: 'sidebar', title: 'Sidebar', meta: 'Accent-coloured header with a contact & skills sidebar.' }
+  ];
+  const tplBox = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px' });
+  const paintTpl = () => tplBox.replaceChildren(...templates.map(t =>
+    h('button', { class: 'btn' + (d.template === t.key ? '' : ' quiet'), type: 'button', style: 'height:auto;padding:12px;text-align:left;display:block', onclick: () => { d.template = t.key; cvSaveDraft(draft); paintTpl(); } },
+      h('strong', { style: 'display:block', text: t.title }), h('small', { style: 'display:block;font-weight:400', text: t.meta }))));
+  paintTpl();
+
+  const accentBox = h('div', { class: 'chips' });
+  const paintAccent = () => accentBox.replaceChildren(...CV_ACCENTS.map(c =>
+    h('button', { type: 'button', 'aria-label': 'Accent colour', 'aria-pressed': String(d.accent === c), style: 'width:34px;height:34px;border-radius:50%;border:' + (d.accent === c ? '3px solid var(--chalk)' : '2px solid var(--line)') + ';background:' + c, onclick: () => { d.accent = c; cvSaveDraft(draft); paintAccent(); } })));
+  paintAccent();
+
+  const caps = h('input', { type: 'checkbox' }); caps.checked = !!d.capsHeadings;
+  caps.addEventListener('change', () => { d.capsHeadings = caps.checked; cvSaveDraft(draft); });
+
+  body.append(
+    h('div', { class: 'field' }, h('label', { text: 'Template' }), tplBox),
+    h('div', { class: 'field' }, h('label', { text: 'Accent colour' }), accentBox),
+    h('label', { class: 'check-lab', style: 'margin-top:4px' }, caps, h('span', { text: 'Capital-letter section headings' })));
+}
+
+function cvGenerateHtml(draft) {
+  const p = draft.personal, accent = draft.design.accent || CV_ACCENTS[0];
+  const caps = !!draft.design.capsHeadings;
+  const sidebar = draft.design.template === 'sidebar';
+  const name = p.fullName.trim() || 'Your Name';
+  const contactBits = [p.email, p.phone, p.city, p.linkedin, p.website].map(x => String(x || '').trim()).filter(Boolean);
+
+  const eduHtml = draft.education.map(e => `
+    <div class="cv-item">
+      <div class="cv-item-head"><strong>${cvEsc(e.degree)}</strong><span class="cv-date">${cvEsc(cvDateRange(e.start, e.end))}</span></div>
+      <div class="cv-sub">${cvEsc([e.institution, e.city].filter(Boolean).join(' \u00b7 '))}</div>
+      ${e.details ? `<p class="cv-details">${cvEsc(e.details)}</p>` : ''}
+    </div>`).join('');
+
+  const expHtml = draft.experience.map(x => `
+    <div class="cv-item">
+      <div class="cv-item-head"><strong>${cvEsc(x.title)}</strong><span class="cv-date">${cvEsc(cvDateRange(x.start, x.end, x.current))}</span></div>
+      <div class="cv-sub">${cvEsc([x.org, x.city].filter(Boolean).join(' \u00b7 '))}</div>
+      ${cvLines(x.achievements).length ? `<ul class="cv-list">${cvLines(x.achievements).map(a => `<li>${cvEsc(a)}</li>`).join('')}</ul>` : ''}
+    </div>`).join('');
+
+  const moreHtml = CV_MORE_SECTIONS.map(meta => {
+    const items = draft.more[meta.key] || [];
+    if (!items.length) return '';
+    return `<section class="cv-sec"><h2>${cvEsc(meta.title)}</h2>${items.map(it => `
+      <div class="cv-item">
+        <div class="cv-item-head"><strong>${cvEsc(it.title)}</strong></div>
+        ${it.details ? `<p class="cv-details">${cvEsc(it.details)}</p>` : ''}
+      </div>`).join('')}</section>`;
+  }).join('');
+
+  const skillsHtml = draft.skills.length ? `<div class="cv-tags">${draft.skills.map(s => `<span class="cv-tag">${cvEsc(s)}</span>`).join('')}</div>` : '';
+  const langs = draft.languages.filter(l => l.name && l.name.trim());
+  const langHtml = langs.length ? `<ul class="cv-plain">${langs.map(l => `<li>${cvEsc(l.name)}${l.level ? ' \u2014 ' + cvEsc(l.level) : ''}</li>`).join('')}</ul>` : '';
+
+  const mainSections = `
+    ${draft.profile ? `<section class="cv-sec"><h2>Profile</h2><p class="cv-details">${cvEsc(draft.profile)}</p></section>` : ''}
+    ${draft.education.length ? `<section class="cv-sec"><h2>Education</h2>${eduHtml}</section>` : ''}
+    ${draft.experience.length ? `<section class="cv-sec"><h2>Experience</h2>${expHtml}</section>` : ''}
+    ${!sidebar && skillsHtml ? `<section class="cv-sec"><h2>Skills</h2>${skillsHtml}</section>` : ''}
+    ${!sidebar && langHtml ? `<section class="cv-sec"><h2>Languages</h2>${langHtml}</section>` : ''}
+    ${moreHtml}`;
+
+  const sidebarHtml = sidebar ? `
+    <aside class="cv-side">
+      <div class="cv-side-block"><h3>Contact</h3><ul class="cv-plain">${contactBits.map(c => `<li>${cvEsc(c)}</li>`).join('')}</ul></div>
+      ${skillsHtml ? `<div class="cv-side-block"><h3>Skills</h3>${skillsHtml}</div>` : ''}
+      ${langHtml ? `<div class="cv-side-block"><h3>Languages</h3>${langHtml}</div>` : ''}
+    </aside>` : '';
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${cvEsc(name)} \u2014 CV</title>
+<style>
+  @page { margin: 16mm; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.5 Georgia, 'Times New Roman', serif; color:#1a1a1a; background:#fff; }
+  .cv-page { max-width: 800px; margin: 0 auto; padding: 40px 36px; }
+  h1 { font-size: 30px; margin: 0 0 4px; color:${accent}; }
+  .cv-headline { color:#444; margin:0 0 10px; font-size:15px; }
+  .cv-contact { color:#555; font-size:13px; margin:0 0 8px; }
+  h2 { font-size: 14px; letter-spacing: .04em; margin: 22px 0 10px; padding-bottom:4px; border-bottom: 2px solid ${accent}; color:${accent}; text-transform:${caps ? 'uppercase' : 'none'}; }
+  .cv-sec:first-of-type { margin-top: 0; }
+  .cv-item { margin-bottom: 14px; }
+  .cv-item-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+  .cv-item-head strong { font-size:15px; }
+  .cv-date { color:#666; font-size:12.5px; white-space:nowrap; }
+  .cv-sub { color:#555; font-size:13px; margin-top:2px; }
+  .cv-details { margin: 4px 0 0; font-size: 13.5px; white-space:pre-line; }
+  .cv-list { margin:6px 0 0; padding-left:18px; font-size:13.5px; }
+  .cv-list li { margin-bottom:2px; }
+  .cv-tags { display:flex; flex-wrap:wrap; gap:6px; }
+  .cv-tag { background:${accent}1a; color:${accent}; border-radius:20px; padding:3px 10px; font-size:12.5px; }
+  .cv-plain { margin:0; padding-left:16px; font-size:13px; }
+  .cv-plain li { margin-bottom:3px; }
+  ${sidebar ? `
+  .cv-wrap { display:flex; gap:28px; }
+  .cv-side { width: 220px; flex: none; background:#f6f7fb; padding: 20px 16px; border-radius: 10px; }
+  .cv-side h3 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:${accent}; margin: 0 0 8px; }
+  .cv-side-block { margin-bottom: 18px; }
+  .cv-main { flex: 1; min-width:0; }
+  .cv-header-band { background:${accent}; color:#fff; padding: 26px 36px; margin: -40px -36px 22px; }
+  .cv-header-band h1 { color:#fff; }
+  .cv-header-band .cv-headline { color: rgba(255,255,255,.85); }
+  ` : ''}
+  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style></head>
+<body>
+  <div class="cv-page">
+    ${sidebar ? `
+    <div class="cv-header-band"><h1>${cvEsc(name)}</h1>${p.headline ? `<p class="cv-headline">${cvEsc(p.headline)}</p>` : ''}</div>
+    <div class="cv-wrap">${sidebarHtml}<div class="cv-main">${mainSections}</div></div>` : `
+    <h1>${cvEsc(name)}</h1>
+    ${p.headline ? `<p class="cv-headline">${cvEsc(p.headline)}</p>` : ''}
+    <p class="cv-contact">${contactBits.map(cvEsc).join(' \u00b7 ')}</p>
+    ${mainSections}`}
+  </div>
+</body></html>`;
+}
+
+function schCvPage() {
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]);
+  const draft = cvLoadDraft();
+  let step = 0;
+  let mode = 'edit';
+  const box = h('div');
+  const STEP_RENDERERS = [cvStepPersonal, cvStepProfile, cvStepEducation, cvStepExperience, cvStepSkills, cvStepMore, cvStepDesign];
+
+  function paintEdit() {
+    const stepper = h('div', { class: 'chips', style: 'margin-bottom:16px' }, CV_STEPS.map((s, i) =>
+      h('button', { class: 'chip-btn', type: 'button', text: (i + 1) + '. ' + s, 'aria-pressed': String(i === step), onclick: () => { step = i; paintEdit(); } })));
+    const body = h('div');
+    STEP_RENDERERS[step](draft, body);
+    const back = step > 0 ? h('button', { class: 'btn quiet', type: 'button', text: 'Back', onclick: () => { step--; paintEdit(); } }) : null;
+    const next = step < CV_STEPS.length - 1 ? h('button', { class: 'btn', type: 'button', text: 'Next', onclick: () => { step++; paintEdit(); } }) : null;
+    const previewBtn = h('button', { class: 'btn', type: 'button', text: 'Preview and download \u203a', onclick: () => { mode = 'preview'; paint(); } });
+    box.replaceChildren(
+      section(CV_STEPS[step], null, null, stepper, body),
+      h('div', { class: 'actions' }, next, back),
+      h('div', { style: 'margin-top:12px' }, previewBtn));
+  }
+
+  function paintPreview() {
+    const html = cvGenerateHtml(draft);
+    const frame = h('iframe', { style: 'width:100%;height:70vh;border:1px solid var(--line);border-radius:14px;background:#fff', title: 'CV preview' });
+    frame.srcdoc = html;
+    const dlBtn = h('button', { class: 'btn', type: 'button', text: 'Download CV (.html)' });
+    dlBtn.addEventListener('click', () => {
+      const blob = new Blob([html], { type: 'text/html' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      const slug = draft.personal.fullName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      a.download = (slug || 'cv') + '-cv.html';
+      document.body.append(a); a.click(); a.remove();
+    });
+    const openBtn = h('button', { class: 'btn quiet', type: 'button', text: 'Open full page to print' });
+    openBtn.addEventListener('click', () => {
+      const w = window.open('', '_blank');
+      if (w) { w.document.open(); w.document.write(html); w.document.close(); }
+    });
+    const back = h('button', { class: 'btn quiet', type: 'button', text: 'Back to editing', onclick: () => { mode = 'edit'; paint(); } });
+    box.replaceChildren(section('Preview', null, null,
+      h('p', { class: 'hint-line', text: 'This is how your CV will look. Download it as a file, or open it full-page to print or save as a PDF from your browser.' }),
+      frame,
+      h('div', { class: 'actions' }, dlBtn, openBtn, back)));
+  }
+
+  function paint() { if (mode === 'preview') paintPreview(); else paintEdit(); }
+  paint();
+  return { title: 'CV Maker', nodes: [crumb, box] };
+}
+
 /* ---------- E7: Scholarship Center -- filtered search ----------------------
    Nationality / destination / level / funding-type filters over ScholarshipsAds
    (scholarshipsads.com), returning a plain list of scholarship cards.
@@ -7495,7 +7909,7 @@ function schSearchUrl(f, page, combo) {
     path = 'search/nationality/' + schSlug(f.nat) + '/country/' + (dest ? 'scholarships-in-' + (SCH_DEST_SLUGS[f.dest] || schSlug(f.dest)) : '') +
       '/degree' + (lvl ? '/' + lvl : '') + (fully ? (lvl ? '' : '/') + '/funding/fully-funded' : '');
   } else {
-    const slug = (fully ? 'fully-funded-' : '') + (lvl ? f.level + '-' : '') + 'scholarships' + (dest ? '-in-' + schSlug(f.dest) : '');
+    const slug = (fully ? 'fully-funded-' : '') + (lvl ? f.level + '-' : '') + 'scholarships' + (dest ? '-in-' + (SCH_DEST_SLUGS[f.dest] || schSlug(f.dest)) : '');
     path = slug === 'scholarships' ? 'latest-scholarships' : slug;
   }
   return SCH_SRC + path + (page > 1 ? '?page=' + page : '');
@@ -7506,7 +7920,10 @@ function schMatches(c, f, usedDest) {
   if (lvl && !lvl.test(c.levels || '')) return false;
   const fund = { fully: /fully/i, partial: /partial/i, tuition: /tuition/i }[f.funding];
   if (fund && !fund.test(c.funding || '')) return false;
-  if (!usedDest && f.dest && !(SCH_DEST_RE[f.dest] || new RegExp(f.dest, 'i')).test(c.country || '')) return false;
+  // Always double-check the country client-side, even when the combo says the URL already
+  // filtered by destination -- a mismatched slug can make the site quietly serve an
+  // unfiltered fallback page instead of erroring, and usedDest alone can't catch that.
+  if (f.dest && !(SCH_DEST_RE[f.dest] || new RegExp(f.dest, 'i')).test(c.country || '')) return false;
   return schSubjectOk(c, f);
 }
 
@@ -7666,19 +8083,9 @@ async function schOfficialUrl(c) {
 
 function schResultCard(c, isSaved, onSave) {
   const bullets = [['\uD83D\uDCB0', c.funding], ['\uD83C\uDFDB\uFE0F', c.provider], ['\uD83C\uDF93', c.levels], ['\uD83D\uDCD6', c.subjects], ['\uD83C\uDF10', c.audience], ['\uD83D\uDCCD', c.country]].filter(b => b[1]);
-  const more = h('a', { class: 'btn', href: c.url, target: '_blank', rel: 'noopener noreferrer', style: 'display:block;text-align:center;text-decoration:none', text: 'Read More \u2192' });
-  more.addEventListener('click', async e => {
-    if (more.dataset.busy) { e.preventDefault(); return; }
-    const known = schPeekOfficial(c.url);
-    if (known) { more.href = known; return; }                // the link's normal navigation opens it
-    e.preventDefault();
-    const w = window.open('', '_blank');                      // opened now so the browser allows it, pointed once found
-    more.dataset.busy = '1'; more.textContent = 'Finding the official page\u2026';
-    const u = await schOfficialUrl(c);
-    delete more.dataset.busy; more.textContent = 'Read More \u2192';
-    if (u) more.href = u;
-    if (w) w.location.href = u || c.url; else window.open(u || c.url, '_blank', 'noopener');
-  });
+  // Opens the in-app detail page (read + summarised, ads and promos left out) instead of
+  // launching an external tab to the ScholarshipsAds page.
+  const more = h('a', { class: 'btn', href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url), style: 'display:block;text-align:center;text-decoration:none', text: 'Read More \u2192' });
   return h('article', { class: 'proj', style: 'padding:14px;display:grid;gap:10px' },
     c.img ? h('img', { src: c.img, alt: c.name, loading: 'lazy', referrerpolicy: 'no-referrer',
       style: 'width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:var(--paper-hi)', onerror: e => e.currentTarget.remove() }) : null,
@@ -7686,7 +8093,11 @@ function schResultCard(c, isSaved, onSave) {
     h('ul', { style: 'list-style:none;margin:0;padding:0;display:grid;gap:6px' },
       bullets.map(([ic, t]) => h('li', { style: 'display:flex;gap:8px;font-size:14px' }, h('span', { 'aria-hidden': 'true', text: ic }), h('span', { text: t })))),
     c.deadline ? h('small', { text: 'Deadline: ' + fmtDate(parseLocalDate(c.deadline)) + (c.deadline < schToday() ? ' (closed)' : '') }) : null,
-    c.fit ? h('small', { style: 'font-weight:600;color:' + (c.fit.score >= 75 ? '#3ecf8e' : c.fit.score >= 45 ? 'var(--marker)' : '#ef6b6b'), text: c.fit.label + ' \u00b7 ' + c.fit.parts.join(' \u00b7 ') }) : null,
+    c.fit ? h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;align-items:center' },
+      h('span', { style: 'font:700 13px var(--sans);padding:4px 11px;border-radius:999px;white-space:nowrap;' +
+        'background:' + (c.fit.score >= 75 ? 'rgba(62,207,142,.16)' : c.fit.score >= 45 ? 'rgba(243,201,85,.2)' : 'rgba(239,107,107,.16)') +
+        ';color:' + (c.fit.score >= 75 ? '#3ecf8e' : c.fit.score >= 45 ? 'var(--marker)' : '#ef6b6b'), text: c.fit.label }),
+      c.fit.parts.map(p => h('span', { style: 'font:500 12px var(--sans);padding:4px 10px;border-radius:999px;white-space:nowrap;border:1px solid var(--line);color:var(--dim)', text: p }))) : null,
     c.desc ? h('p', { style: 'margin:0;font-size:14px;color:var(--dim);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden', text: c.desc }) : null,
     more,
     h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;align-items:center' },
@@ -7743,7 +8154,7 @@ async function schSearchPage() {
   function drawChips(a) {
     const items = [['funding', SCH_FUNDING_LABEL[a.funding]], ['level', SCH_LEVEL_LABEL[a.level]], ['dest', a.dest], ['discipline', a.discipline], ['subject', a.subject], ['nat', a.nat && 'For ' + a.nat + ' students']].filter(i => i[1]);
     chipsBox.hidden = !items.length;
-    chipsBox.replaceChildren(h('small', { text: 'FILTERED BY:' }), items.map(([k, t]) => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter ' + t, text: t + ' \u00d7',
+    chipsBox.replaceChildren(h('small', { text: 'FILTERED BY:' }), ...items.map(([k, t]) => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter ' + t, text: t + ' \u00d7',
       style: 'cursor:pointer;border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--chalk)',
       onclick: () => { f[k] = ''; ctrl[k].value = ''; run(false); } })));
   }
@@ -7775,12 +8186,13 @@ async function schSearchPage() {
 
   function paint() {
     countEl.textContent = st.cards.length + ' scholarship' + (st.cards.length === 1 ? '' : 's');
-    out.replaceChildren(
+    out.replaceChildren(...[
       st.combo > 0 ? h('p', { class: 'hint-line', text: 'ScholarshipsAds has no page for this exact combination, so these come from a broader list, filtered to match.' }) : null,
       f.nat && !SCH_COMBOS[st.combo][3] ? h('p', { class: 'hint-line', text: 'Your country couldn\u2019t be applied to these results, so check each scholarship\u2019s eligibility for ' + f.nat + ' students.' }) : null,
       sort === 'deadline' ? h('p', { class: 'hint-line', text: 'Deadlines are read from each scholarship\u2019s page by Gemini \u2014 undated ones go after the dated ones, closed ones last. Confirm on the page.' }) : null,
       h('div', { class: 'list', style: 'display:grid;gap:14px;margin-top:12px' }, sorted().map(c => schResultCard(c, saved.has(c.url), saveResult))),
-      h('p', { class: 'hint-line', text: 'Always confirm funding, eligibility and deadlines on the official page before applying.' }));
+      h('p', { class: 'hint-line', text: 'Always confirm funding, eligibility and deadlines on the official page before applying.' })
+    ].filter(Boolean));
   }
   async function run(more) {
     err.hidden = true; goBtn.disabled = clearBtn.disabled = moreBtn.disabled = true;
@@ -7855,6 +8267,21 @@ async function schReadDetail(url, force) {
   return d;
 }
 
+// E: minimum test/GPA requirements block for the detail page. Anything the
+// page didn't state (schCleanMin already nulled it) shows as N/A.
+function schMinBlock(m) {
+  m = m || {};
+  const rows = [
+    ['IELTS', m.ielts != null ? m.ielts + ' overall' : ''],
+    ['TOEFL', m.toefl != null ? m.toefl + ' (iBT)' : ''],
+    ['SAT', m.sat != null ? String(m.sat) : ''],
+    ['GRE', m.gre != null ? String(m.gre) : ''],
+    ['Minimum GPA', m.gpaPct != null ? m.gpaPct + '%' : '']
+  ];
+  return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px' },
+    rows.map(([k, v]) => h('div', {}, h('small', { text: k }), h('strong', { style: 'display:block;font-weight:600', text: v || 'N/A' }))));
+}
+
 function schRateBlock(r) {
   if (!r || r.basis === 'unknown' || r.low == null) return h('p', { class: 'none', text: (r && r.note) || 'There isn\u2019t enough information to estimate the chance of success for this scholarship.' });
   const stated = r.basis === 'stated', mid = (r.low + r.high) / 2;
@@ -7909,6 +8336,8 @@ async function schDetailPage(ref) {
         h('strong', { text: x.name }), h('span', { class: 'chip', style: 'margin-left:8px', text: x.required ? 'Required' : 'Optional' }),
         x.requirement ? h('small', { style: 'display:block', text: x.requirement }) : null)))
         : h('p', { class: 'none', text: 'The page doesn\u2019t list any required exams.' }),
+      h('h4', { text: 'Minimum requirements', style: 'margin:14px 0 6px;font-size:14px' }),
+      schMinBlock(d.min),
       h('h4', { text: 'Eligibility', style: 'margin:14px 0 6px;font-size:14px' }),
       (d.eligibility || []).length ? h('ul', { style: 'margin:0;padding-left:20px;display:grid;gap:6px' }, d.eligibility.map(t => h('li', { text: t })))
         : h('p', { class: 'none', text: 'The page doesn\u2019t state eligibility conditions.' }),
