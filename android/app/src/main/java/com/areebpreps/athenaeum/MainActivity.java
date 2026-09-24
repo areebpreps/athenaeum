@@ -181,6 +181,8 @@ public class MainActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
 
         webView.addJavascriptInterface(new AndroidDownloaderBridge(this), "AndroidDownloader");
+        // F4: lets the planner create alarms in the phone's Clock app
+        webView.addJavascriptInterface(new AlarmBridge(this), "AndroidAlarm");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
