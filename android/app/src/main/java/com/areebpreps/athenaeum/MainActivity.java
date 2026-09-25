@@ -100,13 +100,29 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    // WebView's native canGoBack()/goBack() is unreliable here: index.html
+    // is loaded via loadDataWithBaseURL (not a real navigated URL), and
+    // Android WebView does not reliably create a separate back-stack entry
+    // per in-page location.hash change on such a page. In practice that
+    // collapsed the whole in-app navigation stack to a single step, so one
+    // hardware-back press could jump straight from any depth back to the
+    // very first load (the home screen) instead of one level up.
+    //
+    // Fix: hand the key press to the page's own router instead. index.html
+    // exposes window.handleAndroidBack(), which knows the real hub/page
+    // hierarchy (it's the same logic the in-app back arrow uses) and closes
+    // any open dialog/sheet/viewer first. It returns "true" if it handled
+    // the press, "false" only when we're already at the true root with
+    // nothing open open, in which case we back out of the app.
     @Override
     public void onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
-        }
+        webView.evaluateJavascript(
+                "(function(){ return window.handleAndroidBack ? window.handleAndroidBack() : false; })();",
+                result -> {
+                    if (!"true".equals(result)) {
+                        moveTaskToBack(true);
+                    }
+                });
     }
 
     // ---------- camera/mic runtime permissions (for LiveKit) ----------
