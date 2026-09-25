@@ -1177,7 +1177,7 @@ function parentHash(ids) { return ids.length <= 1 ? '#subjects' : '#subjects/' +
 // #workspace/planner or #workspace/wiki/<article>. Back always goes up one segment.
 function workspaceParentHash(ids) {
   if (ids[0] === 'people') return '#workspace/community';
-  if (ids[0] === 'live' || ids[0] === 'livesettings') return '#workspace/classes';
+  if (ids[0] === 'live' || ids[0] === 'livesettings') return '#workspace/communityhub';
   if (ids.length <= 1 && COMMUNITY_HUB_KEYS.includes(ids[0])) return '#workspace/communityhub';
   return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0];
 }
@@ -14120,6 +14120,9 @@ async function liveSessionPage(id) {
 
   const displayName = (myProfile && myProfile.display_name) || usernameFrom(currentUser);
   const video = h('div', { class: 'live-video', style: 'display:grid;gap:10px' });
+  const selfPreview = h('div', { class: 'live-self-preview', hidden: true,
+    style: 'width:140px;aspect-ratio:4/3;border-radius:10px;overflow:hidden;background:#000;position:relative' });
+  selfPreview.append(h('span', { text: 'You (preview)', style: 'position:absolute;left:6px;bottom:4px;font-size:11px;color:#fff;background:rgba(0,0,0,.45);padding:1px 6px;border-radius:4px;pointer-events:none' }));
   const status = h('div', { class: 'status', text: sessionRow.status === 'live' ? 'Live' : sessionRow.status === 'ended' ? 'Ended' : 'Not started yet' });
   const errBox = h('div', { class: 'msg err', hidden: true });
   const showErr = m => { errBox.textContent = m; errBox.hidden = false; };
@@ -14138,6 +14141,15 @@ async function liveSessionPage(id) {
       if (track.kind === 'video' || track.kind === 'audio') video.append(track.attach());
     });
     room.on(LivekitClient.RoomEvent.Disconnected, () => { status.textContent = 'Disconnected'; });
+    if (canPublish) {
+      room.localParticipant.on(LivekitClient.ParticipantEvent.LocalTrackPublished, (pub) => {
+        if (!pub.track || pub.track.kind !== 'video') return;
+        const el = pub.track.attach();
+        el.muted = true; el.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
+        selfPreview.hidden = false;
+        selfPreview.append(el);
+      });
+    }
     await room.connect(url, token);
     if (canPublish) await room.localParticipant.enableCameraAndMicrophone();
   }
@@ -14158,7 +14170,7 @@ async function liveSessionPage(id) {
     status.textContent = 'Ended'; endBtn.hidden = true;
   } });
 
-  const nodes = [crumb, h('h3', { text: sessionRow.title }), status, errBox, video];
+  const nodes = [crumb, h('h3', { text: sessionRow.title }), status, errBox, video, selfPreview];
   if (isTeacher) {
     nodes.push(h('p', { class: 'hint-line', text: 'This is the H1 spike: camera + mic only, no chat or recording yet. Going live asks the WebView for camera/mic access \u2014 that\u2019s the exact thing this phase is testing.' }));
     nodes.push(h('div', { class: 'actions' }, sessionRow.status === 'ended' ? null : startBtn, endBtn));
