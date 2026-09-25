@@ -622,6 +622,21 @@
   .fc-text { font-family: var(--serif); font-size: 20px; margin: 0; overflow-wrap: anywhere; }
   .fc-grades { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .fc-grades .btn:disabled { opacity: .4; }
+
+  /* Live reactions (H3): heart-burst animation, ephemeral (not stored) */
+  .live-hearts { position: relative; height: 0; overflow: visible; }
+  .heart-fly { position: absolute; bottom: 0; font-size: 22px; line-height: 1; color: #e0527a; pointer-events: none; will-change: transform, opacity; }
+  @media (prefers-reduced-motion: no-preference) {
+    .heart-fly { animation: heart-rise 1.5s ease-out forwards; }
+    @keyframes heart-rise {
+      0% { transform: translateY(0) translateX(0) scale(.6); opacity: 0; }
+      12% { opacity: 1; }
+      100% { transform: translateY(-130px) translateX(var(--dx, 0px)) scale(1.15); opacity: 0; }
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .heart-fly { animation: none; opacity: 0; }
+  }
 </style>
 </head>
 
@@ -1193,19 +1208,24 @@ let renderToken = 0;
 let lastHash = null;
 let backTarget = null;
 
-// Called from MainActivity.onBackPressed() via evaluateJavascript() for the
-// Android hardware/gesture back button. WebView's native canGoBack()/goBack()
-// is unreliable for pure hash-fragment navigation on a page loaded via
-// loadDataWithBaseURL, so the native side no longer uses it — this function
-// is the single source of truth for "what does back do right now."
+// Android hardware back button: WebView's own goBack()/canGoBack() is unreliable
+// for pages that only ever change location.hash (no real navigation happens, so
+// WebView often collapses the whole session to one history entry \u2014 the initial
+// load \u2014 meaning goBack() jumps straight to that instead of one hash-level up).
+// So instead of relying on WebView's native back stack, the Android side should
+// call window.handleAndroidBack() and only fall back to its own handling (e.g.
+// finish the activity) when it returns false. Mirrors the same logic #back-btn
+// already uses, plus closing whatever's currently open (dialog/sheet/viewer)
+// first, same as Android's back button should always do.
 window.handleAndroidBack = function () {
   if (!$('#dialog').hidden) { closeDialog(); return true; }
   if (!$('#sheet').hidden)  { closeSheet();  return true; }
   if (!$('#viewer').hidden) { closeViewer(); return true; }
   if (backTarget) { location.hash = backTarget; return true; }
   if (location.hash && location.hash !== '#workspace') { location.hash = '#workspace'; return true; }
-  return false; // already home, nothing open — let Android decide (exit app)
+  return false; // already home, nothing open \u2014 let Android decide
 };
+
 // Pages visited, with where each was scrolled to, so Back returns you to the same spot.
 const navStack = [];
 let viewReady = false;
@@ -14002,17 +14022,40 @@ async function schClassesPage() {
 /* =====================================================================
    Phase H1: In-app Live Classes (native broadcast) — SPIKE
    Teachers broadcast from inside the app over WebRTC (LiveKit Cloud);
-   students watch live. No recording yet (H4/H5) — this phase only
-   proves the one open risk: whether the
-   Android WebView wrapper can grant camera/mic to a live broadcast at
+   students watch live. This phase only proves the one open risk: whether
+   the Android WebView wrapper can grant camera/mic to a live broadcast at
    all, given it already failed to even *play back* YouTube video
    (Error 153). Needs schema-update-H1-live-sessions.sql.
 
    H1.5 update: each teacher now brings their own LiveKit Cloud project
-   (and, ready for H3, their own Cloudflare R2 bucket) instead of one
-   shared project. Credentials live in teacher_live_config, readable by
-   nobody but the mint_live_token() Postgres function — no LiveKit secret
-   ever reaches a browser. Needs schema-update-H1.5-teacher-live-config.sql.
+   (and their own Cloudflare R2 bucket) instead of one shared project.
+   Credentials live in teacher_live_config, readable by nobody but the
+   mint_live_token() Postgres function — no LiveKit secret ever reaches a
+   browser. Needs schema-update-H1.5-teacher-live-config.sql.
+
+   H3: reactions — a running like count per session (live_reactions,
+   incremented atomically server-side via bump_live_reaction()) plus an
+   ephemeral heart-burst animation broadcast to every viewer over a
+   realtime channel. The burst itself is never written to the database —
+   only the count is. Needs schema-update-H3-live-reactions.sql.
+
+   H4: egress recording — start_live_egress() is called right after "Go
+   live" flips status to 'live'; stop_live_egress() right after "End
+   broadcast" flips it to 'ended'. Both are Postgres functions (same
+   security-definer, secret-never-leaves-Supabase shape as
+   mint_live_token) that call LiveKit's Egress REST API over pg_net to
+   record the room composite straight into the teacher's own R2 bucket.
+   recording_url is set once the stop call is confirmed. Both calls are
+   best-effort from the client: a teacher with no R2 configured still
+   goes live fine, they just get no recording. Nothing here plays the
+   recording back yet — that's H5. Needs schema-update-H4-live-egress.sql.
+
+   H7: scheduling — teachers can create a live_sessions row ahead of time
+   with a future scheduled_start instead of only "go live now". A scheduled
+   row behaves exactly like an instant one otherwise (status starts at
+   'scheduled', flips to 'live' only when the teacher actually taps Go
+   live on the session page — nothing happens automatically at the
+   scheduled time). Needs schema-update-H7-live-scheduling.sql.
    ===================== */
 
 // Only ever selects the teacher_id column — never the secret columns —
@@ -14027,7 +14070,7 @@ function liveSettingsPage() {
   const fKey    = makeField('LiveKit API key', { placeholder: 'Paste from LiveKit Cloud settings' });
   const fSecret = makeField('LiveKit API secret', { placeholder: 'Paste from LiveKit Cloud settings' });
   fSecret.input.type = 'password'; fSecret.input.autocomplete = 'off';
-  const fR2Account = makeField('R2 account ID (optional \u2014 for recordings, later)', {});
+  const fR2Account = makeField('R2 account ID (optional \u2014 enables recording)', {});
   const fR2Bucket  = makeField('R2 bucket name (optional)', {});
   const fR2KeyId   = makeField('R2 access key ID (optional)', {});
   const fR2Secret  = makeField('R2 secret access key (optional)', {});
@@ -14062,7 +14105,7 @@ function liveSettingsPage() {
     h('a', { class: 'btn quiet small key-link', target: '_blank', rel: 'noopener', href: 'https://cloud.livekit.io/', text: 'Open LiveKit Cloud \u2197' }),
     fUrl.wrap, fKey.wrap, fSecret.wrap,
     h('hr', { class: 'divider' }),
-    h('p', { class: 'hint-line', text: 'Cloudflare R2 isn\u2019t used yet \u2014 recordings are a later phase (H3) \u2014 but saving it now means you won\u2019t need to come back.' }),
+    h('p', { class: 'hint-line', text: 'Fill these in and every session you broadcast is recorded straight to your own R2 bucket. Leave them blank and you can still go live \u2014 you just won\u2019t get a recording.' }),
     fR2Account.wrap, fR2Bucket.wrap, fR2KeyId.wrap, fR2Secret.wrap, fR2Public.wrap,
     msg, h('button', { class: 'btn', type: 'submit', text: 'Save' }));
 
@@ -14082,19 +14125,68 @@ function liveNeedsSetup() {
   ] };
 }
 
-// Card + button in the Live classes page, above the link list.
+// H7: shared date formatter for a scheduled_start timestamp, used in both
+// the list meta line and the session page itself.
+function fmtLiveWhen(iso) {
+  return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// H7: teachers can create a live_sessions row ahead of time with a future
+// scheduled_start instead of only "go live now". The row otherwise behaves
+// exactly like an instant one \u2014 status starts at 'scheduled', H6's list
+// and this session page already handle that status; the only truly new
+// thing is scheduled_start plus a form to set it. Needs
+// schema-update-H7-live-scheduling.sql.
+function openScheduleLiveDialog() {
+  showDialog({
+    title: 'Schedule a live class', submitLabel: 'Schedule',
+    render(form) {
+      const t = makeField('Title', { maxlength: 200, placeholder: 'What\u2019s this class about?' });
+      const at = makeField('Start time'); at.input.type = 'datetime-local';
+      form.append(t.wrap, at.wrap);
+      return () => {
+        const title = t.input.value.trim(), when = new Date(at.input.value);
+        if (title.length < 3) throw new Error('Give the class a title (at least 3 characters).');
+        if (!at.input.value || !(when > new Date())) throw new Error('Choose a start time in the future.');
+        return { title, scheduled_start: when.toISOString() };
+      };
+    },
+    async onSubmit(v) {
+      const ins = await sb.from('live_sessions').insert({ teacher_id: currentUser.id, status: 'scheduled', ...v }).select('id').single();
+      if (ins.error) throw ins.error;
+      go('#workspace/live/' + ins.data.id);
+    }
+  });
+}
+
+/* ---------- H6: Live Classes list integration ----------
+   The list on the Live classes page now shows sessions in every status
+   (scheduled/live/ended \u2014 H5's ended-with-a-recording included, where the
+   old query filtered ended ones out entirely). Live sessions sort first,
+   then scheduled (soonest scheduled_start first, H7), then ended (newest
+   first). The list also stays current without a manual reload: a realtime
+   subscription on live_sessions repaints it the moment any session's row
+   changes (someone goes live, ends, etc.), with a 20s poll as a fallback,
+   same pattern as the group chat (G9). ===================== */
 function liveInAppSection(teacherActive) {
   const box = h('div');
+  let ch = null, timer = null;
+  const STATUS_RANK = { live: 0, scheduled: 1, ended: 2 };
   async function paint() {
-    const res = await sb.from('live_sessions').select('*').neq('status', 'ended').order('created_at', { ascending: false }).limit(20);
+    const res = await sb.from('live_sessions').select('*').order('created_at', { ascending: false }).limit(30);
     if (res.error) {
       box.replaceChildren(section('In-app live (beta)', null, null,
         h('div', { class: 'status bad' }, h('strong', { text: 'Not set up yet' }),
           'Run schema-update-H1-live-sessions.sql and schema-update-H1.5-teacher-live-config.sql in Supabase, then reload. (' + res.error.message + ')')));
       return;
     }
-    const rows = res.data || [];
-    let goLive = null;
+    const rows = (res.data || []).slice().sort((a, b) => {
+      const rankDiff = (STATUS_RANK[a.status] ?? 1) - (STATUS_RANK[b.status] ?? 1);
+      if (rankDiff) return rankDiff;
+      if (a.status === 'scheduled' && a.scheduled_start && b.scheduled_start) return new Date(a.scheduled_start) - new Date(b.scheduled_start);
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+    let goLive = null, scheduleBtn = null;
     if (teacherActive) {
       const configured = await teacherLiveConfigured(currentUser.id);
       goLive = configured
@@ -14105,16 +14197,30 @@ function liveInAppSection(teacherActive) {
             go('#workspace/live/' + ins.data.id);
           } })
         : h('a', { class: 'btn small', href: '#workspace/livesettings', text: 'Set up your live broadcasting' });
+      scheduleBtn = configured
+        ? h('button', { class: 'btn quiet small', type: 'button', text: 'Schedule a class', onclick: openScheduleLiveDialog })
+        : null;
     }
     box.replaceChildren(section('In-app live (beta)', null, null,
-      h('div', { class: 'actions', style: 'margin-bottom:8px' }, goLive,
+      h('div', { class: 'actions', style: 'margin-bottom:8px' }, goLive, scheduleBtn,
         teacherActive ? h('a', { class: 'btn quiet small', href: '#workspace/livesettings', text: 'Settings' }) : null),
       rows.length ? h('div', { class: 'list' }, rows.map(r => linkRow({
         href: '#workspace/live/' + r.id, title: r.title,
-        meta: (r.status === 'live' ? 'Live now' : 'Scheduled') + (r.teacher_id === (currentUser && currentUser.id) ? ' \u00b7 yours' : '')
+        meta: (r.status === 'live' ? 'Live now'
+            : r.status === 'ended' ? (r.recording_url ? 'Ended \u00b7 recording available' : 'Ended')
+            : (r.scheduled_start ? 'Scheduled \u00b7 ' + fmtLiveWhen(r.scheduled_start) : 'Scheduled'))
+          + (r.teacher_id === (currentUser && currentUser.id) ? ' \u00b7 yours' : '')
       }))) : h('p', { class: 'none', text: 'No in-app broadcasts right now.' })));
   }
-  paint();
+  const stop = () => { clearInterval(timer); if (ch) { try { sb.removeChannel(ch); } catch (e) {} ch = null; } };
+  paint().then(() => {
+    try {
+      ch = sb.channel('livesessions-list')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'live_sessions' }, () => { if (box.isConnected) paint(); })
+        .subscribe();
+    } catch (e) { ch = null; }
+    timer = setInterval(() => { if (!box.isConnected) return stop(); paint(); }, 20000);
+  });
   return box;
 }
 
@@ -14132,15 +14238,44 @@ async function liveSessionPage(id) {
   const isTeacher = currentUser && currentUser.id === sessionRow.teacher_id;
   if (isTeacher && !(await teacherLiveConfigured(currentUser.id))) return liveNeedsSetup();
 
+  // H9: has the teacher muted or removed *me* in this session? 'removed' blocks
+  // watching outright; 'muted' still allows watching, just not commenting (enforced
+  // in liveComments()). schema-update-H9-live-moderation.sql.
+  let myModStatus = null;
+  if (!isTeacher) {
+    const modRes = await sb.from('live_moderation').select('status').eq('session_id', sessionRow.id).eq('user_id', currentUser.id).maybeSingle();
+    if (!modRes.error && modRes.data) myModStatus = modRes.data.status;
+  }
+
   const displayName = (myProfile && myProfile.display_name) || usernameFrom(currentUser);
   const video = h('div', { class: 'live-video', style: 'display:grid;gap:10px' });
   const selfPreview = h('div', { class: 'live-self-preview', hidden: true,
     style: 'width:140px;aspect-ratio:4/3;border-radius:10px;overflow:hidden;background:#000;position:relative' });
   selfPreview.append(h('span', { text: 'You (preview)', style: 'position:absolute;left:6px;bottom:4px;font-size:11px;color:#fff;background:rgba(0,0,0,.45);padding:1px 6px;border-radius:4px;pointer-events:none' }));
-  const status = h('div', { class: 'status', text: sessionRow.status === 'live' ? 'Live' : sessionRow.status === 'ended' ? 'Ended' : 'Not started yet' });
+  const status = h('div', { class: 'status', text: sessionRow.status === 'live' ? 'Live' : sessionRow.status === 'ended' ? 'Ended'
+    : (sessionRow.scheduled_start ? 'Scheduled for ' + fmtLiveWhen(sessionRow.scheduled_start) : 'Not started yet') });
   const errBox = h('div', { class: 'msg err', hidden: true });
   const showErr = m => { errBox.textContent = m; errBox.hidden = false; };
   let room = null;
+  let joinBtnRef = null;
+
+  // H9: if the teacher removes me while I'm already watching, disconnect right
+  // away instead of waiting for a reload. Same ephemeral-broadcast pattern as
+  // the H3 heart-burst \u2014 no DB row, just an instant signal to this one tab.
+  if (!isTeacher) {
+    try {
+      sb.channel('livemod-' + sessionRow.id)
+        .on('broadcast', { event: 'kick' }, p => {
+          if (!p.payload || p.payload.user_id !== currentUser.id) return;
+          myModStatus = 'removed';
+          if (room) { try { room.disconnect(); } catch (e) {} room = null; }
+          if (joinBtnRef) joinBtnRef.hidden = true;
+          status.textContent = 'Removed';
+          showErr('The teacher removed you from this class.');
+        })
+        .subscribe();
+    } catch (e) {}
+  }
 
   async function connect(canPublish) {
     const mint = await sb.rpc('mint_live_token', { p_session_id: sessionRow.id, p_name: displayName });
@@ -14175,32 +14310,120 @@ async function liveSessionPage(id) {
       const upd = await sb.from('live_sessions').update({ status: 'live', started_at: new Date().toISOString() }).eq('id', sessionRow.id);
       if (upd.error) throw upd.error;
       status.textContent = 'Live'; startBtn.hidden = true; endBtn.hidden = false;
+      // H4: best-effort — a teacher who hasn't filled in R2 yet can still
+      // go live, start_live_egress just returns { skipped: true }.
+      try { await sb.rpc('start_live_egress', { p_session_id: sessionRow.id }); } catch (e) {}
     } catch (e) { showErr(e.message || 'Could not go live \u2014 check camera/mic permission and your LiveKit keys.'); startBtn.disabled = false; }
   } });
   const endBtn = h('button', { class: 'btn danger', type: 'button', text: 'End broadcast', hidden: true, onclick: async () => {
     endBtn.disabled = true;
     if (room) room.disconnect();
     await sb.from('live_sessions').update({ status: 'ended', ended_at: new Date().toISOString() }).eq('id', sessionRow.id);
+    // H4: stop the recording, if one was started; sets recording_url.
+    try { await sb.rpc('stop_live_egress', { p_session_id: sessionRow.id }); } catch (e) {}
     status.textContent = 'Ended'; endBtn.hidden = true;
   } });
 
-  const nodes = [crumb, h('h3', { text: sessionRow.title }), status, errBox, video, selfPreview];
+  // H5: once a session has ended and its egress recording finished (H4 sets
+  // recording_url), swap the live video/join UI for a plain <video> player
+  // pointed straight at the teacher's own R2 public URL. No LiveKit
+  // connection is made for a recording \u2014 it's just a static file.
+  const hasRecording = sessionRow.status === 'ended' && !!sessionRow.recording_url;
+  const recordingPlayer = hasRecording
+    ? h('video', { class: 'live-recording', src: sessionRow.recording_url, controls: true, playsinline: true,
+        style: 'width:100%;max-height:60vh;border-radius:10px;background:#000;display:block' })
+    : null;
+
+  const nodes = [crumb, h('h3', { text: sessionRow.title }), status, errBox];
+  nodes.push(hasRecording ? recordingPlayer : video, hasRecording ? null : selfPreview);
   if (isTeacher) {
-    nodes.push(h('p', { class: 'hint-line', text: 'Camera, mic and live comments. Recording isn\u2019t saved yet (that\u2019s H4).' }));
+    if (sessionRow.status !== 'ended') {
+      nodes.push(h('p', { class: 'hint-line', text: (sessionRow.status === 'scheduled' && sessionRow.scheduled_start
+        ? 'Scheduled for ' + fmtLiveWhen(sessionRow.scheduled_start) + '. Tap Go live whenever you\u2019re ready to start \u2014 nothing happens automatically at the scheduled time. '
+        : '') + 'Camera, mic and live comments. If you\u2019ve set up R2 in Live broadcast settings, this session is recorded there automatically and a player appears here once it ends.' }));
+    } else if (!hasRecording) {
+      nodes.push(h('p', { class: 'hint-line', text: 'This broadcast has ended. No recording was saved \u2014 R2 wasn\u2019t configured, or the recording failed.' }));
+    }
     nodes.push(h('div', { class: 'actions' }, sessionRow.status === 'ended' ? null : startBtn, endBtn));
+  } else if (myModStatus === 'removed') {
+    // H9: the teacher removed this viewer from the session \u2014 no Watch button,
+    // whatever the session's live/ended status is.
+    nodes.push(h('p', { class: 'hint-line', text: 'The teacher removed you from this class.' }));
   } else {
     if (sessionRow.status !== 'live') {
-      nodes.push(h('p', { class: 'hint-line', text: sessionRow.status === 'ended' ? 'This broadcast has ended.' : 'Waiting for the teacher to go live \u2014 reopen this page once they start.' }));
+      if (sessionRow.status === 'ended') {
+        nodes.push(h('p', { class: 'hint-line', text: hasRecording ? 'This broadcast has ended \u2014 watch the recording above.' : 'This broadcast has ended. No recording is available.' }));
+      } else {
+        nodes.push(h('p', { class: 'hint-line', text: (sessionRow.scheduled_start
+          ? 'Scheduled for ' + fmtLiveWhen(sessionRow.scheduled_start) + '. '
+          : '') + 'Waiting for the teacher to go live \u2014 reopen this page once they start.' }));
+      }
     } else {
       const joinBtn = h('button', { class: 'btn', type: 'button', text: 'Watch', onclick: async () => {
         joinBtn.disabled = true;
         try { await connect(false); joinBtn.hidden = true; } catch (e) { showErr(e.message || 'Could not connect.'); joinBtn.disabled = false; }
       } });
+      joinBtnRef = joinBtn;
       nodes.push(h('div', { class: 'actions' }, joinBtn));
     }
   }
+  // H9: report a live in progress \u2014 reuses the existing G11 reports queue,
+  // reportBtn() already hides itself for the session's own teacher.
+  const liveReportBtn = reportBtn('live_session', sessionRow.id, sessionRow.teacher_id, sessionRow.title);
+  if (liveReportBtn) nodes.push(h('div', { style: 'margin:4px 0' }, liveReportBtn));
+  nodes.push(liveReactions(sessionRow));
   nodes.push(liveComments(sessionRow));
   return { title: sessionRow.title, nodes };
+}
+
+/* ---------- H3: live reactions ----------
+   A running like count per session (live_reactions.count), bumped
+   atomically by the bump_live_reaction() Postgres function so concurrent
+   taps never race each other. The heart-burst animation is separate from
+   that count: every tap also fires a realtime *broadcast* event (not a
+   database row) so everyone watching sees a heart fly up at the moment
+   someone taps, without polling or storing one row per tap. Needs
+   schema-update-H3-live-reactions.sql. ===================== */
+function liveReactions(sessionRow) {
+  const countEl = h('strong', { text: '0' });
+  const flyBox = h('div', { class: 'live-hearts', 'aria-hidden': 'true' });
+  let ch = null, busy = false;
+
+  function spawnHeart() {
+    const dx = Math.round(Math.random() * 48 - 24) + 'px';
+    const left = (35 + Math.random() * 30) + '%';
+    const el = h('span', { class: 'heart-fly', style: 'left:' + left + ';--dx:' + dx, text: '\u2665' });
+    flyBox.append(el);
+    setTimeout(() => el.remove(), 1700);
+  }
+
+  const heartBtn = h('button', { class: 'btn quiet small', type: 'button', text: '\u2665 Like', onclick: async () => {
+    if (busy) return; busy = true;
+    spawnHeart();
+    try { if (ch) ch.send({ type: 'broadcast', event: 'heart', payload: {} }); } catch (e) {}
+    try {
+      const rpc = await sb.rpc('bump_live_reaction', { p_session_id: sessionRow.id });
+      if (!rpc.error && (typeof rpc.data === 'number' || typeof rpc.data === 'string')) countEl.textContent = String(rpc.data);
+    } catch (e) {}
+    busy = false;
+  } });
+
+  async function loadCount() {
+    const r = await sb.from('live_reactions').select('count').eq('session_id', sessionRow.id).maybeSingle();
+    if (!r.error) countEl.textContent = String((r.data && r.data.count) || 0);
+  }
+  loadCount();
+  try {
+    ch = sb.channel('livehearts-' + sessionRow.id)
+      .on('broadcast', { event: 'heart' }, () => spawnHeart())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'live_reactions', filter: 'session_id=eq.' + sessionRow.id }, p => {
+        if (p.new && typeof p.new.count !== 'undefined') countEl.textContent = String(p.new.count);
+      })
+      .subscribe();
+  } catch (e) { ch = null; }
+
+  return h('div', { style: 'display:flex;align-items:center;gap:10px;margin:10px 0;position:relative' },
+    heartBtn, h('span', { class: 'hint-line' }, countEl, ' like\u2019d this'), flyBox);
 }
 
 /* ---------- H2: live comments ----------
@@ -14214,10 +14437,39 @@ function liveComments(sessionRow) {
   const me = currentUser.id, isTeacher = sessionRow.teacher_id === me;
   const names = {}, seen = new Set();
   let newest = null, ch = null, timer = null;
+  // H9: session_id -> status ('muted'|'removed') for each commenter, teacher-only.
+  // Loaded once up front; kept in sync as the teacher acts, so button labels
+  // (Mute/Unmute, Remove/Restore) don't need a re-fetch per click.
+  const modMap = {};
   const box = h('div', { style: 'max-height:40vh;overflow-y:auto;display:grid;gap:6px;align-content:start;padding:2px;margin-bottom:8px', role: 'log', 'aria-live': 'polite', 'aria-label': 'Live comments' });
   const status = h('p', { class: 'hint-line', role: 'status', text: 'Loading comments\u2026' });
   const ta = h('textarea', { class: 'control area', rows: 2, maxlength: 500, placeholder: 'Say something\u2026', 'aria-label': 'Write a comment' });
   const send = h('button', { class: 'btn', type: 'button', text: 'Send' });
+
+  async function loadModMap() {
+    if (!isTeacher) return;
+    const r = await sb.from('live_moderation').select('user_id,status').eq('session_id', sessionRow.id);
+    if (!r.error && r.data) r.data.forEach(row => { modMap[row.user_id] = row.status; });
+  }
+  async function setMod(userId, statusVal) {
+    // statusVal is 'muted', 'removed', or null to clear (unmute/restore).
+    if (statusVal) {
+      const r = await sb.from('live_moderation').upsert({ session_id: sessionRow.id, user_id: userId, status: statusVal, created_by: me }, { onConflict: 'session_id,user_id' });
+      if (r.error) { alert('Could not update: ' + r.error.message); return false; }
+      modMap[userId] = statusVal;
+      if (statusVal === 'removed') { try { ch2Send(userId); } catch (e) {} }
+    } else {
+      const r = await sb.from('live_moderation').delete().eq('session_id', sessionRow.id).eq('user_id', userId);
+      if (r.error) { alert('Could not update: ' + r.error.message); return false; }
+      delete modMap[userId];
+    }
+    return true;
+  }
+  let kickCh = null;
+  function ch2Send(userId) {
+    if (!kickCh) kickCh = sb.channel('livemod-' + sessionRow.id);
+    kickCh.send({ type: 'broadcast', event: 'kick', payload: { user_id: userId } });
+  }
 
   const drop = id => { const el = box.querySelector('[data-id="' + id + '"]'); if (el) el.remove(); };
   const msgEl = c => {
@@ -14225,10 +14477,31 @@ function liveComments(sessionRow) {
     const el = h('div', { 'data-id': c.id, style: 'padding:8px 12px;border:1px solid var(--line);border-radius:12px;min-width:0;display:grid;gap:2px;' + (mine ? 'background:var(--paper-hi)' : '') },
       h('small', { style: 'color:var(--dim)' }, h('a', { href: '#workspace/people/' + c.user_id, text: mine ? 'You' : (names[c.user_id] || 'Athenaeum user') }), ' \u00b7 ' + whenTxt(c.created_at)),
       h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: c.text }));
-    if (canDel) el.append(h('button', { class: 'btn quiet small danger-text', type: 'button', style: 'justify-self:start', text: 'Delete', onclick: async () => {
+    const btnRow = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;justify-self:start' });
+    if (canDel) btnRow.append(h('button', { class: 'btn quiet small danger-text', type: 'button', text: 'Delete', onclick: async () => {
       const r = await sb.from('live_comments').delete().eq('id', c.id);
       if (r.error) alert('Could not delete: ' + r.error.message); else drop(c.id);
     } }));
+    // H9: teacher-only mute/remove for this student, for the rest of this session.
+    if (isTeacher && !mine) {
+      const muteBtn = h('button', { class: 'btn quiet small', type: 'button',
+        text: modMap[c.user_id] === 'muted' ? 'Unmute' : 'Mute', onclick: async () => {
+          const next = modMap[c.user_id] === 'muted' ? null : 'muted';
+          muteBtn.disabled = true;
+          if (await setMod(c.user_id, next)) muteBtn.textContent = next === 'muted' ? 'Unmute' : 'Mute';
+          muteBtn.disabled = false;
+        } });
+      const removeBtn = h('button', { class: 'btn quiet small danger-text', type: 'button',
+        text: modMap[c.user_id] === 'removed' ? 'Restore' : 'Remove', onclick: async () => {
+          const next = modMap[c.user_id] === 'removed' ? null : 'removed';
+          if (next === 'removed' && !confirm('Remove this student from the class? They\u2019ll be disconnected if watching now, and can\u2019t rejoin until you restore them.')) return;
+          removeBtn.disabled = true;
+          if (await setMod(c.user_id, next)) removeBtn.textContent = next === 'removed' ? 'Restore' : 'Remove';
+          removeBtn.disabled = false;
+        } });
+      btnRow.append(muteBtn, removeBtn);
+    }
+    if (btnRow.childNodes.length) el.append(btnRow);
     if (!mine) { const rb = reportBtn('live_comment', c.id, c.user_id, c.text); if (rb) el.append(rb); }
     return el;
   };
@@ -14258,7 +14531,7 @@ function liveComments(sessionRow) {
   send.addEventListener('click', sendMsg);
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMsg(); } });
   const stop = () => { clearInterval(timer); if (ch) { try { sb.removeChannel(ch); } catch (e) {} ch = null; } };
-  loadLatest().then(ok => {
+  loadModMap().then(() => loadLatest()).then(ok => {
     if (!ok) return;
     try {
       ch = sb.channel('livecomments-' + sessionRow.id)
