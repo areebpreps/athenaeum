@@ -274,6 +274,60 @@
   .sec-feed-block-head h3 { margin: 0; font-size: 17px; }
   .sec-feed-block-head a { font-size: 13px; font-weight: 600; color: var(--marker); text-decoration: none; white-space: nowrap; }
 
+  /* ---------- Theme redesign step 9: card-stack template ----------
+     §5's own template for Subjects (this step) and Profile (a later step) —
+     a full-width header, then a vertical stack of gradient tile cards, one
+     per item. Built as reusable classes/builders now so the Profile step can
+     reuse the stack without rebuilding it. */
+  .stack-header {
+    display: flex; align-items: center; gap: 14px; text-align: left; width: 100%;
+    padding: 18px 16px; margin-bottom: 18px; border-radius: 20px;
+    background: var(--paper); border: 1px solid var(--line); color: var(--chalk); text-decoration: none;
+  }
+  .stack-header .avatar { --sz: 56px; flex: none; }
+  .stack-header-body { min-width: 0; flex: 1; }
+  .stack-header-body strong { display: block; font-family: var(--serif); font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+  .stack-header-body small { display: block; color: var(--dim); margin-top: 2px; }
+  .stack-add {
+    display: inline-flex; align-items: center; gap: 6px; margin-bottom: 14px;
+    border: 1px dashed var(--line); background: transparent; color: var(--dim);
+    font-weight: 600; font-size: 14px; padding: 10px 16px; border-radius: 999px;
+  }
+  .stack-add:active { background: var(--paper-hi); }
+  .stack-tile {
+    display: block; padding: 18px; border-radius: 20px; text-decoration: none;
+    color: var(--chalk); border: 1px solid var(--line);
+  }
+  .stack-tile-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--dim); background: rgba(255,255,255,.06);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; margin-bottom: 10px;
+  }
+  .stack-tile strong { display: block; font-family: var(--serif); font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
+  .stack-tile small { display: block; color: var(--dim); margin-top: 4px; }
+
+  /* ---------- Theme redesign step 10: profile page stats row ----------
+     §5.3's "follower-style stats row" \u2014 this app has no follow feature, so
+     it shows real counts (posts, for now) in that same visual shape instead. */
+  .profile-stats { display: flex; gap: 22px; margin-top: 10px; }
+  .profile-stat strong { display: block; font-family: var(--serif); font-size: 18px; font-weight: 600; }
+  .profile-stat small { display: block; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-top: 1px; }
+
+  /* ---------- Theme redesign step 11: individual subject page ----------
+     Collapsible, reorderable, independently-numbered wrapper around the
+     subject page's existing content sections (Chapters, All items,
+     Flashcards, Information boxes, Trap tracker, Sources) \u2014 §5.4. Order,
+     collapsed state and numbering-on/off are a per-device view preference
+     (localStorage, same pattern as hubsSection's own "Sort"), not per-subject
+     data, since the same six section types apply to every subject alike. */
+  .subj-cover { height: 64px; width: 64px; border-radius: 16px; flex: none; }
+  .subj-subsec { margin-top: 14px; }
+  .subsec-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .subsec-num { font-family: var(--serif); font-size: 15px; font-weight: 700; color: var(--marker); min-width: 18px; }
+  .subsec-controls { display: flex; gap: 2px; }
+  .subsec-btn { min-width: 36px; min-height: 36px; border: 0; border-radius: 10px; background: transparent; color: var(--dim); font-size: 16px; }
+  .subsec-btn:active { background: var(--paper-hi); }
+  .subsec-btn[aria-pressed="true"] { color: var(--marker); }
 
   /* ---------- header with back button ---------- */
   /* Theme redesign step 2: tb-left/tb-right now each hold a small icon group
@@ -3549,6 +3603,36 @@ function sectionFeedBlock(key, title, openHref, nodes) {
     nodes);
 }
 
+/* ---------- Theme redesign step 9: reusable card-stack builders ----------
+   The template §5 uses for Subjects (this step) and Profile (a later step)
+   instead of the carousel+chip+feed template above — §5 explicitly excludes
+   those two sections from that template. hexToRgba turns an existing PALETTE
+   colour into a translucent gradient wash for a tile; kept as plain rgba()
+   rather than color-mix() for older Android WebView compatibility. */
+function hexToRgba(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return 'rgba(243,201,85,' + alpha + ')'; // falls back to --marker gold
+  const n = parseInt(m[1], 16);
+  return 'rgba(' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',') + ',' + alpha + ')';
+}
+function stackHeader({ avatarName, avatarSrc, title, meta, href }) {
+  const av = h('div', { class: 'avatar', 'aria-hidden': 'true' });
+  avatarFill(av, avatarName, avatarSrc);
+  return h('a', { class: 'stack-header', href },
+    av,
+    h('div', { class: 'stack-header-body' }, h('strong', { text: title }), meta ? h('small', { text: meta }) : null),
+    h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' }));
+}
+function stackTile({ href, color, badge, title, meta }) {
+  return h('a', {
+    class: 'stack-tile', href,
+    style: 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(color), .30) + ', var(--paper))'
+  },
+    badge ? h('span', { class: 'stack-tile-badge', text: badge }) : null,
+    h('strong', { text: title }),
+    meta ? h('small', { text: meta }) : null);
+}
+
 /* ---------- Theme redesign step 3: Community carousel data ----------
    Mixes the newest public community posts with a few Wikipedia article summaries
    as the "articles from open sources" the blueprint calls for (§3.2). There's no
@@ -3861,6 +3945,95 @@ function orderedHubs() {
   return out;
 }
 function saveHubOrder(list) { store.set(HUB_ORDER_KEY, JSON.stringify(list.map(e => e.key))); }
+
+/* ---------- Theme redesign step 11: subject page's collapsible/sortable/
+   numbered sub-sections (§5.4). Same local-storage-order idea as the hubs
+   list above, plus a per-key collapsed set and a per-key "numbering off" set.
+   Shared by every subject page \u2014 it wraps whatever section nodes are handed
+   to it rather than knowing about chapters/items/etc. itself. */
+const SUBJ_SEC_ORDER_KEY = 'subjPageSectionOrder';
+const SUBJ_SEC_COLLAPSED_KEY = 'subjPageSectionCollapsed';
+const SUBJ_SEC_UNNUMBERED_KEY = 'subjPageSectionUnnumbered';
+function loadKeySet(key) {
+  try { const a = JSON.parse(store.get(key) || '[]'); return new Set(Array.isArray(a) ? a : []); }
+  catch (e) { return new Set(); }
+}
+function saveKeySet(key, set) { store.set(key, JSON.stringify([...set])); }
+
+// blocks: [{ key, label, node }] in default order; a null node (e.g. no
+// flashcards saved here) is left out entirely, same as before this step.
+function orderedSubjectSections(blocks) {
+  const present = blocks.filter(b => b.node);
+  let order = null;
+  try { order = JSON.parse(store.get(SUBJ_SEC_ORDER_KEY) || 'null'); } catch (e) { order = null; }
+  if (!Array.isArray(order)) return present;
+  const byKey = {}; present.forEach(b => { byKey[b.key] = b; });
+  const out = order.map(k => byKey[k]).filter(Boolean);
+  present.forEach(b => { if (!out.includes(b)) out.push(b); });
+  return out;
+}
+function saveSubjectSectionOrder(list) { store.set(SUBJ_SEC_ORDER_KEY, JSON.stringify(list.map(b => b.key))); }
+
+function subjectSectionsBlock(blocks) {
+  const list = orderedSubjectSections(blocks);
+  const collapsed = loadKeySet(SUBJ_SEC_COLLAPSED_KEY);
+  const unnumbered = loadKeySet(SUBJ_SEC_UNNUMBERED_KEY);
+  let arranging = false;
+  const toolbar = h('div', { style: 'display:flex;justify-content:flex-end;margin-top:18px' });
+  const body = h('div');
+
+  function paintToolbar() {
+    toolbar.replaceChildren(list.length > 1 ? h('button', {
+      class: 'btn quiet small', type: 'button', text: arranging ? 'Done arranging sections' : 'Arrange sections',
+      onclick: () => { arranging = !arranging; paintToolbar(); paintBody(); }
+    }) : null);
+  }
+  function move(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    saveSubjectSectionOrder(list);
+    paintBody();
+  }
+  function paintBody() {
+    body.replaceChildren(...list.map((b, i) => {
+      if (arranging) {
+        return h('div', { class: 'row arrange-row' },
+          h('span', { class: 'grow', text: b.label }),
+          h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
+          h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }));
+      }
+      const isCollapsed = collapsed.has(b.key);
+      const isNumbered = !unnumbered.has(b.key);
+      const numEl = h('span', { class: 'subsec-num', text: isNumbered ? String(i + 1) + '.' : '' });
+      const contentWrap = h('div', { hidden: isCollapsed }, b.node);
+      const numBtn = h('button', {
+        class: 'subsec-btn', type: 'button', 'aria-pressed': String(isNumbered), 'aria-label': 'Toggle numbering for ' + b.label, text: '#',
+        onclick: () => {
+          if (unnumbered.has(b.key)) unnumbered.delete(b.key); else unnumbered.add(b.key);
+          saveKeySet(SUBJ_SEC_UNNUMBERED_KEY, unnumbered);
+          numEl.textContent = unnumbered.has(b.key) ? '' : String(i + 1) + '.';
+          numBtn.setAttribute('aria-pressed', String(!unnumbered.has(b.key)));
+        }
+      });
+      const collapseBtn = h('button', {
+        class: 'subsec-btn', type: 'button', 'aria-expanded': String(!isCollapsed), 'aria-label': (isCollapsed ? 'Expand ' : 'Collapse ') + b.label, text: isCollapsed ? '\u203a' : '\u2304',
+        onclick: () => {
+          if (collapsed.has(b.key)) collapsed.delete(b.key); else collapsed.add(b.key);
+          saveKeySet(SUBJ_SEC_COLLAPSED_KEY, collapsed);
+          contentWrap.hidden = collapsed.has(b.key);
+          collapseBtn.textContent = collapsed.has(b.key) ? '\u203a' : '\u2304';
+          collapseBtn.setAttribute('aria-expanded', String(!collapsed.has(b.key)));
+        }
+      });
+      return h('div', { class: 'subj-subsec' },
+        h('div', { class: 'subsec-bar' }, numEl, h('div', { class: 'subsec-controls' }, numBtn, collapseBtn)),
+        contentWrap);
+    }));
+  }
+  paintToolbar(); paintBody();
+  return h('div', {}, toolbar, body);
+}
 
 function hubsSection() {
   const list = orderedHubs();
@@ -7201,24 +7374,55 @@ function subjectsSearchPage() {
   return { title: 'Search subjects', nodes: [crumb, h('div', { class: 'search-row' }, input, goBtn), msg, status, out] };
 }
 
+// Theme redesign step 9: total items per subject, rolled up across every chapter
+// and topic beneath it, for the card-stack tile's "N items" line. Every one of
+// these tables carries subject_id directly on each row (same denormalization
+// scopeFilter() relies on), so a subject's own id already covers its whole
+// branch without needing chapter/topic ids — one narrow (id-only) query per
+// table, tallied client-side, rather than a separate query per subject.
+async function subjectItemCounts() {
+  const tables = ['notes', 'formulas', 'mnemonics', 'flashcards', 'info_boxes', 'traps', 'mistake_vault', 'sources'];
+  const results = await Promise.all(tables.map(t => sb.from(t).select('subject_id')));
+  const counts = {};
+  results.forEach(r => (r.data || []).forEach(row => { if (row.subject_id) counts[row.subject_id] = (counts[row.subject_id] || 0) + 1; }));
+  return counts;
+}
+
 async function subjectsRoot() {
-  const [s, c] = await Promise.all([
+  const [s, counts] = await Promise.all([
     ordered(sb.from('subjects').select('*')),
-    sb.from('chapters').select('subject_id')
+    subjectItemCounts()
   ]);
-  const subjects = must(s), counts = {};
-  must(c).forEach(x => { counts[x.subject_id] = (counts[x.subject_id] || 0) + 1; });
+  const subjects = must(s);
+  if (!myProfile) await loadMyProfile();
+  const totalItems = subjects.reduce((sum, sub) => sum + (counts[sub.id] || 0), 0);
+
+  // §5.1's header is "editable/addable" — Subjects has no cover photo of its own
+  // to edit, so this reuses the account's existing avatar/profile editor (already
+  // built) as that affordance, the same photo shown throughout the app.
+  const header = stackHeader({
+    avatarName: (myProfile && myProfile.display_name) || usernameFrom(currentUser),
+    avatarSrc: myProfile && avatarUrl(myProfile.avatar_path),
+    title: 'Your subjects',
+    meta: plural(subjects.length, 'subject', 'subjects') + ' \u00b7 ' + plural(totalItems, 'item', 'items'),
+    href: '#workspace/profile'
+  });
+  const addBtn = h('button', {
+    class: 'stack-add', type: 'button', text: '+ New subject',
+    onclick: () => entityDialog('subject', null, { position: subjects.length })
+  });
 
   return { nodes: [
-    section('Your subjects', '+ New subject', () => entityDialog('subject', null, { position: subjects.length }),
-      subjects.length
-        ? arrangeSection(subjects, {
-            label: sub => sub.name, table: () => 'subjects',
-            render: sub => linkRow({
-              href: '#subjects/' + sub.id, color: sub.color, title: sub.name,
-              meta: plural(counts[sub.id] || 0, 'chapter', 'chapters') })
+    header, addBtn,
+    subjects.length
+      ? arrangeSection(subjects, {
+          label: sub => sub.name, table: () => 'subjects',
+          render: sub => stackTile({
+            href: '#subjects/' + sub.id, color: sub.color, title: sub.name,
+            meta: plural(counts[sub.id] || 0, 'item', 'items')
           })
-        : emptyBlock('No subjects yet', 'Create a subject, then add chapters and topics inside it.'))
+        })
+      : emptyBlock('No subjects yet', 'Create a subject, then add chapters and topics inside it.')
   ] };
 }
 
@@ -7244,21 +7448,29 @@ async function subjectPage(sid) {
 
   return { title: subject.name, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }]),
-    editButton('Edit subject', () => entityDialog('subject', subject, {})),
-    section('Chapters', '+ Add chapter', () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
-      chapters.length
-        ? arrangeSection(chapters, {
-            label: ch => ch.title, table: () => 'chapters',
-            render: ch => linkRow({
-              href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
-              meta: plural(counts[ch.id] || 0, 'topic', 'topics') })
-          })
-        : h('p', { class: 'none', text: 'No chapters yet.' })),
-    itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.'),
-    flashcardsSection(scope, items),
-    infoBoxesSection(scope, infoBoxes),
-    trapsSection(scope, traps),
-    sourcesSection(scope, sources)
+    h('div', { class: 'stack-header', style: 'align-items:flex-start' },
+      h('div', { class: 'subj-cover', style: 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(subject.color), .35) + ', var(--paper))' }),
+      h('div', { class: 'stack-header-body' },
+        h('strong', { text: subject.name }),
+        h('small', { text: plural(chapters.length, 'chapter', 'chapters') + ' \u00b7 ' +
+            plural(items.length + infoBoxes.length + traps.length + sources.length, 'item', 'items') + ' \u00b7 Added ' + fmtDate(new Date(subject.created_at)) }),
+        h('a', { class: 'btn quiet small', style: 'margin-top:12px', href: '#', onclick: e => { e.preventDefault(); entityDialog('subject', subject, {}); }, text: 'Edit subject' }))),
+    subjectSectionsBlock([
+      { key: 'chapters', label: 'Chapters', node: section('Chapters', '+ Add chapter', () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
+          chapters.length
+            ? arrangeSection(chapters, {
+                label: ch => ch.title, table: () => 'chapters',
+                render: ch => linkRow({
+                  href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
+                  meta: plural(counts[ch.id] || 0, 'topic', 'topics') })
+              })
+            : h('p', { class: 'none', text: 'No chapters yet.' })) },
+      { key: 'items', label: 'All items in this subject', node: itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.') },
+      { key: 'flashcards', label: 'Flashcards', node: flashcardsSection(scope, items) },
+      { key: 'infoboxes', label: 'Information boxes', node: infoBoxesSection(scope, infoBoxes) },
+      { key: 'traps', label: 'Trap tracker', node: trapsSection(scope, traps) },
+      { key: 'sources', label: 'Sources', node: sourcesSection(scope, sources) }
+    ])
   ] };
 }
 
@@ -13089,11 +13301,27 @@ async function peoplePage(uid) {
     const feed = await communityFeed({ userId: uid,
       emptyTitle: mine ? 'No public posts yet' : 'No public posts',
       emptyBody: mine ? 'Share a note, mnemonic or saved link and choose Public \u2014 it will show up here.' : 'This person has not shared anything publicly yet.' });
-    return { title: name, nodes: [crumb,
-      h('div', { class: 'proj prof-card' }, av, h('div', { style: 'min-width:0' }, h('strong', { text: name }),
-        h('small', { text: [row && row.country, row && row.field_of_study].filter(Boolean).join(' \u00b7 ') || (row ? 'No country or field added' : 'No profile yet') }))),
-      mine ? h('p', { class: 'hint-line', text: 'This is how other people see your profile.' }) : null,
-      mine ? h('a', { class: 'btn quiet', style: 'margin-bottom:16px', href: '#workspace/profile', text: 'Edit profile' }) : null,
+
+    // Theme redesign step 10: card-stack header (§5.1/§5.3) \u2014 avatar, name/handle,
+    // a stats row, and (for your own profile) Edit profile. publicCount also drives
+    // the stats row for someone else's profile, since that is all a visitor can see.
+    const pubRes = await sb.from('posts').select('id', { count: 'exact', head: true }).eq('user_id', uid).eq('visibility', 'public');
+    const stats = [{ n: pubRes.error ? 0 : (pubRes.count || 0), label: 'Public posts' }];
+    let myPostsCount = 0;
+    if (mine) {
+      const allRes = await sb.from('posts').select('id', { count: 'exact', head: true }).eq('user_id', uid);
+      myPostsCount = allRes.error ? 0 : (allRes.count || 0);
+      stats.unshift({ n: myPostsCount, label: 'My posts' });
+    }
+    const header = h('div', { class: 'stack-header', style: 'align-items:flex-start' }, av,
+      h('div', { class: 'stack-header-body' },
+        h('strong', { text: name }),
+        h('small', { text: [row && row.country, row && row.field_of_study].filter(Boolean).join(' \u00b7 ') || (row ? 'No country or field added' : 'No profile yet') }),
+        h('div', { class: 'profile-stats' }, stats.map(s => h('div', { class: 'profile-stat' }, h('strong', { text: s.n }), h('small', { text: s.label })))),
+        mine ? h('a', { class: 'btn quiet small', style: 'margin-top:12px', href: '#workspace/profile', text: 'Edit profile' }) : null));
+
+    return { title: name, nodes: [crumb, header,
+      mine ? stackTile({ href: '#workspace/posts', color: null, title: 'My posts', meta: plural(myPostsCount, 'post', 'posts') }) : null,
       mine ? null : reportBtn('profile', uid, uid, name),
       await profileDetailsSection(uid, mine),
       await teacherProfileSection(uid, mine),
@@ -15301,7 +15529,10 @@ async function boot() {
   window.addEventListener('hashchange', () => { if (currentUser) route(); });
 
   $('#bell-btn').addEventListener('click', () => go('#workspace/notifications'));
-  $('#profile-btn').addEventListener('click', () => go('#workspace/profile'));
+  // Theme redesign step 10: the Profile icon now opens the card-stack profile
+  // page (peoplePage, viewing yourself) rather than jumping straight to the
+  // editor — the editor is still one tap away from there via Edit profile.
+  $('#profile-btn').addEventListener('click', () => go('#workspace/people/' + currentUser.id));
   // Theme redesign step 2: Settings icon opens the interim sheet (see the sheet's own
   // comment); Search is now global everywhere rather than scoped per tab; Add's target
   // is a sensible default for now (see the header's own comment above the markup).
