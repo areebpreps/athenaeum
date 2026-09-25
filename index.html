@@ -13988,8 +13988,8 @@ async function schClassesPage() {
 /* =====================================================================
    Phase H1: In-app Live Classes (native broadcast) — SPIKE
    Teachers broadcast from inside the app over WebRTC (LiveKit Cloud);
-   students watch live. No chat/likes yet (that's H2) and no recording
-   yet (H3) — this phase only proves the one open risk: whether the
+   students watch live. No recording yet (H4/H5) — this phase only
+   proves the one open risk: whether the
    Android WebView wrapper can grant camera/mic to a live broadcast at
    all, given it already failed to even *play back* YouTube video
    (Error 153). Needs schema-update-H1-live-sessions.sql.
@@ -14172,7 +14172,7 @@ async function liveSessionPage(id) {
 
   const nodes = [crumb, h('h3', { text: sessionRow.title }), status, errBox, video, selfPreview];
   if (isTeacher) {
-    nodes.push(h('p', { class: 'hint-line', text: 'This is the H1 spike: camera + mic only, no chat or recording yet. Going live asks the WebView for camera/mic access \u2014 that\u2019s the exact thing this phase is testing.' }));
+    nodes.push(h('p', { class: 'hint-line', text: 'Camera, mic and live comments. Recording isn\u2019t saved yet (that\u2019s H4).' }));
     nodes.push(h('div', { class: 'actions' }, sessionRow.status === 'ended' ? null : startBtn, endBtn));
   } else {
     if (sessionRow.status !== 'live') {
@@ -14185,7 +14185,81 @@ async function liveSessionPage(id) {
       nodes.push(h('div', { class: 'actions' }, joinBtn));
     }
   }
+  nodes.push(liveComments(sessionRow));
   return { title: sessionRow.title, nodes };
+}
+
+/* ---------- H2: live comments ----------
+   Realtime comment thread on every live session page, visible to teacher
+   and viewers alike, for the whole life of the session (before it starts,
+   while live, and after it ends, as a record). Same realtime-channel +
+   20s-poll-fallback pattern as the existing group chat (G9). A comment's
+   author or the session's teacher can delete it. live_comments; needs
+   schema-update-H2-live-comments.sql. ===================== */
+function liveComments(sessionRow) {
+  const me = currentUser.id, isTeacher = sessionRow.teacher_id === me;
+  const names = {}, seen = new Set();
+  let newest = null, ch = null, timer = null;
+  const box = h('div', { style: 'max-height:40vh;overflow-y:auto;display:grid;gap:6px;align-content:start;padding:2px;margin-bottom:8px', role: 'log', 'aria-live': 'polite', 'aria-label': 'Live comments' });
+  const status = h('p', { class: 'hint-line', role: 'status', text: 'Loading comments\u2026' });
+  const ta = h('textarea', { class: 'control area', rows: 2, maxlength: 500, placeholder: 'Say something\u2026', 'aria-label': 'Write a comment' });
+  const send = h('button', { class: 'btn', type: 'button', text: 'Send' });
+
+  const drop = id => { const el = box.querySelector('[data-id="' + id + '"]'); if (el) el.remove(); };
+  const msgEl = c => {
+    const mine = c.user_id === me, canDel = mine || isTeacher;
+    const el = h('div', { 'data-id': c.id, style: 'padding:8px 12px;border:1px solid var(--line);border-radius:12px;min-width:0;display:grid;gap:2px;' + (mine ? 'background:var(--paper-hi)' : '') },
+      h('small', { style: 'color:var(--dim)' }, h('a', { href: '#workspace/people/' + c.user_id, text: mine ? 'You' : (names[c.user_id] || 'Athenaeum user') }), ' \u00b7 ' + whenTxt(c.created_at)),
+      h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: c.text }));
+    if (canDel) el.append(h('button', { class: 'btn quiet small danger-text', type: 'button', style: 'justify-self:start', text: 'Delete', onclick: async () => {
+      const r = await sb.from('live_comments').delete().eq('id', c.id);
+      if (r.error) alert('Could not delete: ' + r.error.message); else drop(c.id);
+    } }));
+    if (!mine) { const rb = reportBtn('live_comment', c.id, c.user_id, c.text); if (rb) el.append(rb); }
+    return el;
+  };
+  async function add(list) {
+    const fresh = list.filter(c => !seen.has(c.id)); if (!fresh.length) return;
+    const need = fresh.map(c => c.user_id).filter(u => !(u in names));
+    if (need.length) Object.assign(names, await profNames(need));
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    fresh.forEach(c => { seen.add(c.id); if (!newest || c.created_at > newest) newest = c.created_at; });
+    box.append(...fresh.map(msgEl));
+    if (near) box.scrollTop = box.scrollHeight;
+  }
+  async function loadLatest() {
+    const r = await sb.from('live_comments').select('*').eq('session_id', sessionRow.id).order('created_at', { ascending: false }).limit(100);
+    if (r.error) { status.textContent = 'Comments are not set up yet. Run schema-update-H2-live-comments.sql in Supabase, then reload. (' + r.error.message + ')'; return false; }
+    const rows = (r.data || []).slice().reverse(); await add(rows); box.scrollTop = box.scrollHeight;
+    status.textContent = rows.length ? '' : 'No comments yet \u2014 say hello.'; return true;
+  }
+  async function sendMsg() {
+    const text = ta.value.trim(); if (!text) return;
+    send.disabled = true;
+    const r = await sb.from('live_comments').insert({ session_id: sessionRow.id, user_id: me, text }).select('*').single();
+    send.disabled = false;
+    if (r.error) { status.textContent = 'Could not send: ' + r.error.message; return; }
+    ta.value = ''; status.textContent = ''; await add([r.data]); box.scrollTop = box.scrollHeight;
+  }
+  send.addEventListener('click', sendMsg);
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMsg(); } });
+  const stop = () => { clearInterval(timer); if (ch) { try { sb.removeChannel(ch); } catch (e) {} ch = null; } };
+  loadLatest().then(ok => {
+    if (!ok) return;
+    try {
+      ch = sb.channel('livecomments-' + sessionRow.id)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'live_comments', filter: 'session_id=eq.' + sessionRow.id }, p => add([p.new]))
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'live_comments' }, p => { if (p.old && p.old.id) drop(p.old.id); })
+        .subscribe();
+    } catch (e) { ch = null; }
+    timer = setInterval(async () => {
+      if (!box.isConnected) return stop();
+      if (!newest) return;
+      const r = await sb.from('live_comments').select('*').eq('session_id', sessionRow.id).gt('created_at', newest).order('created_at').limit(50);
+      if (!r.error && r.data && r.data.length) add(r.data);
+    }, 20000);
+  });
+  return section('Comments', null, null, status, box, h('div', { class: 'field' }, ta), h('div', { class: 'actions' }, send));
 }
 
 /* ---------- E29: alumni tips on each scholarship page ----------
