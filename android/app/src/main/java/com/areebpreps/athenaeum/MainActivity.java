@@ -1,10 +1,12 @@
 package com.areebpreps.athenaeum;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,6 +17,7 @@ import android.os.Message;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -24,6 +27,8 @@ import android.webkit.WebViewClient;
 import android.widget.Toast;
 
 import androidx.browser.customtabs.CustomTabsIntent;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import java.io.ByteArrayOutputStream;
@@ -54,6 +59,7 @@ public class MainActivity extends Activity {
             "https://raw.githubusercontent.com/areebpreps/athenaeum/main/";
 
     private static final int FILE_CHOOSER_REQUEST_CODE = 51;
+    private static final int CAMERA_MIC_PERMISSION_REQUEST_CODE = 52;
 
     // YouTube's embedded player (error 153) refuses pages that send no
     // Referer, and a file:// page never sends one. So the local copy of
@@ -79,6 +85,7 @@ public class MainActivity extends Activity {
         configureWebView();
 
         loadLocalSite();
+        requestCameraMicPermissionsIfNeeded();
     }
 
     @Override
@@ -99,6 +106,20 @@ public class MainActivity extends Activity {
             webView.goBack();
         } else {
             super.onBackPressed();
+        }
+    }
+
+    // ---------- camera/mic runtime permissions (for LiveKit) ----------
+
+    private void requestCameraMicPermissionsIfNeeded() {
+        boolean needCamera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED;
+        boolean needMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED;
+        if (needCamera || needMic) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO},
+                    CAMERA_MIC_PERMISSION_REQUEST_CODE);
         }
     }
 
@@ -274,6 +295,24 @@ public class MainActivity extends Activity {
                 }
                 startActivityForResult(chooser, FILE_CHOOSER_REQUEST_CODE);
                 return true;
+            }
+
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(() -> {
+                    boolean hasCamera = ContextCompat.checkSelfPermission(
+                            MainActivity.this, Manifest.permission.CAMERA)
+                            == PackageManager.PERMISSION_GRANTED;
+                    boolean hasMic = ContextCompat.checkSelfPermission(
+                            MainActivity.this, Manifest.permission.RECORD_AUDIO)
+                            == PackageManager.PERMISSION_GRANTED;
+                    if (hasCamera && hasMic) {
+                        request.grant(request.getResources());
+                    } else {
+                        request.deny();
+                        requestCameraMicPermissionsIfNeeded();
+                    }
+                });
             }
         });
     }
