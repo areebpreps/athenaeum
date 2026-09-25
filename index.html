@@ -14129,7 +14129,11 @@ async function liveSessionPage(id) {
     const mint = await sb.rpc('mint_live_token', { p_session_id: sessionRow.id, p_name: displayName });
     if (mint.error) throw mint.error;
     const { token, url } = mint.data;
-    room = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
+    room = new LivekitClient.Room({
+      adaptiveStream: true,
+      dynacast: true,
+      audioCaptureDefaults: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
     room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
       if (track.kind === 'video' || track.kind === 'audio') video.append(track.attach());
     });
