@@ -230,6 +230,39 @@
     content: ""; position: absolute; inset: 4px; border-radius: 999px; background: var(--marker);
   }
 
+  /* ---------- Theme redesign step 3: reusable section-page template ----------
+     Shared by every section that follows the carousel + chip row + feed-of-blocks
+     skeleton (§3 of the blueprint: Community, Explore/Hubs, Scholarships, AI tools).
+     Subjects and Planner use their own templates and don't touch these classes. */
+  .sec-carousel {
+    display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 6px;
+    scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+  }
+  .sec-carousel::-webkit-scrollbar { display: none; }
+  .sec-carousel-card {
+    flex: 0 0 auto; scroll-snap-align: start; width: 78%; max-width: 320px;
+    display: block; text-align: left; text-decoration: none; color: var(--chalk);
+    background: var(--paper); border: 1px solid var(--line); border-radius: 18px;
+    padding: 14px 16px; overflow: hidden;
+  }
+  .sec-carousel-card img {
+    width: calc(100% + 32px); margin: -14px -16px 10px; display: block;
+    height: 120px; object-fit: cover;
+  }
+  .sec-carousel-card .sc-kind { color: var(--marker); font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .sec-carousel-card strong { display: block; margin: 4px 0 2px; overflow-wrap: anywhere; }
+  .sec-carousel-card small { color: var(--dim); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+  .sec-chip-row {
+    display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sec-chip-row::-webkit-scrollbar { display: none; }
+  .sec-chip {
+    flex: 0 0 auto; border: 1px solid var(--line); background: var(--paper-hi); color: var(--dim);
+    font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 999px; text-decoration: none;
+  }
+  .sec-chip[aria-current="true"] { background: var(--marker); border-color: var(--marker); color: var(--marker-ink); }
+
 
   /* ---------- header with back button ---------- */
   /* Theme redesign step 2: tb-left/tb-right now each hold a small icon group
@@ -3465,11 +3498,98 @@ function buildWorkspace(ids = []) {
 // grouping the social/teaching hubs. The pages themselves keep their own
 // existing routes (#workspace/groups etc.) unchanged — this just adds one
 // shared front door instead of listing all seven separately under Hubs.
+
+/* ---------- Theme redesign step 3: reusable carousel + chip row builders ----------
+   The shared building blocks for every section that follows the §3 page template
+   (carousel + chip row + feed of stacked blocks). Community uses them first here;
+   Explore/Hubs, Scholarships and AI tools reuse the same two builders in their own
+   later build steps rather than each rolling their own. */
+function sectionCarousel(cards) {
+  if (!cards || !cards.length) return null;
+  return h('div', { class: 'sec-carousel' }, cards.map(c => h('a', { class: 'sec-carousel-card', href: c.href },
+    c.image ? h('img', { src: c.image, alt: '', loading: 'lazy' }) : null,
+    h('span', { class: 'sc-kind', text: c.kind }),
+    h('strong', { text: c.title }),
+    c.meta ? h('small', { text: c.meta }) : null)));
+}
+// chips: [{ key, label, href }]. activeKey highlights one chip (null highlights
+// none). href-based for now — every chip still opens the page it always has, same
+// as before this redesign; true tap-to-anchor-scroll within one stacked feed (§3.3)
+// takes over once each section's blocks exist (later steps), without needing to
+// change this builder.
+function sectionChipRow(chips, activeKey) {
+  return h('div', { class: 'sec-chip-row' }, chips.map(c => h('a', {
+    class: 'sec-chip', href: c.href, 'aria-current': c.key === activeKey ? 'true' : null, text: c.label
+  })));
+}
+
+/* ---------- Theme redesign step 3: Community carousel data ----------
+   Mixes the newest public community posts with a few Wikipedia article summaries
+   as the "articles from open sources" the blueprint calls for (§3.2). There's no
+   topic-picker built yet, so the topics used are simply the student's own subjects
+   — the topics they've already chosen by adding them to their account — falling
+   back to a few generic study topics for a brand-new account with none yet. Swap
+   the topic source here if a real topic-preference feature gets built later; the
+   post half and the mixing/rendering stay the same either way. Both card types open
+   in-app only: posts go to the community feed, articles to the existing Wikipedia
+   reader (#workspace/wiki/<title>) — never an external tab. */
+async function loadCommunityCarousel() {
+  const postsRes = await sb.from('posts').select('id,title,body,kind').eq('visibility', 'public').order('created_at', { ascending: false }).limit(6);
+  const postCards = (postsRes.data || []).map(p => ({
+    kind: POST_KIND_LABEL[p.kind] || 'Post',
+    title: p.title || (p.body || '').slice(0, 60) || 'Untitled',
+    meta: (p.body || '').slice(0, 90),
+    href: '#workspace/community'
+  }));
+
+  let subjectNames = [];
+  try { subjectNames = must(await ordered(sb.from('subjects').select('name'))).map(s => s.name); } catch (e) { /* falls back to generic topics below */ }
+  const topics = subjectNames.slice(0, 4);
+  if (!topics.length) topics.push('Study skills', 'Time management', 'Active recall');
+  const articleCards = (await Promise.all(topics.map(async topic => {
+    try {
+      const resp = await fetch(WIKI_API + '?action=query&format=json&origin=*&generator=search&gsrsearch=' +
+        encodeURIComponent(topic) + '&gsrlimit=1&prop=extracts%7Cpageimages&exintro=1&explaintext=1&exchars=160&piprop=thumbnail&pithumbsize=320');
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const page = data.query && data.query.pages ? Object.values(data.query.pages)[0] : null;
+      if (!page || !page.extract) return null;
+      return {
+        kind: 'Article', title: page.title, meta: page.extract,
+        image: page.thumbnail ? page.thumbnail.source : null,
+        href: '#workspace/wiki/' + encodeURIComponent(page.title)
+      };
+    } catch (e) { return null; }
+  }))).filter(Boolean);
+
+  // Interleave rather than two separate runs, so the carousel doesn't read as
+  // "all articles, then all posts".
+  const mixed = [], a = postCards.slice(), b = articleCards.slice();
+  while (a.length || b.length) { if (b.length) mixed.push(b.shift()); if (a.length) mixed.push(a.shift()); }
+  return mixed;
+}
+
+const COMMUNITY_CHIPS = [
+  { key: 'classes', label: 'Live classes',    href: '#workspace/classes' },
+  { key: 'posts',   label: 'Posts',           href: '#workspace/community' },
+  { key: 'groups',  label: 'Groups',          href: '#workspace/groups' },
+  { key: 'qa',      label: 'Q&A',             href: '#workspace/qa' },
+  { key: 'consult', label: 'Consult a teacher', href: '#workspace/consult' },
+  { key: 'market',  label: 'Marketplace',     href: '#workspace/market' },
+  { key: 'teach',   label: 'Teach',           href: '#workspace/teach' },
+  { key: 'books',   label: 'Book reviews',    href: '#workspace/books' }
+];
 const COMMUNITY_HUB_KEYS = ['groups', 'classes', 'community', 'consult', 'qa', 'market', 'teach'];
 async function communityHubPage() {
-  const admin = await loadAdminFlag();
-  return { title: 'Community Hub', nodes: [
+  const [admin, carousel] = await Promise.all([loadAdminFlag(), loadCommunityCarousel().catch(() => [])]);
+  return { title: 'Community', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
+    sectionCarousel(carousel),
+    sectionChipRow(COMMUNITY_CHIPS, null),
+    // Theme redesign step 3: chip row is wired (above), but the feed of full
+    // content blocks it's meant to jump to is steps 4-5 — until then this plain
+    // link list underneath is the same one this page always had, now with Book
+    // reviews folded in (it moved here from its own old top-level Hubs entry).
     h('div', { class: 'list' },
       linkRow({ href: '#workspace/groups',   title: 'Study groups',       meta: 'Join or create a group around a subject or chapter' }),
       linkRow({ href: '#workspace/classes',  title: 'Live classes',       meta: 'Links to online and live classes \u2014 watch or join, with start times' }),
@@ -3478,6 +3598,7 @@ async function communityHubPage() {
       linkRow({ href: '#workspace/qa',       title: 'Q&A',                meta: 'Ask a question, answer others, or request a teacher' }),
       linkRow({ href: '#workspace/market',   title: 'Course marketplace', meta: 'Courses from teachers \u2014 free or unlocked with a payment' }),
       linkRow({ href: '#workspace/teach',    title: 'Teach on Athenaeum', meta: 'Turn teaching on for yourself \u2014 live right away, no waiting' }),
+      linkRow({ href: '#workspace/books',    title: 'Book reviews',      meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }),
       admin ? linkRow({ href: '#workspace/admin/verifications', title: 'Verification requests', meta: 'Review teacher verification requests \u2014 accept, reject, or restore from the dump' }) : null)
   ] };
 }
@@ -3518,7 +3639,7 @@ async function plannerHubPage() {
    After running the SQL, add yourself once: insert into app_admins (user_id) values
    ('<your-auth-user-id>'); */
 async function adminVerificationsPage() {
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community Hub', href: '#workspace/communityhub' }]);
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community', href: '#workspace/communityhub' }]);
   const admin = await loadAdminFlag();
   if (!admin) return { title: 'Verification requests', nodes: [crumb, emptyBlock('Not available', 'This page is for the Athenaeum owner.')] };
   const res = await sb.from('teacher_verification_requests').select('*').order('created_at', { ascending: false });
@@ -3567,7 +3688,7 @@ function hubEntries() {
     { key: 'threed',       href: '#workspace/threed',       title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' },
     { key: 'youtube',      href: '#workspace/youtube',      title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' },
     { key: 'library',      href: '#workspace/library',      title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' },
-    { key: 'communityhub', href: '#workspace/communityhub', title: 'Community Hub',      meta: 'Study groups, live classes, posts, Q&A, teacher consults and the marketplace' },
+    { key: 'communityhub', href: '#workspace/communityhub', title: 'Community',      meta: 'Study groups, live classes, posts, Q&A, teacher consults and the marketplace' },
     { key: 'posts',        href: '#workspace/posts',        title: 'My posts',           meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' },
     { key: 'books',        href: '#workspace/books',        title: 'Book reviews',       meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }
   ];
