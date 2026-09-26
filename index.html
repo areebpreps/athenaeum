@@ -4809,20 +4809,65 @@ async function explorePage() {
    sectionFeedBlock wrapper (title + "Open full page \u2192") the Community
    merges (Teach, Book reviews) already use, and #workspace/today /
    #workspace/projects still exist underneath for that full-page link and
-   for internal "View all \u2192" links elsewhere in the app. */
+   for internal "View all \u2192" links elsewhere in the app.
+   Phase 9 follow-up: the old plannerHub() page (#workspace/planner, not
+   linked from the bottom nav any more) also had a Progress section \u2014 a
+   pie chart of this week's logged time, long-term goal bars, and a
+   planned-vs-actual Review with "Grow/Trim" and "Suggest a rebalance". That
+   still doesn't exist anywhere in this, the real Planner page, so it's
+   folded in here too, merged straight into the Projects/Assignments/Learning
+   block below (same data family: goals, projects, time spent on them) rather
+   than added as a third separate block. */
 let plannerCalView = 'week';   // 'week' | 'month' | 'year' -- kept across re-renders
 let plannerWeekOffset = 0;     // weeks from the current week; 0 = this week
 
 async function plannerTodayBlock() {
   try {
-    const page = await todayHub();
+    const page = await todayHub('sec-projects'); // jump to the merged block below instead of navigating away
     return sectionFeedBlock('today', 'Today', '#workspace/today', page.nodes.slice(1));
   } catch (e) { return sectionFeedBlock('today', 'Today', '#workspace/today', [errorCard(e)]); }
 }
+// Same pie chart / long-term goals / review data plannerHub() (the old,
+// no-longer-linked Planner page) builds \u2014 see that function for the
+// original, commented version this was lifted from.
+async function plannerProgressNodes() {
+  const rows = must(await sb.from('planner_items').select('*').order('created_at', { ascending: true }));
+  const slots = rows.filter(r => r.kind !== 'milestone');
+  const monthAgoISO = todayISOOffset(-29);
+  const monthSessionRows = must(await sb.from('planner_sessions').select('*')
+    .gte('session_date', monthAgoISO).not('actual_minutes', 'is', null));
+  const weekAgoISO = todayISOOffset(-6);
+  const weekSessionRows = monthSessionRows.filter(s => s.session_date >= weekAgoISO);
+  const minutesByTitle = {};
+  weekSessionRows.forEach(s => {
+    const item = rows.find(r => r.id === s.planner_item_id);
+    if (!item) return;
+    const key = item.title;
+    if (!minutesByTitle[key]) minutesByTitle[key] = { label: key, color: item.color, minutes: 0 };
+    minutesByTitle[key].minutes += s.actual_minutes || 0;
+  });
+  const pieSegments = Object.values(minutesByTitle).sort((a, b) => b.minutes - a.minutes);
+  const goalRows = must(await sb.from('projects').select('*').eq('kind', 'learning').order('created_at', { ascending: false }));
+  const activeGoals = goalRows.filter(g => g.status !== 'done');
+  return [
+    section('Progress', null, null,
+      h('h4', { class: 'sub-head', text: 'Time this week' }),
+      pieChart(pieSegments),
+      h('h4', { class: 'sub-head', text: 'Long-term goals' }),
+      activeGoals.length
+        ? h('div', { class: 'list' }, activeGoals.map(g => goalProgressRow(g)))
+        : h('p', { class: 'none', text: 'No active learning goals yet.' })),
+    section('Review', null, null, reviewSection(rows, slots, monthSessionRows))
+  ];
+}
 async function plannerProjectsBlock() {
   try {
-    const page = await projectsHub();
-    return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects', page.nodes.slice(1));
+    const [page, progressNodes] = await Promise.all([
+      projectsHub(),
+      plannerProgressNodes().catch(e => [errorCard(e)])
+    ]);
+    return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects',
+      [...progressNodes, ...page.nodes.slice(1)]);
   } catch (e) { return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects', [errorCard(e)]); }
 }
 async function plannerHubPage() {
@@ -9458,7 +9503,7 @@ async function externalAlarmFeedback(r, on) {
    kind='milestone' rows, so they already flow into `overdue` and `dueSoon`
    below with no extra filtering needed -- E6 only had to add the collision
    warning (see `conflictSection`), not the list membership itself. ---- */
-async function todayHub() {
+async function todayHub(jumpTarget) {
   const today = new Date().getDay();
   const todayDate = todayISO();
   const [plannerRes, sessionRes, projectRes] = await Promise.all([
@@ -9518,11 +9563,12 @@ async function todayHub() {
         collisions.map(c => h('p', { style: 'margin:4px 0 0', text: '\u201c' + c.title + '\u201d is due today, and ' + c.text + '.' })))
     : null;
 
-  // Assignments (stored as kind 'eca') and projects/learning goals, soonest-due first.
-  // Overdue ones already show under "Overdue", so they're left out here to avoid duplicates.
+  // Assignments (kind 'eca') and other projects/learning goals used to get
+  // their own two mini-lists here, six items each, duplicating the full
+  // Projects/Assignments/Learning section further down (or below, in the
+  // merged Planner page) almost exactly. Replaced with one link there below,
+  // pointing to whichever of those two the caller says is the way there.
   const overdueIds = new Set(overdueWork.map(p => p.id));
-  const assignments = activeAll.filter(p => p.kind === 'eca' && !overdueIds.has(p.id)).slice(0, 6);
-  const otherWork = activeAll.filter(p => p.kind !== 'eca' && !overdueIds.has(p.id)).slice(0, 6);
 
   // Day summary: a block counts as done once all its tasks are ticked or its session has ended.
   const blockDone = r => {
@@ -9554,10 +9600,14 @@ async function todayHub() {
         overdueMilestones.map(r => milestoneRow(r)), overdueWork.map(p => projectCard(p))))
     : null;
 
-  const workSection = (title, list, kind, addLabel) => section(title, addLabel, () => openProjectDialog(kind, null),
-    list.length ? h('div', { class: 'list' }, list.map(p => projectCard(p)))
-                : h('p', { class: 'none', text: 'Nothing active here.' }));
-  const extra = activeAll.filter(p => !overdueIds.has(p.id)).length - assignments.length - otherWork.length;
+  // jumpTarget: an element id on the same page to scroll to (used when this
+  // is inlined in the merged Planner page, where the full section really is
+  // right there below); omitted means a normal navigation link instead (the
+  // standalone #workspace/today page has no such section to scroll to).
+  const projectsLink = jumpTarget
+    ? h('button', { class: 'btn quiet small', type: 'button', text: 'Projects, Assignments & Learning \u2193',
+        onclick: () => { const el = document.getElementById(jumpTarget); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } })
+    : h('a', { class: 'row-link', href: '#workspace/projects', text: 'Projects, Assignments & Learning \u2192' });
 
   return { title: 'Today', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
@@ -9568,9 +9618,7 @@ async function todayHub() {
     section('Due soon', null, null,
       dueSoon.length ? h('div', { class: 'list' }, dueSoon.map(r => milestoneRow(r)))
                      : h('p', { class: 'none', text: 'Nothing due in the next week.' })),
-    workSection('Assignments', assignments, 'eca', '+ Add assignment'),
-    workSection('Projects & learning', otherWork, 'project', '+ Add project'),
-    extra > 0 ? h('a', { class: 'row-link', href: '#workspace/projects', text: 'View all (' + extra + ' more) \u2192' }) : null
+    projectsLink
   ].filter(Boolean) };
 }
 
