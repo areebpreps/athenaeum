@@ -17,6 +17,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -88,6 +89,16 @@ public class MainActivity extends Activity {
         // window draw its content behind the system bars and makes the bars
         // themselves transparent, so the WebView (and its own CSS
         // safe-area-inset handling) controls what actually shows there.
+        // The manifest's theme (Theme.NoTitleBar.Fullscreen) already hides the
+        // status bar entirely, so the earlier concern wasn't the status bar —
+        // it's the display cutout (the camera/notch area). By default Android
+        // leaves that area black and refuses to draw content into it unless
+        // told otherwise. This lets the WebView (and its own hero carousel)
+        // extend into the cutout instead of stopping short of it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            getWindow().getAttributes().layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(Color.TRANSPARENT);
         getWindow().setNavigationBarColor(Color.TRANSPARENT);
