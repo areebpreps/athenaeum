@@ -7,6 +7,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -30,6 +31,7 @@ import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.view.WindowCompat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -78,6 +80,18 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // The app's own hero carousel (index.html) is meant to bleed all the
+        // way to the true top of the screen, under the status bar, not stop
+        // at a separate opaque black strip above it. That strip was the
+        // system status bar's default opaque background — this makes the
+        // window draw its content behind the system bars and makes the bars
+        // themselves transparent, so the WebView (and its own CSS
+        // safe-area-inset handling) controls what actually shows there.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+
         setContentView(R.layout.activity_main);
 
         webView = findViewById(R.id.webview);
