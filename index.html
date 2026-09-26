@@ -451,6 +451,18 @@
   }
   .sq-tile .row-del { position: absolute; top: 2px; right: 2px; width: 24px; height: 24px; font-size: 16px; }
 
+  /* Horizontally-scrolling row for richer cards that don't fit the fixed
+     108px sq-tile mold \u2014 Community's "My own uploads" folder items and the
+     Planner's Projects/Assignments/Learning tracker cards. Unlike sq-tile,
+     each child keeps its own internal layout (checklists, add-item fields,
+     badges); this just fixes each child's width along the scroll axis. */
+  .h-scroll-row {
+    display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  }
+  .h-scroll-row::-webkit-scrollbar { display: none; }
+  .h-scroll-row > * { flex: 0 0 82%; max-width: 320px; scroll-snap-align: start; }
+
   /* ---------- Reusable interactive tile (feed-tile) ----------
      stack-tile above is an <a> and can't safely hold buttons/embeds inside
      it. feed-tile is the same visual language (gradient wash, sheen, rounded
@@ -4036,6 +4048,32 @@ function sectionFeedBlock(key, title, openHref, nodes) {
     nodes);
 }
 
+// AI tools redesign: each tool's compact home-hub block reuses the exact same
+// panel markup as that tool's own full page (via xHub().nodes.slice(1)). The
+// leading "New scan" / "New question" / etc. heading and its one-paragraph
+// description only earn their place on the full page — here the block's own
+// "Open full page →" head already gives the tool's name, so this strips just
+// that leading intro before sectionFeedBlock renders it. Two shapes cover
+// every tool: (1) a standalone .hint-line sitting before the panel (Mistake
+// Vault, Grounded Study Engine, Notebook Studio, Export), and/or (2) the
+// .sec-head + immediately-following .hint-line pair at the very top of the
+// first section.sec block (OCR, Question Solver, Fact Checker, YouTube
+// summarizer, Summarizer, Quiz Generator, Flashcard Generator, Translator).
+// Everything else — action buttons, fields, "Past …" lists, results, and any
+// hint-line further down a panel — is left exactly as it was. The nodes here
+// are freshly built on every call (not shared with anything else), so it's
+// safe to just remove children in place rather than cloning first.
+function stripHomeIntro(nodes) {
+  const out = nodes.slice();
+  if (out[0] && out[0].classList && out[0].classList.contains('hint-line')) out.shift();
+  const panel = out[0];
+  if (panel && panel.classList && panel.classList.contains('sec') && panel.firstElementChild) {
+    if (panel.firstElementChild.classList.contains('sec-head')) panel.firstElementChild.remove();
+    if (panel.firstElementChild && panel.firstElementChild.classList.contains('hint-line')) panel.firstElementChild.remove();
+  }
+  return out;
+}
+
 /* ---------- Theme redesign step 9: reusable card-stack builders ----------
    The template §5 uses for Subjects (this step) and Profile (a later step)
    instead of the carousel+chip+feed template above — §5 explicitly excludes
@@ -4677,7 +4715,7 @@ function communityMineFolder(filter, mineData, myName) {
   const count = list.length;
   let open = false;
   const arrow = h('span', { 'aria-hidden': 'true', text: '\u203a' });
-  const body = h('div', { hidden: true, class: 'list', style: 'margin-top:10px' });
+  const body = h('div', { hidden: true, class: 'h-scroll-row', style: 'margin-top:10px' });
   const btn = h('button', { class: 'row', type: 'button', onclick: () => {
     open = !open;
     body.hidden = !open;
@@ -4835,7 +4873,7 @@ const EXPLORE_CHIPS = [
    its chip label. */
 async function exploreWikiBlock() {
   try {
-    const page = await wikiHub();
+    const page = await wikiHub(undefined, true);
     return sectionFeedBlock('wiki', 'Wikipedia reader', '#workspace/wiki', page.nodes.slice(1));
   } catch (e) { return sectionFeedBlock('wiki', 'Wikipedia reader', '#workspace/wiki', [errorCard(e)]); }
 }
@@ -4851,19 +4889,19 @@ async function explorePortalsBlock() {
    function, crumb dropped, title matches its chip label. */
 async function exploreSimBlock() {
   try {
-    const page = await simHub();
+    const page = await simHub(undefined, true);
     return sectionFeedBlock('threed', '3D simulation hub', '#workspace/threed', page.nodes.slice(1));
   } catch (e) { return sectionFeedBlock('threed', '3D simulation hub', '#workspace/threed', [errorCard(e)]); }
 }
 async function exploreYoutubeBlock() {
   try {
-    const page = await ytHub();
+    const page = await ytHub(undefined, true);
     return sectionFeedBlock('youtube', 'YouTube hub', '#workspace/youtube', page.nodes.slice(1));
   } catch (e) { return sectionFeedBlock('youtube', 'YouTube hub', '#workspace/youtube', [errorCard(e)]); }
 }
 async function exploreLibraryBlock() {
   try {
-    const page = await libraryHub();
+    const page = await libraryHub(undefined, true);
     return sectionFeedBlock('library', 'Library hub', '#workspace/library', page.nodes.slice(1));
   } catch (e) { return sectionFeedBlock('library', 'Library hub', '#workspace/library', [errorCard(e)]); }
 }
@@ -5724,31 +5762,31 @@ async function aiAskBlock() {
 async function aiSolverBlock() {
   try {
     const page = await solverHub();
-    return sectionFeedBlock('solver', 'Question Solver', '#ai/solver', page.nodes.slice(1));
+    return sectionFeedBlock('solver', 'Question Solver', '#ai/solver', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('solver', 'Question Solver', '#ai/solver', [errorCard(e)]); }
 }
 async function aiFactcheckBlock() {
   try {
     const page = await factcheckHub();
-    return sectionFeedBlock('factcheck', 'Fact Checker', '#ai/factcheck', page.nodes.slice(1));
+    return sectionFeedBlock('factcheck', 'Fact Checker', '#ai/factcheck', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('factcheck', 'Fact Checker', '#ai/factcheck', [errorCard(e)]); }
 }
 async function aiOcrBlock() {
   try {
     const page = await ocrHub();
-    return sectionFeedBlock('ocr', 'OCR', '#ai/ocr', page.nodes.slice(1));
+    return sectionFeedBlock('ocr', 'OCR', '#ai/ocr', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('ocr', 'OCR', '#ai/ocr', [errorCard(e)]); }
 }
 async function aiYoutubeBlock() {
   try {
     const page = await youtubeHub();
-    return sectionFeedBlock('youtube', 'YouTube summarizer', '#ai/youtube', page.nodes.slice(1));
+    return sectionFeedBlock('youtube', 'YouTube summarizer', '#ai/youtube', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('youtube', 'YouTube summarizer', '#ai/youtube', [errorCard(e)]); }
 }
 async function aiSummarizerBlock() {
   try {
     const page = await summarizerHub();
-    return sectionFeedBlock('summarizer', 'Summarizer & Formula Excerptor', '#ai/summarizer', page.nodes.slice(1));
+    return sectionFeedBlock('summarizer', 'Summarizer & Formula Excerptor', '#ai/summarizer', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('summarizer', 'Summarizer & Formula Excerptor', '#ai/summarizer', [errorCard(e)]); }
 }
 /* ---------- Theme redesign step 17: AI tools section, part B ----------
@@ -5758,43 +5796,43 @@ async function aiSummarizerBlock() {
 async function aiQuizBlock() {
   try {
     const page = await quizHub();
-    return sectionFeedBlock('quiz', 'Quiz Generator', '#ai/quiz', page.nodes.slice(1));
+    return sectionFeedBlock('quiz', 'Quiz Generator', '#ai/quiz', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('quiz', 'Quiz Generator', '#ai/quiz', [errorCard(e)]); }
 }
 async function aiFlashgenBlock() {
   try {
     const page = await flashcardGenHub();
-    return sectionFeedBlock('flashgen', 'Flashcard Generator', '#ai/flashgen', page.nodes.slice(1));
+    return sectionFeedBlock('flashgen', 'Flashcard Generator', '#ai/flashgen', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('flashgen', 'Flashcard Generator', '#ai/flashgen', [errorCard(e)]); }
 }
 async function aiVaultBlock() {
   try {
     const page = await vaultHub();
-    return sectionFeedBlock('vault', 'Mistake Vault', '#ai/vault', page.nodes.slice(1));
+    return sectionFeedBlock('vault', 'Mistake Vault', '#ai/vault', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('vault', 'Mistake Vault', '#ai/vault', [errorCard(e)]); }
 }
 async function aiTranslateBlock() {
   try {
     const page = await translatorHub();
-    return sectionFeedBlock('translate', 'Translator', '#ai/translate', page.nodes.slice(1));
+    return sectionFeedBlock('translate', 'Translator', '#ai/translate', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('translate', 'Translator', '#ai/translate', [errorCard(e)]); }
 }
 async function aiStudyBlock() {
   try {
     const page = await studyHub();
-    return sectionFeedBlock('study', 'Grounded Study Engine', '#ai/study', page.nodes.slice(1));
+    return sectionFeedBlock('study', 'Grounded Study Engine', '#ai/study', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('study', 'Grounded Study Engine', '#ai/study', [errorCard(e)]); }
 }
 async function aiNotebookBlock() {
   try {
     const page = await notebookHub();
-    return sectionFeedBlock('notebook', 'Notebook Studio', '#ai/notebook', page.nodes.slice(1));
+    return sectionFeedBlock('notebook', 'Notebook Studio', '#ai/notebook', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('notebook', 'Notebook Studio', '#ai/notebook', [errorCard(e)]); }
 }
 async function aiExportBlock() {
   try {
     const page = await exportHub();
-    return sectionFeedBlock('export', 'Export to NotebookLM', '#ai/export', page.nodes.slice(1));
+    return sectionFeedBlock('export', 'Export to NotebookLM', '#ai/export', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('export', 'Export to NotebookLM', '#ai/export', [errorCard(e)]); }
 }
 async function buildAIRoot() {
@@ -13537,13 +13575,13 @@ async function projectsHub() {
   return { title: 'Projects, Assignments & Learning', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     section('Projects', '+ Add project', () => openProjectDialog('project', null),
-      projects.length ? h('div', { class: 'list' }, projects.map(p => projectCard(p)))
+      projects.length ? h('div', { class: 'h-scroll-row' }, projects.map(p => projectCard(p)))
                        : h('p', { class: 'none', text: 'No projects yet.' })),
     section('Assignments', '+ Add assignment', () => openProjectDialog('eca', null),
-      assignments.length ? h('div', { class: 'list' }, assignments.map(p => projectCard(p)))
+      assignments.length ? h('div', { class: 'h-scroll-row' }, assignments.map(p => projectCard(p)))
                   : h('p', { class: 'none', text: 'Nothing tracked yet.' })),
     section('Learning tracker', '+ Add learning goal', () => openProjectDialog('learning', null),
-      learning.length ? h('div', { class: 'list' }, learning.map(p => projectCard(p)))
+      learning.length ? h('div', { class: 'h-scroll-row' }, learning.map(p => projectCard(p)))
                   : h('p', { class: 'none', text: 'Nothing being tracked yet. Add a skill or topic you’re learning and check off milestones as you go.' }))
   ] };
 }
@@ -13663,7 +13701,7 @@ function stripHtml(html) {
   return new DOMParser().parseFromString(html || '', 'text/html').body.textContent || '';
 }
 
-async function wikiHub(articleId) {
+async function wikiHub(articleId, compact) {
   if (articleId) {
     let title = articleId;
     try { title = decodeURIComponent(articleId); } catch (e) {}
@@ -13683,9 +13721,13 @@ async function wikiHub(articleId) {
       wikiState.results.forEach(r => list.append(linkRow({
         href: '#workspace/wiki/' + encodeURIComponent(r.title), title: r.title, meta: stripHtml(r.snippet)
       })));
+    } else if (wikiState.query) {
+      status.hidden = false; status.textContent = 'No results.';
+    } else if (compact) {
+      status.hidden = true; status.textContent = '';
     } else {
       status.hidden = false;
-      status.textContent = wikiState.query ? 'No results.' : 'Search for a topic to read its Wikipedia article.';
+      status.textContent = 'Search for a topic to read its Wikipedia article.';
     }
   }
 
@@ -13856,7 +13898,7 @@ const SIM_SITES = [
 let simFilter = 'all';
 const SIM_CRUMBS = [{ text: 'Workspace', href: '#workspace' }, { text: '3D simulation hub', href: '#workspace/threed' }];
 
-async function simHub(itemKey) {
+async function simHub(itemKey, compact) {
   if (itemKey) {
     const site = SIM_SITES.find(s => s.key === itemKey);
     if (site) return simSiteViewer(site);
@@ -13892,7 +13934,7 @@ async function simHub(itemKey) {
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     chips,
     section('Main sites', null, null,
-      h('p', { class: 'hint-line', text: 'Open a site, find a simulation, then save its link below.' }),
+      compact ? null : h('p', { class: 'hint-line', text: 'Open a site, find a simulation, then save its link below.' }),
       sitesBox),
     section('My simulations', '+ Save simulation', () => openSimDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
@@ -14034,16 +14076,16 @@ function summarizeControl(url, title) {
   return { btn, out: h('div', {}, err, result) };
 }
 
-function ytHub(itemKey) {
+function ytHub(itemKey, compact) {
   if (itemKey && itemKey.startsWith('w-')) return youtubeWatchViewer(itemKey.slice(2));
   if (itemKey) {
     if (UUID.test(itemKey)) return savedVideoViewer(itemKey);
     return go('#workspace/youtube');
   }
-  return youtubeHubHome();
+  return youtubeHubHome(compact);
 }
 
-async function youtubeHubHome() {
+async function youtubeHubHome(compact) {
   let saved = [], savedError = null;
   try { saved = must(await sb.from('saved_videos').select('*').order('created_at', { ascending: false })); }
   catch (e) { savedError = e; }
@@ -14061,9 +14103,13 @@ async function youtubeHubHome() {
     } else if (ytSearchState.results.length) {
       status.hidden = true;
       ytSearchState.results.forEach(r => grid.append(ytCard('#workspace/youtube/w-' + r.id, r.title, r.channel, r.thumb)));
+    } else if (ytSearchState.query) {
+      status.hidden = false; status.textContent = 'No results.';
+    } else if (compact) {
+      status.hidden = true; status.textContent = '';
     } else {
       status.hidden = false;
-      status.textContent = ytSearchState.query ? 'No results.' : 'Search to browse videos in-app — tap one to watch, save, or summarize it.';
+      status.textContent = 'Search to browse videos in-app — tap one to watch, save, or summarize it.';
     }
   }
 
@@ -14240,7 +14286,7 @@ function libResultRow(r) {
     h('span', { class: 'chev', 'aria-hidden': 'true', text: '↗' }));
 }
 
-function libraryHub(itemKey) {
+function libraryHub(itemKey, compact) {
   if (itemKey && itemKey.startsWith('read-')) return libraryReadViewer(itemKey.slice(5));
   if (itemKey) {
     const site = LIBRARY_SITES.find(s => s.key === itemKey);
@@ -14248,10 +14294,10 @@ function libraryHub(itemKey) {
     if (UUID.test(itemKey)) return savedLibraryViewer(itemKey);
     return go('#workspace/library');
   }
-  return libraryHubHome();
+  return libraryHubHome(compact);
 }
 
-async function libraryHubHome() {
+async function libraryHubHome(compact) {
   let saved = [], savedError = null;
   try { saved = must(await sb.from('saved_library').select('*').order('created_at', { ascending: false })); }
   catch (e) { savedError = e; }
@@ -14269,9 +14315,13 @@ async function libraryHubHome() {
     } else if (libSearchState.results.length) {
       searchStatus.hidden = true;
       libSearchState.results.forEach(r => searchList.append(libResultRow(r)));
+    } else if (libSearchState.query) {
+      searchStatus.hidden = false; searchStatus.textContent = 'No results.';
+    } else if (compact) {
+      searchStatus.hidden = true; searchStatus.textContent = '';
     } else {
       searchStatus.hidden = false;
-      searchStatus.textContent = libSearchState.query ? 'No results.' : 'Search Project Gutenberg and Open Library for a free ebook to read in-app.';
+      searchStatus.textContent = 'Search Project Gutenberg and Open Library for a free ebook to read in-app.';
     }
   }
 
@@ -14321,7 +14371,7 @@ async function libraryHubHome() {
     searchStatus, searchList,
     chips,
     section('Main sources', null, null,
-      h('p', { class: 'hint-line', text: 'Open a source, find a book or article, then save its link below.' }),
+      compact ? null : h('p', { class: 'hint-line', text: 'Open a source, find a book or article, then save its link below.' }),
       sitesBox),
     section('My library', '+ Save a link', () => openLibraryDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
