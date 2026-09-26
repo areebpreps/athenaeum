@@ -4912,8 +4912,10 @@ let plannerWeekOffset = 0;     // weeks from the current week; 0 = this week
 async function plannerTodayBlock() {
   try {
     const page = await todayHub('sec-projects'); // jump to the merged block below instead of navigating away
-    return sectionFeedBlock('today', 'Today', '#workspace/today', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('today', 'Today', '#workspace/today', [errorCard(e)]); }
+    const rest = page.nodes.slice(1);
+    const jumpLink = rest.pop(); // last node is the "Projects, Assignments & Learning ↓" button, pulled out to surface at the top of the page
+    return { block: sectionFeedBlock('today', 'Today', '#workspace/today', rest), jumpLink };
+  } catch (e) { return { block: sectionFeedBlock('today', 'Today', '#workspace/today', [errorCard(e)]), jumpLink: null }; }
 }
 // Same pie chart / long-term goals / review data plannerHub() (the old,
 // no-longer-linked Planner page) builds \u2014 see that function for the
@@ -4982,9 +4984,9 @@ async function plannerHubPage() {
     : plannerCalView === 'month' ? calMonthView()
     : Promise.resolve(calYearView());
 
-  const [todayBlock, projectsBlock, body] = await Promise.all([plannerTodayBlock(), plannerProjectsBlock(), calBody]);
+  const [todayResult, projectsBlock, body] = await Promise.all([plannerTodayBlock(), plannerProjectsBlock(), calBody]);
 
-  return { title: 'Planner', nodes: [crumb, projectsBlock, todayBlock, toggle, quickRow, body] };
+  return { title: 'Planner', nodes: [crumb, todayResult.jumpLink, todayResult.block, toggle, quickRow, body, projectsBlock] };
 }
 
 // \u00a77.2: the week's own recurring slots (planner_items, kind 'slot'), one
