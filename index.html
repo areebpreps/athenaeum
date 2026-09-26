@@ -546,6 +546,15 @@
   .chronotype-field { margin-bottom: 20px; }
 
   .list { display: grid; gap: 10px; }
+  /* Horizontal-scroll variant of .list: same cards (e.g. .proj), arranged in
+     a side-scrolling row instead of stacked vertically. Used for Today's
+     schedule and Due soon so new items don't push the page taller. */
+  .list-hscroll {
+    display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  }
+  .list-hscroll::-webkit-scrollbar { display: none; }
+  .list-hscroll > * { flex: 0 0 82%; max-width: 340px; scroll-snap-align: start; }
   .row {
     display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 12px 16px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
@@ -849,10 +858,10 @@
   .cal-quickrow { margin-bottom: 22px; }
   .cal-quickchips { margin-bottom: 8px; }
   .cal-cat-add { border-style: dashed; color: var(--dim); }
-  .cal-month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 10px; }
+  .cal-month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 10px; overflow: hidden; }
   .cal-month-head { text-align: center; font-size: 12px; font-weight: 700; color: var(--dim); text-transform: uppercase; padding: 4px 0 8px; }
   .cal-month-cell {
-    aspect-ratio: 1; min-height: 52px; border-radius: 10px; border: 1px solid transparent; background: transparent;
+    aspect-ratio: 1; min-height: 52px; min-width: 0; border-radius: 10px; border: 1px solid transparent; background: transparent;
     color: var(--chalk); display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; padding: 6px 2px;
   }
   .cal-month-cell:active { background: var(--paper-hi); }
@@ -4940,14 +4949,22 @@ async function plannerProgressNodes() {
   ];
 }
 async function plannerProjectsBlock() {
+  // The section head (title + "Open full page →") used to sit above
+  // Progress/Review; moved to sit right above the Projects/Assignments/
+  // Learning tracker lists instead, since that's the part it actually labels.
+  const head = h('div', { class: 'sec-feed-block-head' },
+    h('h3', { text: 'Projects, Assignments & Learning' }),
+    h('a', { href: '#workspace/projects', text: 'Open full page \u2192' }));
   try {
     const [page, progressNodes] = await Promise.all([
       projectsHub(),
       plannerProgressNodes().catch(e => [errorCard(e)])
     ]);
-    return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects',
-      [...progressNodes, ...page.nodes.slice(1)]);
-  } catch (e) { return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects', [errorCard(e)]); }
+    return h('div', { class: 'sec-feed-block', id: 'sec-projects' },
+      progressNodes, head, page.nodes.slice(1));
+  } catch (e) {
+    return h('div', { class: 'sec-feed-block', id: 'sec-projects' }, head, errorCard(e));
+  }
 }
 async function plannerHubPage() {
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
@@ -4967,7 +4984,7 @@ async function plannerHubPage() {
 
   const [todayBlock, projectsBlock, body] = await Promise.all([plannerTodayBlock(), plannerProjectsBlock(), calBody]);
 
-  return { title: 'Planner', nodes: [crumb, todayBlock, toggle, quickRow, body, projectsBlock] };
+  return { title: 'Planner', nodes: [crumb, projectsBlock, todayBlock, toggle, quickRow, body] };
 }
 
 // \u00a77.2: the week's own recurring slots (planner_items, kind 'slot'), one
@@ -4976,9 +4993,10 @@ async function plannerHubPage() {
 // an existing block opens it for editing. Blocks repeat every week by design
 // (same recurring model the old Planner hub's "Weekly routine" already used).
 async function calWeekView() {
-  const byDay = await loadSlotsByWeekday();
   const today = new Date();
   const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay() + plannerWeekOffset * 7);
+  const weekStartISO = weekStartISOOf(weekStart);
+  const byDay = await loadSlotsByWeekday(weekStartISO);
   const dates = [0, 1, 2, 3, 4, 5, 6].map(i => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
   const todayKey = todayISO();
   const dateKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -4990,6 +5008,28 @@ async function calWeekView() {
     h('button', { type: 'button', text: '\u2190 Prev', onclick: () => { plannerWeekOffset--; route(); } }),
     h('strong', { text: plannerWeekOffset === 0 ? 'This week' : rangeLabel }),
     h('button', { type: 'button', text: 'Next \u2192', onclick: () => { plannerWeekOffset++; route(); } }));
+
+  // A week with nothing scheduled yet gets the option to carry last week's
+  // slots forward instead of building it from scratch. Only offered when
+  // this week is genuinely empty, so it never overwrites anything.
+  const hasAnySlot = Object.values(byDay).some(list => list.length);
+  const copyMsg = h('p', { class: 'msg err', hidden: true });
+  const copyRow = hasAnySlot ? null : h('div', { class: 'cal-quickrow' },
+    h('button', {
+      class: 'btn quiet small', type: 'button', text: 'Copy from last week',
+      onclick: async e => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const prevWeekStartISO = weekStartISOOf(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() - 7));
+          const n = await copySlotsFromWeek(prevWeekStartISO, weekStartISO);
+          if (!n) { copyMsg.textContent = 'Last week has nothing to copy.'; copyMsg.hidden = false; btn.disabled = false; return; }
+          refreshPlannerAlarms();
+          route();
+        } catch (err) { copyMsg.textContent = 'Could not copy: ' + err.message; copyMsg.hidden = false; btn.disabled = false; }
+      }
+    }),
+    copyMsg);
 
   const dayRows = dates.map((d, i) => {
     const isToday = dateKey(d) === todayKey;
@@ -5003,21 +5043,21 @@ async function calWeekView() {
         h('span', { class: 'dow', text: WEEKDAYS[i] }),
         h('span', { class: 'dom', text: String(d.getDate()) })),
       h('button', { class: 'cal-add-btn', type: 'button', 'aria-label': 'Add a block on ' + WEEKDAYS_FULL[i],
-        onclick: () => openPlannerDialog('slot', null, { weekday: i }), text: '+' }),
+        onclick: () => openPlannerDialog('slot', null, { weekday: i, week_start: weekStartISO }), text: '+' }),
       h('div', { class: 'cal-blocks' }, blocks));
   });
 
-  return h('div', {}, nav, h('div', { class: 'cal-grid' }, dayRows));
+  return h('div', {}, nav, copyRow, h('div', { class: 'cal-grid' }, dayRows));
 }
 
 /* ---------- Theme redesign step 15: Planner section, part B ----------
    Month/Year scheduling (\u00a77.3) plus the quick-schedule category-chip fast
-   path (\u00a77.4). Same recurring weekly data as Week view (planner_items, kind
-   'slot') \u2014 a slot set on a weekday shows up on that weekday in every
-   week/month/year, since the app has no per-date overrides. Categories for
-   the quick-schedule row are user-defined and kept on-device (store), same
-   pattern as the app's other per-device view settings \u2014 they're a labelled
-   shortcut, not data that needs to sync or be shared. */
+   path (\u00a77.4). Slots now belong to one specific week each (week_start,
+   see loadSlotsByWeekday above) rather than repeating on a weekday forever --
+   a new week starts empty, with "Copy from last week" to carry the previous
+   week's slots forward. Categories for the quick-schedule row are user-defined
+   and kept on-device (store), same pattern as the app's other per-device view
+   settings \u2014 they're a labelled shortcut, not data that needs to sync or be shared. */
 const PLANNER_CATS_KEY = 'plannerCategories';
 const DEFAULT_PLANNER_CATS = [
   { name: 'Study', color: '#C9C9CE' }, { name: 'Break', color: '#43D9A3' }, { name: 'Exercise', color: '#8A8A92' }
@@ -5034,13 +5074,40 @@ let plannerCategories = loadPlannerCategories();
 let plannerSelectedCat = null; // index into plannerCategories, or null
 let plannerMonthOffset = 0;    // months from the current month; 0 = this month
 
-// Shared by Week/Month/Year: every recurring slot, grouped by weekday (0-6).
-async function loadSlotsByWeekday() {
-  const rows = must(await sb.from('planner_items').select('*').eq('kind', 'slot'));
+// Sunday-anchored ISO date (yyyy-mm-dd) for the week containing d. Every
+// slot now belongs to exactly one such week (planner_items.week_start,
+// schema-update-planner-weeks.sql) instead of repeating on a weekday
+// forever -- see the note above loadSlotsByWeekday.
+function weekStartISOOf(d) {
+  const s = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+  return s.getFullYear() + '-' + String(s.getMonth() + 1).padStart(2, '0') + '-' + String(s.getDate()).padStart(2, '0');
+}
+// Shared by Week/Month: every slot that belongs to one specific week
+// (week_start = the Sunday that week starts on), grouped by weekday (0-6).
+// Each week starts empty by design now -- see copySlotsFromWeek for the
+// "Copy from last week" action that fills a new week from the previous one.
+async function loadSlotsByWeekday(weekStartISO) {
+  const rows = must(await sb.from('planner_items').select('*').eq('kind', 'slot').eq('week_start', weekStartISO));
   const byDay = {};
   rows.forEach(r => (byDay[r.weekday] = byDay[r.weekday] || []).push(r));
   Object.values(byDay).forEach(list => list.sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || ''))));
   return byDay;
+}
+// Copies every slot from one week into another (fresh IDs, empty checklist
+// -- a new week's copy starts unticked). Used by the "Copy from last week"
+// button, which only appears when the viewed week has no slots yet.
+async function copySlotsFromWeek(fromWeekStartISO, toWeekStartISO) {
+  const res = await sb.from('planner_items').select('*').eq('kind', 'slot').eq('week_start', fromWeekStartISO);
+  if (res.error) throw res.error;
+  const rows = res.data || [];
+  if (!rows.length) return 0;
+  const inserts = rows.map(r => ({
+    kind: 'slot', title: r.title, weekday: r.weekday, start_time: r.start_time, end_time: r.end_time,
+    color: r.color, alarm_enabled: r.alarm_enabled, week_start: toWeekStartISO, checklist: []
+  }));
+  const insRes = await sb.from('planner_items').insert(inserts);
+  if (insRes.error) throw insRes.error;
+  return rows.length;
 }
 
 // \u00a77.4: tap a category, then "+ Schedule" -- no manual weekday/time picking,
@@ -5117,7 +5184,7 @@ function openQuickScheduleDialog(cat) {
       const weekday = now.getDay();
       const start = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
       const end = addMinutesToTime(start, v.mins);
-      const res = await sb.from('planner_items').insert({ kind: 'slot', title: cat.name, weekday, start_time: start, end_time: end, color: cat.color, alarm_enabled: false });
+      const res = await sb.from('planner_items').insert({ kind: 'slot', title: cat.name, weekday, start_time: start, end_time: end, color: cat.color, alarm_enabled: false, week_start: weekStartISOOf(now) });
       if (res.error) throw res.error;
       refreshPlannerAlarms();
       route();
@@ -5130,7 +5197,6 @@ function openQuickScheduleDialog(cat) {
 // dot to edit that slot); tapping empty space on a day opens the same
 // tap-to-add dialog as Week, pre-set to that day's weekday.
 async function calMonthView() {
-  const byDay = await loadSlotsByWeekday();
   const today = new Date();
   const monthDate = new Date(today.getFullYear(), today.getMonth() + plannerMonthOffset, 1);
   const gridStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - monthDate.getDay());
@@ -5138,14 +5204,23 @@ async function calMonthView() {
   const todayKey = todayISO();
   const dateKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 
+  // The grid is 6 full Sun-Sat rows, so there are only 6 distinct weeks
+  // (week_start values) to fetch slots for -- one lookup per row, not per day.
+  const rowWeekStart = [0, 1, 2, 3, 4, 5].map(row => weekStartISOOf(cells[row * 7]));
+  const slotRes = must(await sb.from('planner_items').select('*').eq('kind', 'slot').in('week_start', rowWeekStart));
+  const byKey = {};
+  slotRes.forEach(r => { const k = r.week_start + '|' + r.weekday; (byKey[k] = byKey[k] || []).push(r); });
+  Object.values(byKey).forEach(list => list.sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || ''))));
+
   const nav = h('div', { class: 'cal-weeknav' },
     h('button', { type: 'button', text: '\u2190 Prev', onclick: () => { plannerMonthOffset--; route(); } }),
     h('strong', { text: monthDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) }),
     h('button', { type: 'button', text: 'Next \u2192', onclick: () => { plannerMonthOffset++; route(); } }));
 
-  const dayCells = cells.map(d => {
+  const dayCells = cells.map((d, i) => {
     const inMonth = d.getMonth() === monthDate.getMonth();
-    const blocks = byDay[d.getDay()] || [];
+    const cellWeekStart = rowWeekStart[Math.floor(i / 7)];
+    const blocks = byKey[cellWeekStart + '|' + d.getDay()] || [];
     const dots = blocks.slice(0, 4).map(r => h('span', {
       class: 'cal-dot', style: '--c:' + colorOf(r.color), title: r.title,
       onclick: e => { e.stopPropagation(); openPlannerDialog('slot', r); }
@@ -5154,7 +5229,7 @@ async function calMonthView() {
     return h('button', {
       class: 'cal-month-cell' + (inMonth ? '' : ' out') + (dateKey(d) === todayKey ? ' is-today' : ''),
       type: 'button', 'aria-label': 'Add a block on ' + fmtDate(d),
-      onclick: () => openPlannerDialog('slot', null, { weekday: d.getDay() })
+      onclick: () => openPlannerDialog('slot', null, { weekday: d.getDay(), week_start: cellWeekStart })
     }, h('span', { class: 'cal-month-num', text: String(d.getDate()) }), h('div', { class: 'cal-month-dots' }, dots, overflow));
   });
 
@@ -9392,9 +9467,10 @@ function firePlannerAlarm(r) {
 async function refreshPlannerAlarms() {
   if (!currentUser || !sb) return;
   const today = new Date().getDay();
+  const thisWeekStartISO = weekStartISOOf(new Date());
   const [slotsRes, deadlinesRes] = await Promise.all([
     sb.from('planner_items').select('id,title,weekday,start_time,alarm_enabled')
-      .eq('kind', 'slot').eq('alarm_enabled', true),
+      .eq('kind', 'slot').eq('alarm_enabled', true).eq('week_start', thisWeekStartISO),
     sb.from('planner_items').select('id,title,kind,milestone_date,alarm_enabled')
       .eq('kind', 'milestone').eq('alarm_enabled', true).not('scholarship_id', 'is', null)
   ]);
@@ -9594,7 +9670,7 @@ async function todayHub(jumpTarget) {
   const sessionRows = must(sessionRes);
   const projects = must(projectRes);
 
-  const allSlots = rows.filter(r => r.kind !== 'milestone');
+  const allSlots = rows.filter(r => r.kind !== 'milestone' && r.week_start === weekStartISOOf(new Date()));
   const todaySlots = allSlots.filter(r => r.weekday === today)
     .sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
   const milestones = rows.filter(r => r.kind === 'milestone' && !r.done);
@@ -9671,7 +9747,7 @@ async function todayHub(jumpTarget) {
             ' · ' + plural(dueSoon.length, 'milestone', 'milestones') + ' due within a week' }));
 
   const scheduleNode = todaySlots.length
-    ? h('div', { class: 'list' }, todaySlots.map(r => slotBlock(r, { isToday: true, session: sessionByItem[r.id] || null, weekSlots: allSlots, history: [] })))
+    ? h('div', { class: 'list-hscroll' }, todaySlots.map(r => slotBlock(r, { isToday: true, session: sessionByItem[r.id] || null, weekSlots: allSlots, history: [] })))
     : h('p', { class: 'none', text: 'Nothing scheduled for today.' });
 
   const overdueSection = overdueCount
@@ -9695,7 +9771,7 @@ async function todayHub(jumpTarget) {
     overdueSection,
     section('Today\u2019s schedule', '+ Add slot', () => openPlannerDialog('slot', null), scheduleNode),
     section('Due soon', null, null,
-      dueSoon.length ? h('div', { class: 'list' }, dueSoon.map(r => milestoneRow(r)))
+      dueSoon.length ? h('div', { class: 'list-hscroll' }, dueSoon.map(r => milestoneRow(r)))
                      : h('p', { class: 'none', text: 'Nothing due in the next week.' })),
     projectsLink
   ].filter(Boolean) };
@@ -12521,6 +12597,10 @@ function quickAddRow() {
     msg.hidden = true;
     try {
       const json = parseQuickAdd(text, getChronotype());
+      // Quick-add only knows a weekday, not which week -- resolve that to
+      // the next real occurrence of that weekday so the new slot lands on
+      // an actual week (week_start) instead of none at all.
+      json.week_start = weekStartISOOf(parseLocalDate(nextOccurrenceISO(json.weekday)));
       input.value = '';
       openPlannerDialog('slot', null, json);
     } catch (e) {
@@ -13330,12 +13410,19 @@ async function openPlannerDialog(kind, existing, draft) {
   let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
   let weekday = row.weekday != null ? row.weekday : new Date().getDay();
   let alarmOn = existing ? !!existing.alarm_enabled : false; // D3
+  // Slots now belong to one specific week (week_start) rather than
+  // repeating on a weekday forever -- existing keeps its own week, a new
+  // one takes the week its "+" button was tapped from.
+  const weekStartForItem = row.week_start || null;
 
   // D7: conflict detection needs to know about every other slot up front,
   // so it's fetched once before the dialog opens rather than per-keystroke.
+  // Scoped to this same week, since a slot in another week can't collide.
   let otherSlots = [];
   if (activeKind === 'slot') {
-    const res = await sb.from('planner_items').select('id,title,weekday,start_time,end_time').eq('kind', 'slot');
+    let q = sb.from('planner_items').select('id,title,weekday,start_time,end_time,week_start').eq('kind', 'slot');
+    if (weekStartForItem) q = q.eq('week_start', weekStartForItem);
+    const res = await q;
     if (!res.error) otherSlots = (res.data || []).filter(o => o.id !== row.id);
   }
 
@@ -13409,7 +13496,11 @@ async function openPlannerDialog(kind, existing, draft) {
       };
     },    async onSubmit(v) {
       const payload = { kind: activeKind, title: v.title };
-      if (activeKind === 'slot') { payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time; payload.color = color; payload.alarm_enabled = alarmOn; }
+      if (activeKind === 'slot') {
+        payload.weekday = weekday; payload.start_time = v.start_time; payload.end_time = v.end_time;
+        payload.color = color; payload.alarm_enabled = alarmOn;
+        if (!existing) payload.week_start = weekStartForItem;
+      }
       else { payload.milestone_date = v.milestone_date; payload.day_count = v.day_count; }
       const res = existing
         ? await sb.from('planner_items').update(payload).eq('id', row.id)
