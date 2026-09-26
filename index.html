@@ -644,6 +644,67 @@
   .chip-slot:empty { display: none; }
   .progress { height: 6px; margin-top: 6px; background: var(--paper-hi); border-radius: 999px; overflow: hidden; }
   .progress i { display: block; height: 100%; background: var(--marker); border-radius: 999px; }
+
+  /* ---------- Theme redesign step 14: Diary-style calendar (Planner, \u00a77) ----------
+     Section 5 (Planner) skips the carousel+chip-row template (\u00a73) \u2014 it's the
+     Week/Month/Year calendar in \u00a77. This step builds the toggle and the Week
+     view's tap-to-add scheduling; Month/Year scheduling is the next step (\u00a715).
+     Reuses the existing weekly-routine data (planner_items, kind 'slot') and its
+     add/edit dialog \u2014 only the shell here is new. */
+  .cal-weeknav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .cal-weeknav strong { font-family: var(--serif); font-size: 17px; }
+  .cal-weeknav button { min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--paper); color: var(--chalk); font-weight: 600; }
+  .cal-weeknav button:active { background: var(--paper-hi); }
+  .cal-grid { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 4px 14px; }
+  .cal-day-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .cal-day-row:last-child { border-bottom: 0; }
+  .cal-day-row.is-today { background: rgba(243,201,85,.07); border-radius: 12px; padding: 12px 8px; margin: 0 -8px; }
+  .cal-day-label { flex: none; width: 42px; display: grid; text-align: center; }
+  .cal-day-label .dow { font-size: 12px; color: var(--dim); font-weight: 700; text-transform: uppercase; }
+  .cal-day-label .dom { font-family: var(--serif); font-size: 18px; font-weight: 600; }
+  .cal-day-row.is-today .cal-day-label .dom { color: var(--marker); }
+  .cal-add-btn {
+    flex: none; width: 36px; height: 36px; margin-top: 2px; border-radius: 50%; border: 1px dashed var(--line);
+    background: var(--paper-hi); color: var(--dim); font-size: 18px; line-height: 1; font-weight: 700;
+  }
+  .cal-add-btn:active { background: var(--line); color: var(--chalk); }
+  .cal-blocks { flex: 1; min-width: 0; display: flex; gap: 8px; flex-wrap: nowrap; overflow-x: auto; padding: 2px 2px 4px; }
+  .cal-blocks::-webkit-scrollbar { display: none; }
+  .cal-blocks:empty::after { content: 'No blocks yet'; color: var(--dim); font-size: 14px; align-self: center; }
+  .cal-block {
+    flex: none; max-width: 190px; padding: 8px 12px; border-radius: 12px; background: var(--paper-hi);
+    border: 1px solid var(--line); border-left: 3px solid var(--c); text-align: left;
+  }
+  .cal-block strong { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal-block small { color: var(--dim); font-size: 12px; }
+  .cal-placeholder { color: var(--dim); padding: 32px 4px; text-align: center; }
+
+  /* ---------- Theme redesign step 15: quick-schedule row + Month/Year (\u00a77.3\u2013\u00a77.4) ---------- */
+  .cal-quickrow { margin-bottom: 22px; }
+  .cal-quickchips { margin-bottom: 8px; }
+  .cal-cat-add { border-style: dashed; color: var(--dim); }
+  .cal-month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 10px; }
+  .cal-month-head { text-align: center; font-size: 12px; font-weight: 700; color: var(--dim); text-transform: uppercase; padding: 4px 0 8px; }
+  .cal-month-cell {
+    aspect-ratio: 1; min-height: 52px; border-radius: 10px; border: 1px solid transparent; background: transparent;
+    color: var(--chalk); display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; padding: 6px 2px;
+  }
+  .cal-month-cell:active { background: var(--paper-hi); }
+  .cal-month-cell.out { color: var(--dim); opacity: .45; }
+  .cal-month-cell.is-today { border-color: var(--marker); }
+  .cal-month-cell.is-today .cal-month-num { color: var(--marker); font-weight: 700; }
+  .cal-month-num { font-size: 13px; }
+  .cal-month-dots { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; }
+  .cal-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+  .cal-dot-more { color: var(--dim); font-size: 10px; }
+  .cal-year-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .cal-year-card {
+    min-height: 64px; border-radius: 14px; border: 1px solid var(--line); background: var(--paper);
+    color: var(--chalk); font-weight: 600; display: grid; place-items: center;
+  }
+  .cal-year-card:active { background: var(--paper-hi); }
+  .cal-year-card.is-today { border-color: var(--marker); }
+  .cal-year-card.is-today strong { color: var(--marker); }
   /* D4: progress tab -- pie chart + long-term goal rows */
   .sub-head { margin: 18px 0 8px; font-size: 15px; color: var(--dim); }
   .sub-head:first-of-type { margin-top: 4px; }
@@ -3865,20 +3926,248 @@ async function explorePage() {
     // plain link list left at the bottom, same as Community after step 5.
   ] };
 }
-/* ---------- Theme redesign step 1: temporary section landing ----------
-   Planner (bottom-nav section 5) doesn't have a real unified page yet \u2014
-   that's its own later build step (calendar rework, \u00a77). For now this is a
-   plain link list, same component Explore/Hubs used before step 6, just so
-   the Planner nav button goes somewhere today. Existing pages behind each
-   link are completely unchanged. */
+/* ---------- Theme redesign step 14: Planner section, part A ----------
+   Replaces the step-1 placeholder link list with the real \u00a77 template:
+   a Week/Month/Year toggle over a Diary-style calendar grid. Week view is
+   fully built here (tap "+" on a day row to schedule a block); Month and
+   Year are switchable, and get their own tap-to-add scheduling in step 15
+   below. The "+" reuses the existing weekly-routine dialog (openPlannerDialog,
+   kind 'slot'), pre-selecting the tapped day \u2014 same underlying data
+   (planner_items) and feature logic as the Planner hub, only the shell
+   is new. Today and Projects, also folded into this section per \u00a72.1,
+   stay one tap away for now via the quick-link row below the toggle. */
+let plannerCalView = 'week';   // 'week' | 'month' | 'year' -- kept across re-renders
+let plannerWeekOffset = 0;     // weeks from the current week; 0 = this week
+
 async function plannerHubPage() {
-  return { title: 'Planner', nodes: [
-    crumbs([{ text: 'Workspace', href: '#workspace' }]),
-    h('div', { class: 'list' },
-      linkRow({ href: '#workspace/today',    title: 'Today',    meta: 'Everything due or scheduled today, in one place' }),
-      linkRow({ href: '#workspace/planner',  title: 'Planner',  meta: 'Weekly routine and milestones' }),
-      linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you\u2019re learning' }))
-  ] };
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
+
+  const quickLinks = h('div', { class: 'list' },
+    linkRow({ href: '#workspace/today',    title: 'Today',    meta: 'Everything due or scheduled today, in one place' }),
+    linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you\u2019re learning' }));
+
+  const toggle = h('div', { class: 'seg seg-3 cal-viewtoggle', role: 'group', 'aria-label': 'Calendar view' },
+    ['week', 'month', 'year'].map(v => h('button', {
+      type: 'button', 'aria-pressed': String(v === plannerCalView),
+      text: v[0].toUpperCase() + v.slice(1),
+      onclick: () => { plannerCalView = v; route(); }
+    })));
+
+  const quickRow = quickScheduleRow();
+
+  let body;
+  if (plannerCalView === 'week') body = await calWeekView();
+  else if (plannerCalView === 'month') body = await calMonthView();
+  else body = calYearView();
+
+  return { title: 'Planner', nodes: [crumb, quickLinks, toggle, quickRow, body] };
+}
+
+// \u00a77.2: the week's own recurring slots (planner_items, kind 'slot'), one
+// row per day Sun\u2013Sat, real dates for the currently viewed week. Tapping a
+// day's "+" opens the existing slot dialog pre-set to that weekday; tapping
+// an existing block opens it for editing. Blocks repeat every week by design
+// (same recurring model the old Planner hub's "Weekly routine" already used).
+async function calWeekView() {
+  const byDay = await loadSlotsByWeekday();
+  const today = new Date();
+  const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay() + plannerWeekOffset * 7);
+  const dates = [0, 1, 2, 3, 4, 5, 6].map(i => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+  const todayKey = todayISO();
+  const dateKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+
+  const rangeLabel = dates[0].toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ' \u2013 ' +
+    dates[6].toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
+  const nav = h('div', { class: 'cal-weeknav' },
+    h('button', { type: 'button', text: '\u2190 Prev', onclick: () => { plannerWeekOffset--; route(); } }),
+    h('strong', { text: plannerWeekOffset === 0 ? 'This week' : rangeLabel }),
+    h('button', { type: 'button', text: 'Next \u2192', onclick: () => { plannerWeekOffset++; route(); } }));
+
+  const dayRows = dates.map((d, i) => {
+    const isToday = dateKey(d) === todayKey;
+    const blocks = (byDay[i] || []).map(r => h('button', {
+      class: 'cal-block', type: 'button', style: '--c:' + colorOf(r.color),
+      onclick: () => openPlannerDialog('slot', r)
+    }, h('strong', { text: r.title }),
+       h('small', { text: (r.start_time || '').slice(0, 5) + (r.end_time ? '\u2013' + r.end_time.slice(0, 5) : '') })));
+    return h('div', { class: 'cal-day-row' + (isToday ? ' is-today' : '') },
+      h('div', { class: 'cal-day-label' },
+        h('span', { class: 'dow', text: WEEKDAYS[i] }),
+        h('span', { class: 'dom', text: String(d.getDate()) })),
+      h('button', { class: 'cal-add-btn', type: 'button', 'aria-label': 'Add a block on ' + WEEKDAYS_FULL[i],
+        onclick: () => openPlannerDialog('slot', null, { weekday: i }), text: '+' }),
+      h('div', { class: 'cal-blocks' }, blocks));
+  });
+
+  return h('div', {}, nav, h('div', { class: 'cal-grid' }, dayRows));
+}
+
+/* ---------- Theme redesign step 15: Planner section, part B ----------
+   Month/Year scheduling (\u00a77.3) plus the quick-schedule category-chip fast
+   path (\u00a77.4). Same recurring weekly data as Week view (planner_items, kind
+   'slot') \u2014 a slot set on a weekday shows up on that weekday in every
+   week/month/year, since the app has no per-date overrides. Categories for
+   the quick-schedule row are user-defined and kept on-device (store), same
+   pattern as the app's other per-device view settings \u2014 they're a labelled
+   shortcut, not data that needs to sync or be shared. */
+const PLANNER_CATS_KEY = 'plannerCategories';
+const DEFAULT_PLANNER_CATS = [
+  { name: 'Study', color: '#F3C955' }, { name: 'Break', color: '#7FD1A0' }, { name: 'Exercise', color: '#8AB4FF' }
+];
+function loadPlannerCategories() {
+  try {
+    const saved = JSON.parse(store.get(PLANNER_CATS_KEY) || 'null');
+    if (Array.isArray(saved) && saved.length) return saved;
+  } catch (e) {}
+  return DEFAULT_PLANNER_CATS.slice();
+}
+function savePlannerCategories(list) { store.set(PLANNER_CATS_KEY, JSON.stringify(list)); }
+let plannerCategories = loadPlannerCategories();
+let plannerSelectedCat = null; // index into plannerCategories, or null
+let plannerMonthOffset = 0;    // months from the current month; 0 = this month
+
+// Shared by Week/Month/Year: every recurring slot, grouped by weekday (0-6).
+async function loadSlotsByWeekday() {
+  const rows = must(await sb.from('planner_items').select('*').eq('kind', 'slot'));
+  const byDay = {};
+  rows.forEach(r => (byDay[r.weekday] = byDay[r.weekday] || []).push(r));
+  Object.values(byDay).forEach(list => list.sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || ''))));
+  return byDay;
+}
+
+// \u00a77.4: tap a category, then "+ Schedule" -- no manual weekday/time picking,
+// it books straight onto today. A separate row from the "+" on each Week/Month
+// day cell, which still opens the full slot dialog for anyone who wants to
+// pick the day and exact time by hand.
+function quickScheduleRow() {
+  const chips = plannerCategories.map((c, i) => h('button', {
+    class: 'chip-btn', type: 'button', style: '--c:' + c.color, 'aria-pressed': String(i === plannerSelectedCat),
+    onclick: () => { plannerSelectedCat = (plannerSelectedCat === i ? null : i); route(); }
+  }, c.name));
+  const addChip = h('button', { class: 'chip-btn cal-cat-add', type: 'button', text: '+ New', onclick: openAddCategoryDialog });
+  const goBtn = h('button', {
+    class: 'btn small', type: 'button', text: '+ Schedule', disabled: plannerSelectedCat == null,
+    onclick: () => openQuickScheduleDialog(plannerCategories[plannerSelectedCat])
+  });
+  return h('div', { class: 'cal-quickrow' },
+    h('div', { class: 'chips cal-quickchips' }, chips, addChip),
+    h('p', { class: 'hint-line', text: 'Pick a category, then Schedule \u2014 it books today automatically.' }),
+    goBtn);
+}
+
+function openAddCategoryDialog() {
+  let color = PALETTE[plannerCategories.length % PALETTE.length].hex;
+  showDialog({
+    title: 'New category',
+    submitLabel: 'Add',
+    render(form) {
+      const fName = makeField('Category name', { maxlength: 40 });
+      form.append(fName.wrap);
+      const swGroup = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Colour' });
+      const syncColor = () => swGroup.querySelectorAll('.swatch').forEach(b => b.setAttribute('aria-checked', String(b.dataset.hex === color)));
+      PALETTE.forEach(p => {
+        const b = h('button', { type: 'button', class: 'swatch', role: 'radio', 'aria-label': p.name, 'data-hex': p.hex,
+                                onclick: () => { color = p.hex; syncColor(); } });
+        b.style.setProperty('--c', p.hex);
+        swGroup.append(b);
+      });
+      syncColor();
+      form.append(h('div', { class: 'field' }, h('label', { text: 'Colour' }), swGroup));
+      return () => {
+        const name = fName.input.value.trim();
+        if (!name) throw new Error('Name this category.');
+        return { name };
+      };
+    },
+    onSubmit(v) {
+      plannerCategories = [...plannerCategories, { name: v.name, color }];
+      savePlannerCategories(plannerCategories);
+      plannerSelectedCat = plannerCategories.length - 1;
+      route();
+    }
+  });
+}
+
+const QUICK_DURATIONS = [30, 60, 90, 120, 180]; // minutes
+function openQuickScheduleDialog(cat) {
+  showDialog({
+    title: 'Schedule "' + cat.name + '"',
+    text: 'Books today, starting now, for the length you pick.',
+    submitLabel: 'Schedule',
+    render(form) {
+      let mins = QUICK_DURATIONS[1];
+      const group = h('div', { class: 'chips', role: 'radiogroup', 'aria-label': 'Duration' },
+        QUICK_DURATIONS.map(m => h('button', {
+          type: 'button', class: 'chip-btn', 'aria-pressed': String(m === mins), text: m < 60 ? m + ' min' : (m / 60) + ' h',
+          onclick: e => { mins = m; group.querySelectorAll('.chip-btn').forEach(b => b.setAttribute('aria-pressed', String(b === e.currentTarget))); }
+        })));
+      form.append(group);
+      return () => ({ mins });
+    },
+    async onSubmit(v) {
+      const now = new Date();
+      const weekday = now.getDay();
+      const start = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+      const end = addMinutesToTime(start, v.mins);
+      const res = await sb.from('planner_items').insert({ kind: 'slot', title: cat.name, weekday, start_time: start, end_time: end, color: cat.color, alarm_enabled: false });
+      if (res.error) throw res.error;
+      refreshPlannerAlarms();
+      route();
+    }
+  });
+}
+
+// \u00a77.3: Month view \u2014 same recurring weekday data as Week, shown across a
+// full month grid. Blocks accumulate as small coloured dots per day (tap a
+// dot to edit that slot); tapping empty space on a day opens the same
+// tap-to-add dialog as Week, pre-set to that day's weekday.
+async function calMonthView() {
+  const byDay = await loadSlotsByWeekday();
+  const today = new Date();
+  const monthDate = new Date(today.getFullYear(), today.getMonth() + plannerMonthOffset, 1);
+  const gridStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - monthDate.getDay());
+  const cells = Array.from({ length: 42 }, (_, i) => new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i));
+  const todayKey = todayISO();
+  const dateKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+
+  const nav = h('div', { class: 'cal-weeknav' },
+    h('button', { type: 'button', text: '\u2190 Prev', onclick: () => { plannerMonthOffset--; route(); } }),
+    h('strong', { text: monthDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) }),
+    h('button', { type: 'button', text: 'Next \u2192', onclick: () => { plannerMonthOffset++; route(); } }));
+
+  const dayCells = cells.map(d => {
+    const inMonth = d.getMonth() === monthDate.getMonth();
+    const blocks = byDay[d.getDay()] || [];
+    const dots = blocks.slice(0, 4).map(r => h('span', {
+      class: 'cal-dot', style: '--c:' + colorOf(r.color), title: r.title,
+      onclick: e => { e.stopPropagation(); openPlannerDialog('slot', r); }
+    }));
+    const overflow = blocks.length > 4 ? h('small', { class: 'cal-dot-more', text: '+' + (blocks.length - 4) }) : null;
+    return h('button', {
+      class: 'cal-month-cell' + (inMonth ? '' : ' out') + (dateKey(d) === todayKey ? ' is-today' : ''),
+      type: 'button', 'aria-label': 'Add a block on ' + fmtDate(d),
+      onclick: () => openPlannerDialog('slot', null, { weekday: d.getDay() })
+    }, h('span', { class: 'cal-month-num', text: String(d.getDate()) }), h('div', { class: 'cal-month-dots' }, dots, overflow));
+  });
+
+  return h('div', {}, nav,
+    h('div', { class: 'cal-month-grid' }, WEEKDAYS.map(w => h('div', { class: 'cal-month-head', text: w })), dayCells));
+}
+
+// \u00a77.3: Year view. Slots repeat every week regardless of month (no
+// per-date overrides yet), so every month shows the same weekday pattern --
+// this view is mainly for jumping to a month; tapping one opens it in Month
+// view above, where the actual tap-to-add scheduling lives.
+function calYearView() {
+  const today = new Date();
+  const months = Array.from({ length: 12 }, (_, i) => new Date(today.getFullYear(), i, 1));
+  const nav = h('div', { class: 'cal-weeknav' }, h('strong', { text: String(today.getFullYear()) }));
+  const cards = months.map((m, i) => h('button', {
+    class: 'cal-year-card' + (i === today.getMonth() ? ' is-today' : ''), type: 'button',
+    onclick: () => { plannerCalView = 'month'; plannerMonthOffset = i - today.getMonth(); route(); }
+  }, h('strong', { text: m.toLocaleDateString(undefined, { month: 'short' }) })));
+  return h('div', {}, nav, h('div', { class: 'cal-year-grid' }, cards));
 }
 
 /* ---------- G15: in-app verification review (owner/admin only) ----------
