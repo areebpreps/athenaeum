@@ -362,6 +362,22 @@
   .stack-tile strong { display: block; font-family: var(--serif); font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
   .stack-tile small { display: block; color: var(--dim); margin-top: 4px; }
 
+  /* ---------- Reusable interactive tile (feed-tile) ----------
+     stack-tile above is an <a> and can't safely hold buttons/embeds inside
+     it. feed-tile is the same visual language (gradient wash, sheen, rounded
+     20px, badge) as a plain block container, for any list item that needs
+     interactive children — used first for Live classes' cards. */
+  .feed-tile {
+    position: relative; display: block; padding: 16px 18px; border-radius: 20px;
+    color: var(--chalk); border: 1px solid var(--line); overflow: hidden; margin-bottom: 12px;
+  }
+  .feed-tile::after { content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none; }
+  .feed-tile > * { position: relative; }
+  .feed-tile-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .feed-tile strong.feed-tile-title { display: block; font-family: var(--serif); font-size: 19px; font-weight: 600; overflow-wrap: anywhere; margin-bottom: 2px; }
+  .feed-tile small.feed-tile-meta { display: block; color: var(--dim); }
+  .feed-tile .feed-tile-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
   /* ---------- Theme redesign step 10: profile page stats row ----------
      §5.3's "follower-style stats row" \u2014 this app has no follow feature, so
      it shows real counts (posts, for now) in that same visual shape instead. */
@@ -15647,15 +15663,18 @@ async function schClassesPage() {
     } }) : null;
     const notes = c.notes ? h('p', { class: 'post-body', text: c.notes }) : null;
     if (notes) notes.addEventListener('click', () => notes.classList.toggle('open'));
-    return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
-      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
-        h('span', { class: 'chip' + (state === 'live' ? ' pub' : ''), text: { live: 'Live now', upcoming: 'Upcoming', anytime: 'Anytime', past: 'Ended' }[state] }),
-        h('small', { text: schClassCatLabel(c.category) })),
-      h('strong', { style: 'overflow-wrap:anywhere', text: c.title }),
-      c.host ? h('small', { text: c.host }) : null,
-      c.starts_at ? h('small', { text: schClassWhen(c) }) : null,
+    return h('div', {
+      class: 'feed-tile',
+      style: 'background: linear-gradient(135deg, ' + hexToRgba(SCH_CLASS_COLOR, state === 'live' ? .5 : .28) + ', var(--paper))'
+    },
+      h('div', { class: 'feed-tile-top' },
+        h('span', { class: 'stack-tile-badge', text: { live: 'Live now', upcoming: 'Upcoming', anytime: 'Anytime', past: 'Ended' }[state] }),
+        h('small', { class: 'feed-tile-meta', text: schClassCatLabel(c.category) })),
+      h('strong', { class: 'feed-tile-title', text: c.title }),
+      c.host ? h('small', { class: 'feed-tile-meta', text: c.host }) : null,
+      c.starts_at ? h('small', { class: 'feed-tile-meta', text: schClassWhen(c) }) : null,
       notes, player,
-      h('div', { class: 'vault-actions', style: 'margin:0' },
+      h('div', { class: 'feed-tile-actions' },
         href ? h('a', { class: 'btn small', href, target: '_blank', rel: 'noopener noreferrer', text: state === 'live' || state === 'upcoming' ? 'Join' : 'Open link' }) : null,
         watch,
         h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSchClassDialog(c) })));
