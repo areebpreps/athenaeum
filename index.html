@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<meta name="theme-color" content="#0D1220">
+<meta name="theme-color" content="#120E1F">
 <meta name="color-scheme" content="dark">
 <title>Athenaeum</title>
 
@@ -21,17 +21,27 @@
 
 <style>
   :root {
-    /* midnight ink + highlighter marker */
-    --ink:      #0D1220;   /* page background */
-    --paper:    #151C2E;   /* cards, bars */
-    --paper-hi: #1E2740;   /* inputs, raised */
-    --line:     #2B3554;
-    --chalk:    #ECE9E1;   /* main text */
-    --dim:      #9AA2BA;   /* secondary text */
-    --marker:   #F3C955;   /* highlighter accent */
-    --marker-ink: #1A1400;
-    --ok:       #7FD1A0;
-    --err:      #FF9A9A;
+    /* Theme redesign step 21: global colour pass. Was flat navy + a single
+       gold accent; now a violet-tinted dark canvas with a vivid, varied,
+       gradient-based accent system (\u00a78) instead of one flat highlighter
+       colour. --marker keeps its name (hundreds of existing rules read it)
+       but is now a hot-pink accent; anything that wants the full "shiny"
+       multi-colour treatment reaches for --grad-brand / --sheen instead. */
+    --ink:      #120E1F;   /* page background */
+    --paper:    #1C1730;   /* cards, bars */
+    --paper-hi: #271F42;   /* inputs, raised */
+    --line:     #3A3060;
+    --chalk:    #F2EDF7;   /* main text */
+    --dim:      #A79FC4;   /* secondary text */
+    --marker:   #FF4FA3;   /* accent (was gold, now vivid pink) */
+    --marker-ink: #2B0620;
+    --ok:       #43D9A3;
+    --err:      #FF6B6B;
+
+    /* varied, glossy accent gradients \u2014 the "vibrant/gradient-based" half of \u00a78 */
+    --grad-brand:      linear-gradient(135deg, #7C5CFF 0%, #FF4FA3 55%, #FFB648 100%);
+    --grad-brand-soft: linear-gradient(135deg, rgba(124,92,255,.30), rgba(255,79,163,.30));
+    --sheen: linear-gradient(120deg, rgba(255,255,255,.20) 0%, rgba(255,255,255,0) 45%);
 
     --serif: "Newsreader", "Noto Serif Bengali", Georgia, "Times New Roman", serif;
     --sans:  "Figtree", "Noto Sans Bengali", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -134,8 +144,10 @@
 
   .btn {
     width: 100%; min-height: 54px; border: 0; border-radius: 14px; font-weight: 700; font-size: 17px;
-    background: var(--marker); color: var(--marker-ink);
+    background: var(--grad-brand); color: #fff; position: relative; overflow: hidden;
+    box-shadow: 0 6px 18px rgba(124,92,255,.28);
   }
+  .btn::after { content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none; }
   .btn:disabled { opacity: .6; cursor: default; }
   .btn.quiet { background: var(--paper-hi); color: var(--chalk); border: 1px solid var(--line); font-weight: 600; }
 
@@ -168,6 +180,14 @@
   }
   .tb-icon:active { background: var(--paper-hi); }
   .tb-icon svg { width: 24px; height: 24px; }
+  /* \u00a72.2: Add is "the fastest path to add something" \u2014 give it a filled,
+     branded circle instead of the plain outline every other top-bar icon
+     uses, so it reads as the one actionable icon in the group at a glance. */
+  #add-btn { background: var(--grad-brand); color: #fff; box-shadow: 0 3px 10px rgba(255,79,163,.35); }
+  #add-btn:active { filter: brightness(.92); background: var(--grad-brand); }
+  /* \u00a72.2: Notifications should "feel considered/branded, not default" \u2014
+     a tinted accent stroke instead of the plain chalk outline. */
+  #bell-btn svg { color: var(--marker); }
   .bell-dot {
     position: absolute; top: 4px; right: 4px; min-width: 16px; height: 16px; padding: 0 3px; border-radius: 8px;
     background: var(--err); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
@@ -226,8 +246,13 @@
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
+  nav.tabs button[aria-current="page"] { color: var(--marker-ink); }
   nav.tabs button[aria-current="page"]::before {
-    content: ""; position: absolute; inset: 4px; border-radius: 999px; background: var(--marker);
+    content: ""; position: absolute; inset: 4px; border-radius: 999px; background: var(--grad-brand);
+    box-shadow: 0 4px 14px rgba(255,79,163,.4);
+  }
+  nav.tabs button[aria-current="page"]::after {
+    content: ""; position: absolute; inset: 4px; border-radius: 999px; background: var(--sheen); pointer-events: none;
   }
 
   /* ---------- Theme redesign step 3: reusable section-page template ----------
@@ -240,11 +265,18 @@
   }
   .sec-carousel::-webkit-scrollbar { display: none; }
   .sec-carousel-card {
-    flex: 0 0 auto; scroll-snap-align: start; width: 78%; max-width: 320px;
+    position: relative; flex: 0 0 auto; scroll-snap-align: start; width: 78%; max-width: 320px;
     display: block; text-align: left; text-decoration: none; color: var(--chalk);
     background: var(--paper); border: 1px solid var(--line); border-radius: 18px;
     padding: 14px 16px; overflow: hidden;
   }
+  .sec-carousel-card::after {
+    content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none;
+  }
+  /* Scholarships (\u00a78's highest-polish section): richer border + glow than
+     the shared carousel card, matching the premium chip-row treatment above. */
+  .sec-carousel-card.premium { border-color: transparent; box-shadow: 0 0 0 1px rgba(255,79,163,.35), 0 10px 26px rgba(124,92,255,.22); }
+  .sec-carousel-card.premium .sc-kind { background: var(--grad-brand); -webkit-background-clip: text; background-clip: text; color: transparent; }
   .sec-carousel-card img {
     width: calc(100% + 32px); margin: -14px -16px 10px; display: block;
     height: 120px; object-fit: cover;
@@ -261,7 +293,28 @@
     flex: 0 0 auto; border: 1px solid var(--line); background: var(--paper-hi); color: var(--dim);
     font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 999px; text-decoration: none;
   }
-  .sec-chip[aria-current="true"] { background: var(--marker); border-color: var(--marker); color: var(--marker-ink); }
+  .sec-chip[aria-current="true"] {
+    background: var(--grad-brand); border-color: transparent; color: #fff;
+    box-shadow: 0 4px 14px rgba(255,79,163,.32);
+  }
+  /* \u00a78: Scholarships (4) and AI tools (6) are the two "very very very
+     aesthetic" sections \u2014 their chip rows get the highest-polish treatment:
+     a glossy pill shell behind the row and a bolder resting chip style,
+     layered on top of the shared .sec-chip-row rules above. */
+  .sec-chip-row.premium {
+    padding: 8px; margin-top: 8px; border-radius: 999px;
+    background: var(--paper); border: 1px solid var(--line);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  }
+  .sec-chip-row.premium .sec-chip {
+    background: var(--paper-hi); border-color: transparent; color: var(--chalk); font-weight: 700;
+  }
+  .sec-chip-row.premium .sec-chip[aria-current="true"] {
+    background: var(--grad-brand); position: relative; overflow: hidden;
+  }
+  .sec-chip-row.premium .sec-chip[aria-current="true"]::after {
+    content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none;
+  }
 
   /* ---------- Theme redesign step 4: stacked feed blocks ----------
      One block per sub-item, stacked vertically below the chip row (§3.3).
@@ -295,8 +348,11 @@
   }
   .stack-add:active { background: var(--paper-hi); }
   .stack-tile {
-    display: block; padding: 18px; border-radius: 20px; text-decoration: none;
-    color: var(--chalk); border: 1px solid var(--line);
+    position: relative; display: block; padding: 18px; border-radius: 20px; text-decoration: none;
+    color: var(--chalk); border: 1px solid var(--line); overflow: hidden;
+  }
+  .stack-tile::after {
+    content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none;
   }
   .stack-tile-badge {
     display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
@@ -948,7 +1004,7 @@
     position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
     display: flex; align-items: center; gap: 8px;
     padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px;
-    background: #F3C955; color: #1A1400;
+    background: var(--grad-brand, #FF4FA3); color: #fff;
     font: 700 14px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
   }
   #apk-banner[hidden] { display: none; }
@@ -961,9 +1017,9 @@
   #apk-banner-link:active { opacity: .75; }
   #apk-banner-close {
     flex: none; width: 30px; height: 30px; display: grid; place-items: center;
-    border: 0; background: transparent; color: #1A1400; font-size: 20px; line-height: 1; border-radius: 50%;
+    border: 0; background: transparent; color: #fff; font-size: 20px; line-height: 1; border-radius: 50%;
   }
-  #apk-banner-close:active { background: rgba(0,0,0,.1); }
+  #apk-banner-close:active { background: rgba(0,0,0,.15); }
 </style>
 <script>
 /* Android WebView has no window.speechSynthesis. Inside the APK, MainActivity
@@ -1416,8 +1472,8 @@ function enterApp(user) {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEX  = /^#[0-9a-fA-F]{6}$/;
 const PALETTE = [
-  { name: 'Yellow', hex: '#F3C955' }, { name: 'Green',  hex: '#7FD1A0' }, { name: 'Blue',   hex: '#8AB4FF' },
-  { name: 'Red',    hex: '#FF9A9A' }, { name: 'Purple', hex: '#C6A2FF' }, { name: 'Orange', hex: '#FFB86B' }
+  { name: 'Yellow', hex: '#FFC93C' }, { name: 'Green',  hex: '#43D9A3' }, { name: 'Blue',   hex: '#5B8CFF' },
+  { name: 'Red',    hex: '#FF5C7A' }, { name: 'Purple', hex: '#A876FF' }, { name: 'Orange', hex: '#FF9F45' }
 ];
 const colorOf = c => (HEX.test(c || '') ? c : PALETTE[0].hex);
 const plural  = (n, one, many) => n + ' ' + (n === 1 ? one : many);
@@ -3719,9 +3775,10 @@ function buildWorkspace(ids = []) {
    (carousel + chip row + feed of stacked blocks). Community uses them first here;
    Explore/Hubs, Scholarships and AI tools reuse the same two builders in their own
    later build steps rather than each rolling their own. */
-function sectionCarousel(cards) {
+function sectionCarousel(cards, premium) {
   if (!cards || !cards.length) return null;
-  return h('div', { class: 'sec-carousel' }, cards.map(c => h('a', { class: 'sec-carousel-card', href: c.href },
+  return h('div', { class: 'sec-carousel' }, cards.map(c => h('a', {
+    class: 'sec-carousel-card' + (premium ? ' premium' : ''), href: c.href },
     c.image ? h('img', { src: c.image, alt: '', loading: 'lazy' }) : null,
     h('span', { class: 'sc-kind', text: c.kind }),
     h('strong', { text: c.title }),
@@ -3732,8 +3789,8 @@ function sectionCarousel(cards) {
 // as before this redesign; true tap-to-anchor-scroll within one stacked feed (§3.3)
 // takes over once each section's blocks exist (later steps), without needing to
 // change this builder.
-function sectionChipRow(chips, activeKey) {
-  return h('div', { class: 'sec-chip-row' }, chips.map(c => h('a', {
+function sectionChipRow(chips, activeKey, premium) {
+  return h('div', { class: 'sec-chip-row' + (premium ? ' premium' : '') }, chips.map(c => h('a', {
     class: 'sec-chip', href: c.href, 'aria-current': c.key === activeKey ? 'true' : null, text: c.label
   })));
 }
@@ -3761,7 +3818,7 @@ function sectionFeedBlock(key, title, openHref, nodes) {
    rather than color-mix() for older Android WebView compatibility. */
 function hexToRgba(hex, alpha) {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
-  if (!m) return 'rgba(243,201,85,' + alpha + ')'; // falls back to --marker gold
+  if (!m) return 'rgba(255,79,163,' + alpha + ')'; // falls back to --marker pink
   const n = parseInt(m[1], 16);
   return 'rgba(' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(',') + ',' + alpha + ')';
 }
@@ -3776,7 +3833,7 @@ function stackHeader({ avatarName, avatarSrc, title, meta, href }) {
 function stackTile({ href, color, badge, title, meta }) {
   return h('a', {
     class: 'stack-tile', href,
-    style: 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(color), .30) + ', var(--paper))'
+    style: 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(color), .55) + ', var(--paper))'
   },
     badge ? h('span', { class: 'stack-tile-badge', text: badge }) : null,
     h('strong', { text: title }),
@@ -3890,7 +3947,7 @@ document.addEventListener('click', () => {
          subtitle: { placeholder: 'Subtitle' },
          body: { placeholder: 'Write something\u2026', rows: 5 },
          rating: true,
-         cover: { color: '#F3C955' },
+         cover: { color: '#FF4FA3' },
          attachments: ['images', 'date', 'website', 'location']
        }).get; },
        onSubmit: async values => { \u2026 }
@@ -3936,7 +3993,7 @@ function itemEditor(form, cfg) {
   }
 
   if (cfg.cover) {
-    const color = (cfg.cover === true ? null : cfg.cover.color) || '#F3C955';
+    const color = (cfg.cover === true ? null : cfg.cover.color) || '#FF4FA3';
     const existingUrl = cfg.cover === true ? '' : (cfg.cover.url || '');
     const shownUrl = () => coverPreviewUrl || (!coverRemove ? existingUrl : '');
     const preview = h('div', { class: 'item-ed-cover', 'aria-hidden': 'true' });
@@ -3947,7 +4004,7 @@ function itemEditor(form, cfg) {
     function paintCover() {
       const url = shownUrl();
       preview.replaceChildren();
-      preview.style.background = url ? '' : ('linear-gradient(135deg, ' + hexToRgba(color, .35) + ', var(--paper))');
+      preview.style.background = url ? '' : ('linear-gradient(135deg, ' + hexToRgba(color, .6) + ', var(--paper))');
       if (url) preview.append(h('img', { src: url, alt: '' }));
       pickBtn.textContent = url ? 'Change photo' : 'Add photo';
       removeBtn.hidden = !url;
@@ -4455,7 +4512,7 @@ async function calWeekView() {
    shortcut, not data that needs to sync or be shared. */
 const PLANNER_CATS_KEY = 'plannerCategories';
 const DEFAULT_PLANNER_CATS = [
-  { name: 'Study', color: '#F3C955' }, { name: 'Break', color: '#7FD1A0' }, { name: 'Exercise', color: '#8AB4FF' }
+  { name: 'Study', color: '#FF4FA3' }, { name: 'Break', color: '#43D9A3' }, { name: 'Exercise', color: '#5B8CFF' }
 ];
 function loadPlannerCategories() {
   try {
@@ -5164,7 +5221,7 @@ async function buildAIRoot() {
     aiQuizBlock(), aiFlashgenBlock(), aiVaultBlock(), aiTranslateBlock(), aiStudyBlock(), aiNotebookBlock(), aiExportBlock()
   ]);
   return { title: 'AI tools', nodes: [
-    sectionChipRow(AI_CHIPS, null),
+    sectionChipRow(AI_CHIPS, null, true),
     askBlock, solverBlock, factcheckBlock, ocrBlock, youtubeBlock, summarizerBlock,
     quizBlock, flashgenBlock, vaultBlock, translateBlock, studyBlock, notebookBlock, exportBlock
     // Every chip in AI_CHIPS now has its own stacked block above \u2014 no chip
@@ -7393,11 +7450,11 @@ function parseInfographicJSON(text) {
   return data;
 }
 
-// Draws the structured data as navy/yellow cards on a canvas — text only, no
+// Draws the structured data as violet/pink cards on a canvas — text only, no
 // AI-generated imagery, so spelling always matches the source notes exactly.
 async function renderInfographic(data, style) {
   if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) {} }
-  const C = { bg: '#0D1220', card: '#151C2E', line: '#2B3554', chalk: '#ECE9E1', dim: '#9AA2BA', marker: '#F3C955', markerInk: '#1A1400' };
+  const C = { bg: '#120E1F', card: '#1C1730', line: '#3A3060', chalk: '#F2EDF7', dim: '#A79FC4', marker: '#FF4FA3', markerInk: '#2B0620' };
   const W = 900, PAD = 36, CARD_PAD = 20, GAP = 16, colW = W - PAD * 2;
   const scratch = document.createElement('canvas').getContext('2d');
   function wrap(text, font, maxW) {
@@ -8309,7 +8366,7 @@ async function subjectPage(sid) {
     h('div', { class: 'stack-header', style: 'align-items:flex-start' },
       h('button', {
           class: 'subj-cover', type: 'button', 'aria-label': (subject.cover_path ? 'Change' : 'Add') + ' cover photo',
-          style: subject.cover_path ? '' : 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(subject.color), .35) + ', var(--paper))',
+          style: subject.cover_path ? '' : 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(subject.color), .6) + ', var(--paper))',
           onclick: () => entityDialog('subject', subject, {})
         },
         subject.cover_path ? h('img', { src: subjectCoverUrl(subject.cover_path), alt: '' }) : null,
@@ -8546,7 +8603,7 @@ function entityDialog(kind, existing, ctx) {
         function paintCoverPreview() {
           const url = shownCoverUrl();
           preview.replaceChildren();
-          preview.style.background = url ? '' : ('linear-gradient(135deg, ' + hexToRgba(color, .35) + ', var(--paper))');
+          preview.style.background = url ? '' : ('linear-gradient(135deg, ' + hexToRgba(color, .6) + ', var(--paper))');
           if (url) preview.append(h('img', { src: url, alt: '' }));
           pickBtn.textContent = hasCover() ? 'Change photo' : 'Add photo';
           removeBtn.hidden = !hasCover();
@@ -9169,7 +9226,7 @@ async function scholarshipsHub(sub) {
   ]);
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   if (res.error) {
-    return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel),
+    return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel, true),
       h('div', { class: 'status bad' }, h('strong', { text: 'Scholarship Center is not set up yet' }),
         'Run the update SQL in Supabase (schema-update-E1-scholarship-profile.sql), then reload. (' + res.error.message + ') ',
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
@@ -9337,7 +9394,7 @@ async function scholarshipsHub(sub) {
 
   function paint() { if (mode === 'summary') paintSummary(); else paintWizard(); }
   paint();
-  return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel), sectionChipRow(SCHOLARSHIPS_CHIPS, null),
+  return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel, true), sectionChipRow(SCHOLARSHIPS_CHIPS, null, true),
     sectionFeedBlock('scholarships', 'Scholarship Center', null, [shortlistLink, box]),
     languageHubBlock(), olympiadHubBlock()] };
 }
