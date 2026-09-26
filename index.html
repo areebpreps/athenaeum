@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<meta name="theme-color" content="#120E1F">
+<meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
 <title>Athenaeum</title>
 
@@ -27,7 +27,7 @@
        colour. --marker keeps its name (hundreds of existing rules read it)
        but is now a hot-pink accent; anything that wants the full "shiny"
        multi-colour treatment reaches for --grad-brand / --sheen instead. */
-    --ink:      #120E1F;   /* page background */
+    --ink:      #000000;   /* page background \u2014 phase 1: true black, was navy/violet #120E1F */
     --paper:    #1C1730;   /* cards, bars */
     --paper-hi: #271F42;   /* inputs, raised */
     --line:     #3A3060;
@@ -179,7 +179,6 @@
   body.hero-page .topbar .tb-left,
   body.hero-page .topbar .tb-right { pointer-events: auto; }
   body.hero-page .topbar .back,
-  body.hero-page .topbar .tb-icon,
   body.hero-page .topbar .who {
     background: rgba(0,0,0,.35);
     border-radius: 999px;
@@ -199,18 +198,14 @@
      since it's no longer bell-specific now that 4 of the 5 top-bar icons use it. */
   .tb-icon {
     position: relative; min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
-    background: transparent; border: 0; color: var(--chalk); padding: 0;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); color: var(--dim); padding: 0;
   }
-  .tb-icon:active { background: var(--paper-hi); }
+  .tb-icon:active { background: rgba(255,255,255,.12); }
   .tb-icon svg { width: 24px; height: 24px; }
-  /* \u00a72.2: Add is "the fastest path to add something" \u2014 give it a filled,
-     branded circle instead of the plain outline every other top-bar icon
-     uses, so it reads as the one actionable icon in the group at a glance. */
-  #add-btn { background: var(--grad-brand); color: #fff; box-shadow: 0 3px 10px rgba(255,79,163,.35); }
-  #add-btn:active { filter: brightness(.92); background: var(--grad-brand); }
-  /* \u00a72.2: Notifications should "feel considered/branded, not default" \u2014
-     a tinted accent stroke instead of the plain chalk outline. */
-  #bell-btn svg { color: var(--marker); }
+  /* Post-build audit phase 1: Settings/Search/Add/Notifications are now one
+     plain, muted, flat circle (Hypelist-style) \u2014 no more vivid gradient
+     Add button and no more pink-accented bell; only the profile picture
+     stays visually distinct as a real photo. */
   .bell-dot {
     position: absolute; top: 4px; right: 4px; min-width: 16px; height: 16px; padding: 0 3px; border-radius: 8px;
     background: var(--err); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
@@ -573,6 +568,10 @@
   .item.flashcard.flipped .body { display: -webkit-box; -webkit-line-clamp: unset; overflow: visible; color: var(--chalk); font-weight: 600; }
   .item.flashcard .fc-hint { display: block; margin-top: 2px; font-size: 13px; color: var(--dim); }
   .item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+  /* Post-build audit phase 2: small cover thumbnail on an item card \u2014 the
+     item's own picked image, or (when it has none) its subject's cover
+     photo; a subject-tinted gradient when there's no image at all. */
+  .item-cover { width: 40px; height: 40px; border-radius: 8px; flex: none; display: block; object-fit: cover; }
   .origin { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
   .item-edit, .item-listen {
     margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
@@ -2100,7 +2099,7 @@ async function multiShareGroup() {
 // Tapping the card expands/collapses its clamped body text (harmless if the
 // text was already short enough to show in full); the small pencil button is
 // the only way to open the edit dialog, and stops the tap from also toggling.
-function itemCard(scope, it) {
+function itemCard(scope, it, subjectCtx) {
   const { type, row } = it;
   const detail = type === 'formula' ? row.description : row.body;
   const editBtn = h('button', {
@@ -2115,6 +2114,16 @@ function itemCard(scope, it) {
     class: 'item-listen', type: 'button', 'aria-label': 'Share as a post',
     onclick: e => { e.stopPropagation(); openShareDialog(postSrc(type, row)); }
   }, shareIcon()) : null;
+  // Post-build audit phase 2: item's own picked cover, else its subject's
+  // cover photo (subjectCtx is only passed by the subject/chapter/topic
+  // pages, where every item shares one known subject); a subject-tinted
+  // gradient when there's no image at all, so cross-subject item lists
+  // that don't pass subjectCtx still render sensibly.
+  const coverPath = row.image_path || (subjectCtx && subjectCtx.coverPath) || null;
+  const cover = coverPath
+    ? h('img', { class: 'item-cover', src: subjectCoverUrl(coverPath), alt: '' })
+    : h('span', { class: 'item-cover', 'aria-hidden': 'true',
+        style: 'background: linear-gradient(135deg, ' + hexToRgba((subjectCtx && subjectCtx.color) || null, .5) + ', var(--paper-hi))' });
 
   // Flashcards behave like an actual flashcard even when just browsing: the
   // back stays hidden until tapped, same tap that expands other item types.
@@ -2125,7 +2134,7 @@ function itemCard(scope, it) {
   const pickBox = selecting && shareable ? h('span', { class: 'pick-box', 'aria-hidden': 'true', text: isPicked() ? '\u2713' : '' }) : null;
   const card = h('div', { class: 'item' + (isFlashcard ? ' flashcard' : '') + (selecting && !shareable ? ' dim' : '') + (pickBox && isPicked() ? ' picked' : ''), tabindex: '0', role: 'button', 'aria-expanded': 'false' },
     h('span', { class: 'item-head' },
-      pickBox,
+      pickBox, cover,
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
       listenBtn, shareBtn, editBtn),
@@ -2169,7 +2178,7 @@ function folderIcon() {
   return t.content.firstChild;
 }
 
-function itemsSection(scope, items, heading, hint) {
+function itemsSection(scope, items, heading, hint, subjectCtx) {
   const bar = h('div', { class: 'group-bar' });
   const box = h('div');
   const types = Object.keys(ITEM_TYPES);
@@ -2205,7 +2214,7 @@ function itemsSection(scope, items, heading, hint) {
     const itemArrangeOpts = {
       label: it => it.row.title || ('Untitled ' + ITEM_TYPES[it.type].label.toLowerCase()),
       table: it => ITEM_TYPES[it.type].table,
-      render: it => itemCard(scope, it)
+      render: it => itemCard(scope, it, subjectCtx)
     };
 
     if (!grouped) {
@@ -4404,7 +4413,6 @@ async function communityHubPage() {
     communityQaBlock(), communityConsultBlock(), communityMarketBlock(), communityTeachBlock(), communityBooksBlock()
   ]);
   return { title: 'Community', nodes: [
-    crumbs([{ text: 'Workspace', href: '#workspace' }]),
     sectionCarousel(carousel),
     sectionChipRow(COMMUNITY_CHIPS, null),
     classesBlock, postsBlock, groupsBlock, qaBlock, consultBlock, marketBlock, teachBlock, booksBlock,
@@ -4498,7 +4506,6 @@ async function explorePage() {
     exploreSimBlock(), exploreYoutubeBlock(), exploreLibraryBlock()
   ]);
   return { title: 'Explore', nodes: [
-    crumbs([{ text: 'Workspace', href: '#workspace' }]),
     sectionCarousel(carousel),
     sectionChipRow(EXPLORE_CHIPS, null),
     wikiBlock, portalsBlock, simBlock, youtubeBlock, libraryBlock
@@ -8467,7 +8474,7 @@ async function subjectPage(sid) {
                   meta: plural(counts[ch.id] || 0, 'topic', 'topics') })
               })
             : h('p', { class: 'none', text: 'No chapters yet.' })) },
-      { key: 'items', label: 'All items in this subject', node: itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.') },
+      { key: 'items', label: 'All items in this subject', node: itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.', { coverPath: subject.cover_path, color: subject.color }) },
       { key: 'flashcards', label: 'Flashcards', node: flashcardsSection(scope, items) },
       { key: 'infoboxes', label: 'Information boxes', node: infoBoxesSection(scope, infoBoxes) },
       { key: 'traps', label: 'Trap tracker', node: trapsSection(scope, traps) },
@@ -8506,7 +8513,7 @@ async function chapterPage(sid, cid) {
               href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })
           })
         : h('p', { class: 'none', text: 'No topics yet.' })),
-    itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.'),
+    itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.', { coverPath: subject.cover_path, color: subject.color }),
     flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
@@ -8540,7 +8547,7 @@ async function topicPage(sid, cid, tid) {
       { text: chapter.title, href: '#subjects/' + sid + '/' + cid }
     ]),
     editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
-    itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.'),
+    itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.', { coverPath: subject.cover_path, color: subject.color }),
     flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
@@ -8778,6 +8785,10 @@ function confirmDeleteEntity(kind, existing, ctx) {
 function openItemDialog(scope, existing) {
   let type = existing ? existing.type : 'note';
   const row = existing ? existing.row : {};
+  // Post-build audit phase 2: item cover photo (image_path) — schema-update-J1-item-cover.sql.
+  // Reuses the subject-covers bucket/pipeline (avatarBlob, subjectCoverUrl) under an
+  // 'items/' path, so it needs no new bucket or storage policy of its own.
+  let coverBlob = null, coverRemove = false, coverPreviewUrl = '';
 
   showDialog({
     title: existing ? 'Edit ' + ITEM_TYPES[type].label.toLowerCase() : 'Add to this ' + levelName(scope),
@@ -8807,6 +8818,44 @@ function openItemDialog(scope, existing) {
       form.append(fTitle.wrap, fBody.wrap, fExpr.wrap, fDesc.wrap);
       apply();
 
+      // Cover photo — optional; falls back to the subject's own cover when left unset.
+      const shownCoverUrl = () => coverPreviewUrl || (!coverRemove && row.image_path ? subjectCoverUrl(row.image_path) : '');
+      const hasCover = () => !!shownCoverUrl();
+      const preview = h('div', { class: 'subj-cover', style: 'height:56px;width:56px;border-radius:12px', 'aria-hidden': 'true' });
+      const fileIn = h('input', { type: 'file', accept: 'image/*', hidden: true, 'aria-label': 'Choose a cover photo' });
+      const pickBtn = h('button', { class: 'btn quiet small', type: 'button' });
+      const removeBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo' });
+      const coverMsg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+      function paintCoverPreview() {
+        const url = shownCoverUrl();
+        preview.replaceChildren();
+        preview.style.background = url ? '' : 'var(--paper-hi)';
+        if (url) preview.append(h('img', { src: url, alt: '' }));
+        pickBtn.textContent = hasCover() ? 'Change photo' : 'Add photo';
+        removeBtn.hidden = !hasCover();
+      }
+      pickBtn.addEventListener('click', () => fileIn.click());
+      removeBtn.addEventListener('click', () => {
+        if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
+        coverBlob = null; coverPreviewUrl = ''; coverRemove = true; fileIn.value = ''; paintCoverPreview();
+      });
+      fileIn.addEventListener('change', async () => {
+        const file = fileIn.files && fileIn.files[0]; if (!file) return;
+        coverMsg.hidden = true;
+        if (!/^image\//.test(file.type || '')) { coverMsg.textContent = 'Choose a photo (JPG, PNG or WebP).'; coverMsg.hidden = false; return; }
+        try {
+          const blob = await avatarBlob(file, 192);
+          if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
+          coverBlob = blob; coverPreviewUrl = URL.createObjectURL(blob); coverRemove = false; paintCoverPreview();
+        } catch (e) { coverMsg.textContent = (e && e.message) || 'Could not read that photo.'; coverMsg.hidden = false; }
+      });
+      paintCoverPreview();
+      form.append(h('div', { class: 'field' },
+        h('label', { text: 'Cover photo (optional \u2014 uses the subject\u2019s cover photo if you skip this)' }),
+        preview, fileIn,
+        h('div', { class: 'edit-row', style: 'display:flex;gap:8px;margin-top:8px' }, pickBtn, removeBtn),
+        coverMsg));
+
       return () => {
         const T = ITEM_TYPES[type];
         const v = { title: fTitle.input.value.trim(), body: fBody.input.value.trim(),
@@ -8831,10 +8880,27 @@ function openItemDialog(scope, existing) {
         Object.assign(payload, { source: 'manual', due_at: new Date().toISOString(), interval_days: 0, ease: 2.5, reps: 0, lapses: 0 });
       }
 
+      let oldCoverPath = null, newCoverPath = null;
+      if (coverBlob) {
+        newCoverPath = currentUser.id + '/items/' + crypto.randomUUID() + '.jpg';
+        const up = await sb.storage.from(SUBJECT_COVER_BUCKET).upload(newCoverPath, coverBlob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
+        if (up.error) { newCoverPath = null; throw up.error; }
+        oldCoverPath = row.image_path;
+        payload.image_path = newCoverPath;
+      } else if (coverRemove && row.image_path) {
+        oldCoverPath = row.image_path;
+        payload.image_path = null;
+      }
+
       const res = existing
         ? await sb.from(T.table).update(payload).eq('id', row.id)
         : await sb.from(T.table).insert({ ...scopeCols(scope), ...payload });
-      if (res.error) throw res.error;
+      if (res.error) {
+        if (newCoverPath) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([newCoverPath]); } catch (e) {} }
+        if ('image_path' in payload) throw new Error(res.error.message + ' (run schema-update-J1-item-cover.sql in Supabase, then try again)');
+        throw res.error;
+      }
+      if (oldCoverPath && oldCoverPath !== newCoverPath) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([oldCoverPath]); } catch (e) {} }
       route();
     },
     extras: existing ? [
@@ -8852,6 +8918,7 @@ function confirmDeleteItem(existing) {
     async onSubmit() {
       const res = await sb.from(T.table).delete().eq('id', existing.row.id);
       if (res.error) throw res.error;
+      if (existing.row.image_path) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([existing.row.image_path]); } catch (e) {} }
       route();
     }
   });
@@ -9305,9 +9372,8 @@ async function scholarshipsHub(sub) {
     sb.from('scholarship_profiles').select('*').maybeSingle(),
     loadScholarshipsCarousel().catch(() => [])
   ]);
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   if (res.error) {
-    return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel, true),
+    return { title: 'Scholarship Center', nodes: [sectionCarousel(carousel, true),
       h('div', { class: 'status bad' }, h('strong', { text: 'Scholarship Center is not set up yet' }),
         'Run the update SQL in Supabase (schema-update-E1-scholarship-profile.sql), then reload. (' + res.error.message + ') ',
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
@@ -9475,7 +9541,7 @@ async function scholarshipsHub(sub) {
 
   function paint() { if (mode === 'summary') paintSummary(); else paintWizard(); }
   paint();
-  return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel, true), sectionChipRow(SCHOLARSHIPS_CHIPS, null, true),
+  return { title: 'Scholarship Center', nodes: [sectionCarousel(carousel, true), sectionChipRow(SCHOLARSHIPS_CHIPS, null, true),
     sectionFeedBlock('scholarships', 'Scholarship Center', null, [shortlistLink, box]),
     languageHubBlock(), olympiadHubBlock()] };
 }
