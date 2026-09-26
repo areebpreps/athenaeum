@@ -456,6 +456,12 @@
   button.sq-tile { font: inherit; cursor: pointer; }
   .sq-tile.selected { border-color: var(--marker); background: var(--paper-hi); box-shadow: inset 0 0 0 1.5px var(--marker); }
   .sq-tile:disabled { opacity: .5; pointer-events: none; }
+  /* Big square variant — Mistake Vault cards: a large square tile (bigger
+     than the standard 108px sq-tile) that shows only the question, kept
+     concise like every other square tile in the app. Tap opens the full
+     detail (answer, explanation, tags) in a dialog. */
+  .sq-tile-lg { flex-basis: 168px; width: 168px; padding: 14px 12px; }
+  .sq-tile-lg strong { font-size: 14px; -webkit-line-clamp: 6; }
 
   /* Horizontally-scrolling row for richer cards that don't fit the fixed
      108px sq-tile mold \u2014 Community's "My own uploads" folder items and the
@@ -1762,7 +1768,6 @@ function workspaceParentHash(ids) {
 // AI tools (Phase 3.2) follow the same shape: #ai/<tool>[/<chat id>]. Back always goes up one segment.
 function aiParentHash(ids) {
   if (ids.length <= 1) return '#ai';
-  if (ids.length >= 3 && ids[0] === 'translate' && ids[1] === 'check') return '#ai/translate/check';
   return '#ai/' + ids[0];
 }
 
@@ -5704,6 +5709,7 @@ function buildAI(ids = []) {
   if (ids[0] === 'flashgen')   return flashcardGenHub();
   if (ids[0] === 'vault')      return vaultHub();
   if (ids[0] === 'translate')  return translatorHub(ids.slice(1));
+  if (ids[0] === 'checkwriting') return checkWritingHub(ids[1]);
   if (ids[0] === 'study')      return studyHub(ids[1]);
   if (ids[0] === 'infographic') return notebookHub(ids[1]); // merged into Notebook Studio (B4)
   if (ids[0] === 'notebook')    return notebookHub(ids[1]);
@@ -5731,7 +5737,8 @@ const AI_TOOLS_LIST = [
   { href: '#ai/quiz', title: 'Quiz Generator', meta: 'MCQ and essay tests from your notes' },
   { href: '#ai/flashgen', title: 'Flashcard Generator', meta: 'Turn notes into spaced-repetition flashcards' },
   { href: '#ai/vault', title: 'Mistake Vault', meta: 'Wrong quiz answers, tracked until you get them right' },
-  { href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation, plus grammar & citation checking' },
+  { href: '#ai/translate', title: 'Translator', meta: 'English / Bangla translation' },
+  { href: '#ai/checkwriting', title: 'Check writing', meta: 'Grammar, clarity and citation checks for your writing' },
   { href: '#ai/study', title: 'Grounded Study Engine', meta: 'Answers only from your own notes, with citations' },
   { href: '#ai/notebook', title: 'Notebook Studio', meta: 'Synthesis, audio, slides, mind maps, tables & infographics from your own material' },
   { href: '#ai/export', title: 'Export to NotebookLM', meta: 'Package a scope into Markdown files to upload' }
@@ -5759,6 +5766,7 @@ const AI_CHIPS = [
   { key: 'flashgen',   label: 'Flashcard Generator',             href: '#ai/flashgen' },
   { key: 'vault',      label: 'Mistake Vault',                   href: '#ai/vault' },
   { key: 'translate',  label: 'Translator',                      href: '#ai/translate' },
+  { key: 'checkwriting', label: 'Check writing',                 href: '#ai/checkwriting' },
   { key: 'study',      label: 'Grounded Study Engine',           href: '#ai/study' },
   { key: 'notebook',   label: 'Notebook Studio',                 href: '#ai/notebook' },
   { key: 'export',     label: 'Export to NotebookLM',            href: '#ai/export' }
@@ -5827,6 +5835,12 @@ async function aiTranslateBlock() {
     return sectionFeedBlock('translate', 'Translator', '#ai/translate', stripHomeIntro(page.nodes.slice(1)));
   } catch (e) { return sectionFeedBlock('translate', 'Translator', '#ai/translate', [errorCard(e)]); }
 }
+async function aiCheckwritingBlock() {
+  try {
+    const page = await checkWritingHub();
+    return sectionFeedBlock('checkwriting', 'Check writing', '#ai/checkwriting', stripHomeIntro(page.nodes.slice(1)));
+  } catch (e) { return sectionFeedBlock('checkwriting', 'Check writing', '#ai/checkwriting', [errorCard(e)]); }
+}
 async function aiStudyBlock() {
   try {
     const page = await studyHub();
@@ -5848,15 +5862,15 @@ async function aiExportBlock() {
 async function buildAIRoot() {
   const [
     askBlock, solverBlock, factcheckBlock, ocrBlock, youtubeBlock, summarizerBlock,
-    quizBlock, flashgenBlock, vaultBlock, translateBlock, studyBlock, notebookBlock, exportBlock
+    quizBlock, flashgenBlock, vaultBlock, translateBlock, checkwritingBlock, studyBlock, notebookBlock, exportBlock
   ] = await Promise.all([
     aiAskBlock(), aiSolverBlock(), aiFactcheckBlock(), aiOcrBlock(), aiYoutubeBlock(), aiSummarizerBlock(),
-    aiQuizBlock(), aiFlashgenBlock(), aiVaultBlock(), aiTranslateBlock(), aiStudyBlock(), aiNotebookBlock(), aiExportBlock()
+    aiQuizBlock(), aiFlashgenBlock(), aiVaultBlock(), aiTranslateBlock(), aiCheckwritingBlock(), aiStudyBlock(), aiNotebookBlock(), aiExportBlock()
   ]);
   return { title: 'AI tools', nodes: [
     sectionChipRow(AI_CHIPS, null, true),
     askBlock, solverBlock, factcheckBlock, ocrBlock, youtubeBlock, summarizerBlock,
-    quizBlock, flashgenBlock, vaultBlock, translateBlock, studyBlock, notebookBlock, exportBlock
+    quizBlock, flashgenBlock, vaultBlock, translateBlock, checkwritingBlock, studyBlock, notebookBlock, exportBlock
     // Every chip in AI_CHIPS now has its own stacked block above \u2014 no chip
     // left pointing only at a standalone page, same end state Community and
     // Explore/Hubs reached after their own final part.
@@ -6334,8 +6348,10 @@ function factcheckHub(chatId) {
 
 function factcheckPanel() {
   const ta = h('textarea', { class: 'control area', rows: 3, placeholder: 'Paste a claim to check…' });
+  const taField = h('div', { class: 'field', hidden: true }, ta);
   const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
   let pickedFile = null;
+  const textTile = sqTile({ onClick: () => { taField.hidden = false; ta.focus(); }, title: 'Text writing', meta: 'Type it out' });
   const photoTile = sqTile({ onClick: () => fileInput.click(), title: 'Add a photo', meta: 'Instead of typing' });
   const photoLabel = h('p', { class: 'hint-line', hidden: true });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Check' });
@@ -6385,8 +6401,8 @@ function factcheckPanel() {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New claim' })),
     h('p', { class: 'hint-line', text: 'Paste a claim, or add a photo of one, and get a verdict.' }),
-    h('div', { class: 'field' }, ta),
-    tileRow([photoTile]), fileInput,
+    tileRow([textTile, photoTile]), fileInput,
+    taField,
     photoLabel, goBtn, err, result);
 }
 
@@ -6482,7 +6498,11 @@ function youtubeHub(chatId) {
 
 function youtubePanel() {
   const fUrl = makeField('YouTube link', { placeholder: 'https://www.youtube.com/watch?v=…' });
-  const fTranscript = makeField('…or paste a transcript instead', { multiline: true, rows: 4, placeholder: 'Paste the transcript text here' });
+  const fTranscript = makeField('Transcript', { multiline: true, rows: 4, placeholder: 'Paste the transcript text here' });
+  fUrl.wrap.hidden = true;
+  fTranscript.wrap.hidden = true;
+  const linkTile = sqTile({ onClick: () => { fUrl.wrap.hidden = false; fUrl.input.focus(); }, title: 'YouTube link', meta: 'Paste a link' });
+  const textTile = sqTile({ onClick: () => { fTranscript.wrap.hidden = false; fTranscript.input.focus(); }, title: 'Text writing', meta: 'Paste a transcript' });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Summarize' });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
@@ -6514,6 +6534,7 @@ function youtubePanel() {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
     h('p', { class: 'hint-line', text: 'Paste a public YouTube link, or a transcript if the link can\'t be read.' }),
+    tileRow([linkTile, textTile]),
     fUrl.wrap, fTranscript.wrap, goBtn, err, result);
 }
 
@@ -6574,8 +6595,10 @@ function summarizerHub(chatId) {
 
 function summarizerPanel() {
   const ta = h('textarea', { class: 'control area', rows: 6, placeholder: 'Paste your notes here…' });
+  const taField = h('div', { class: 'field', hidden: true }, ta);
   const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
   const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const textTile = sqTile({ onClick: () => { taField.hidden = false; ta.focus(); }, title: 'Text writing', meta: 'Type it out' });
   const photoTile = sqTile({ onClick: () => cameraInput.click(), title: 'Add a page photo', meta: 'Camera' });
   const galleryTile = sqTile({ onClick: () => galleryInput.click(), title: 'Choose pages', meta: 'Gallery' });
   const pagesLabel = h('p', { class: 'hint-line', hidden: true });
@@ -6673,8 +6696,8 @@ function summarizerPanel() {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
     h('p', { class: 'hint-line', text: 'Paste notes, or add up to ' + SUMMARIZER_MAX_PAGES + ' page photos, then either get a summary with formulas pulled out, or a detailed note you can save straight into a subject, chapter or topic.' }),
-    h('div', { class: 'field' }, ta),
-    tileRow([photoTile, galleryTile]), cameraInput, galleryInput,
+    tileRow([textTile, photoTile, galleryTile]), cameraInput, galleryInput,
+    taField,
     pagesLabel, clearPhotoBtn,
     h('div', { class: 'vault-actions' }, goBtn, noteBtn),
     err, result);
@@ -7229,27 +7252,40 @@ function mvWithinScope(row, scope) {
   if (scope.chapterId) return row.chapter_id === scope.chapterId; // roll-up: chapter includes its topics
   return true; // whole subject
 }
+// A big square tile — concise like every other square tile in the app:
+// just the question. Tap it to see the full detail (answer, explanation,
+// missed count, tags) in a dialog, same as the rest of the Mistake Vault.
 function mistakeCard(it) {
   const r = it.row;
-  const typeLabel = QUIZ_KINDS[r.question_type] ? QUIZ_KINDS[r.question_type].label : (r.question_type || 'Question');
-  const listenBtn = listenButton(
-    () => [r.question_text, r.correct_answer ? ('Answer: ' + r.correct_answer) : null, r.explanation].filter(Boolean).join('. '),
-    { iconOnly: true, stopPropagation: true });
-  const removeBtn = h('button', {
-    class: 'item-edit', type: 'button', 'aria-label': 'Remove from Mistake Vault',
-    onclick: () => confirmRemoveMistake(r)
-  }, '×');
-  return h('div', { class: 'item' },
-    h('span', { class: 'item-head' },
-      h('span', { class: 'chip', text: typeLabel }),
-      it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
-      listenBtn, removeBtn),
+  return h('button', { class: 'sq-tile sq-tile-lg', type: 'button', onclick: () => openMistakeDetail(it) },
     h('strong', { text: r.question_text }),
-    h('span', { class: 'body', text: 'Correct answer: ' + (r.correct_answer || '—') }),
-    r.explanation ? h('p', { class: 'hint-line', text: r.explanation }) : null,
-    h('p', { class: 'hint-line', text: 'Missed ' + plural(r.wrong_count || 1, 'time', 'times') +
-      (r.tags && r.tags.length ? ' · ' + r.tags.slice(0, 4).join(', ') : '') }),
-    r.quiz_chat_id ? h('a', { class: 'btn quiet small', href: '#ai/quiz/' + r.quiz_chat_id, text: 'Open that quiz' }) : null);
+    h('button', {
+      class: 'row-del', type: 'button', 'aria-label': 'Remove from Mistake Vault',
+      onclick: e => { e.preventDefault(); e.stopPropagation(); confirmRemoveMistake(r); }
+    }, '×'));
+}
+
+function openMistakeDetail(it) {
+  const r = it.row;
+  const typeLabel = QUIZ_KINDS[r.question_type] ? QUIZ_KINDS[r.question_type].label : (r.question_type || 'Question');
+  showDialog({
+    title: typeLabel,
+    submitLabel: 'Close',
+    render(form) {
+      form.append(
+        it.origin ? h('p', { class: 'hint-line', text: it.origin }) : null,
+        h('p', { class: 'body', text: r.question_text }),
+        h('p', { class: 'body', text: 'Correct answer: ' + (r.correct_answer || '—') }),
+        r.explanation ? h('p', { class: 'hint-line', text: r.explanation }) : null,
+        h('p', { class: 'hint-line', text: 'Missed ' + plural(r.wrong_count || 1, 'time', 'times') +
+          (r.tags && r.tags.length ? ' · ' + r.tags.slice(0, 4).join(', ') : '') }),
+        listenButton(() => [r.question_text, r.correct_answer ? ('Answer: ' + r.correct_answer) : null, r.explanation].filter(Boolean).join('. ')),
+        r.quiz_chat_id ? h('a', { class: 'btn quiet small', href: '#ai/quiz/' + r.quiz_chat_id, text: 'Open that quiz', onclick: closeDialog }) : null);
+      return () => ({});
+    },
+    async onSubmit() {},
+    extra: { label: 'Remove from Mistake Vault', onClick: () => { closeDialog(); confirmRemoveMistake(r); } }
+  });
 }
 
 async function vaultHub() {
@@ -7268,7 +7304,7 @@ async function vaultHub() {
   const picker = scopePickerFields(tree);
   const search = h('input', { class: 'control', type: 'search', placeholder: 'Search your mistakes', 'aria-label': 'Search Mistake Vault' });
   const count = h('p', { class: 'hint-line' });
-  const list = h('div', { class: 'h-scroll-row' });
+  const list = h('div', { class: 'sq-tile-row' });
 
   function paint() {
     const scope = picker.getScope();
@@ -7319,17 +7355,7 @@ async function callGoogleTranslate(text, sl, tl) {
 }
 
 function translatorHub(ids = []) {
-  if (ids[0] === 'check') return checkWritingHub(ids[1]);
   return ids[0] ? translatorPast(ids[0]) : translatorList();
-}
-
-// Two modes share the Translator screen (per the blueprint: "Check writing"
-// lives inside the existing Translator section) — this renders the tab strip
-// that switches between them. `active` is 'translate' or 'check'.
-function translatorModeTabs(active) {
-  return h('div', { class: 'mode-tabs', role: 'tablist' },
-    h('a', { href: '#ai/translate', class: active === 'translate' ? 'active' : '', text: 'Translate' }),
-    h('a', { href: '#ai/translate/check', class: active === 'check' ? 'active' : '', text: 'Check writing' }));
 }
 
 function translatorPanel() {
@@ -7391,7 +7417,6 @@ async function translatorList() {
   const chats = must(res);
   return { title: 'Translator', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
-    translatorModeTabs('translate'),
     translatorPanel(),
     ...(chats.length
       ? [section('Past translations', null, null,
@@ -7412,7 +7437,6 @@ async function translatorPast(chatId) {
   const ans = msgs.find(m => m.role === 'assistant');
   return { title: chatRes.data.title || 'Translation', nodes: [
     crumbs(crumb),
-    translatorModeTabs('translate'),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
     ans ? h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: ans.content })) : h('p', { class: 'none', text: 'No result saved.' }),
     ans ? listenButton(() => ans.content) : null,
@@ -7421,14 +7445,15 @@ async function translatorPast(chatId) {
 }
 
 /* ---------- Grammar & citation checker (B2) ----------
-   Lives inside the Translator section per the blueprint. Uses the same
-   Gemini connection as every other AI tool (callAI). Saved under the same
-   ai_chats/ai_messages tables as everything else, with tool: 'checkwriting',
-   so it gets history, deletion and offline-download for free like the rest
-   of the AI Study Suite — the assistant message stores the raw JSON verdict,
-   parsed back out when reopened, the same pattern the Infographic Generator uses. */
+   Now its own top-level AI tool (previously folded into the Translator
+   section) — same Gemini connection as every other AI tool (callAI). Saved
+   under the same ai_chats/ai_messages tables as everything else, with
+   tool: 'checkwriting', so it gets history, deletion and offline-download
+   for free like the rest of the AI Study Suite — the assistant message
+   stores the raw JSON verdict, parsed back out when reopened, the same
+   pattern the Infographic Generator uses. */
 const CHECK_WRITING_SYSTEM =
-  'You are the Grammar & Citation Checker inside a student\'s Athenaeum workspace app, part of the Translator tool. Reply with ' +
+  'You are the Grammar & Citation Checker in a student\'s Athenaeum workspace app. Reply with ' +
   'ONLY valid JSON, no markdown code fences, no commentary before or after it. Return exactly this shape: {"correctedText":"...",' +
   '"grammarIssues":[{"original":"...","suggestion":"...","explanation":"..."}],"citationIssues":[{"passage":"...","concern":"...",' +
   '"suggestion":"..."}],"citationFormatNotes":"..."}. "correctedText" is the full text with grammar, spelling, punctuation and ' +
@@ -7520,23 +7545,22 @@ async function checkWritingList() {
   const res = await sb.from('ai_chats').select('id, title, created_at').eq('tool', 'checkwriting').order('created_at', { ascending: false });
   const chats = must(res);
   return { title: 'Check writing', nodes: [
-    crumbs([{ text: 'AI tools', href: '#ai' }, { text: 'Translator', href: '#ai/translate' }]),
-    translatorModeTabs('check'),
+    crumbs([{ text: 'AI tools', href: '#ai' }]),
     checkWritingPanel(),
     ...(chats.length
       ? [section('Past checks', null, null,
-          tileRow(chats.map(c => chatRow('#ai/translate/check/' + c.id, c.title || 'Writing check', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/checkwriting/' + c.id, c.title || 'Writing check', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No writing checks yet.' })])
   ] };
 }
 
 async function checkWritingPast(chatId) {
-  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Translator', href: '#ai/translate' }];
+  const crumb = [{ text: 'AI tools', href: '#ai' }, { text: 'Check writing', href: '#ai/checkwriting' }];
   const [chatRes, msgRes] = await Promise.all([
     sb.from('ai_chats').select('id, title').eq('id', chatId).single(),
     sb.from('ai_messages').select('id, role, content, created_at').eq('chat_id', chatId).order('created_at', { ascending: true })
   ]);
-  if (chatRes.error) return { title: 'Check writing', nodes: [crumbs(crumb), translatorModeTabs('check'), errorCard(chatRes.error)] };
+  if (chatRes.error) return { title: 'Check writing', nodes: [crumbs(crumb), errorCard(chatRes.error)] };
   const msgs = must(msgRes);
   const src = msgs.find(m => m.role === 'user');
   const ans = msgs.find(m => m.role === 'assistant');
@@ -7544,7 +7568,6 @@ async function checkWritingPast(chatId) {
   if (ans) { try { data = parseCheckWritingJSON(ans.content); } catch (e) { /* fall through to raw view */ } }
   return { title: chatRes.data.title || 'Writing check', nodes: [
     crumbs(crumb),
-    translatorModeTabs('check'),
     src ? h('p', { class: 'hint-line', text: src.content }) : null,
     data ? checkWritingResultBlock(data, src && src.content)
          : h('p', { class: 'none', text: 'No result saved.' }),
@@ -7853,6 +7876,12 @@ function scopePickerFields(tree) {
   const subjWrap = h('div');
   const chapWrap = h('div');
   const topicWrap = h('div');
+  // Chapter/Topic fields only exist while relevant: hidden entirely until a
+  // subject (with at least one chapter) is picked, and until a chapter (with
+  // at least one topic) is picked — no "choose a subject first" placeholder,
+  // just nothing there yet.
+  const chapField = h('div', { class: 'field', hidden: true }, h('label', { text: 'Chapter (optional — narrows the search)' }), chapWrap);
+  const topicField = h('div', { class: 'field', hidden: true }, h('label', { text: 'Topic (optional — narrows further)' }), topicWrap);
 
   function renderSubjects() {
     if (!tree.subjects.length) { subjWrap.replaceChildren(h('p', { class: 'none', text: 'No subjects yet — add one first.' })); return; }
@@ -7863,8 +7892,9 @@ function scopePickerFields(tree) {
     })));
   }
   function renderChapters() {
-    if (!selSubject) { chapWrap.replaceChildren(h('p', { class: 'none', text: 'Choose a subject first.' })); return; }
-    const chapters = tree.chapters.filter(c => c.subject_id === selSubject.id);
+    const chapters = selSubject ? tree.chapters.filter(c => c.subject_id === selSubject.id) : [];
+    if (!selSubject || !chapters.length) { chapField.hidden = true; chapWrap.replaceChildren(); return; }
+    chapField.hidden = false;
     const wholeTile = sqTile({ onClick: () => selectChapter(null), title: 'Whole subject' });
     if (!selChapter) wholeTile.classList.add('selected');
     const chapTiles = chapters.map(c => {
@@ -7875,8 +7905,9 @@ function scopePickerFields(tree) {
     chapWrap.replaceChildren(tileRow([wholeTile, ...chapTiles]));
   }
   function renderTopics() {
-    if (!selChapter) { topicWrap.replaceChildren(h('p', { class: 'none', text: 'Choose a chapter to narrow further.' })); return; }
-    const topics = tree.topics.filter(t => t.chapter_id === selChapter.id);
+    const topics = selChapter ? tree.topics.filter(t => t.chapter_id === selChapter.id) : [];
+    if (!selChapter || !topics.length) { topicField.hidden = true; topicWrap.replaceChildren(); return; }
+    topicField.hidden = false;
     const wholeTile = sqTile({ onClick: () => selectTopic(null), title: 'Whole chapter' });
     if (!selTopic) wholeTile.classList.add('selected');
     const topicTiles = topics.map(t => {
@@ -7894,8 +7925,8 @@ function scopePickerFields(tree) {
 
   const wrap = h('div', {},
     h('div', { class: 'field' }, h('label', { text: 'Subject' }), subjWrap),
-    h('div', { class: 'field' }, h('label', { text: 'Chapter (optional — narrows the search)' }), chapWrap),
-    h('div', { class: 'field' }, h('label', { text: 'Topic (optional — narrows further)' }), topicWrap));
+    chapField,
+    topicField);
   const getScopeNames = () => ({
     subject: selSubject ? selSubject.name : null,
     chapter: selChapter ? selChapter.title : null,
