@@ -259,31 +259,53 @@
      Shared by every section that follows the carousel + chip row + feed-of-blocks
      skeleton (§3 of the blueprint: Community, Explore/Hubs, Scholarships, AI tools).
      Subjects and Planner use their own templates and don't touch these classes. */
+  /* ---------- Theme redesign step 3 (revised): full-bleed hero carousel ----------
+     Was a row of small 78%-width thumbnail cards peeking the next one — reads as
+     "content cards in a scroller," not Hypelist's actual look, where one photo
+     fills the entire top of the screen edge-to-edge and the next slide only
+     appears once you swipe (no peeking), with title/kind overlaid on the image
+     itself over a bottom scrim, and small pagination dots overlaid near the
+     bottom of the image. -20px cancels main's own 20px side padding so the
+     carousel truly bleeds to the screen edges rather than just looking wide. */
   .sec-carousel {
-    display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 6px;
-    scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+    display: flex; overflow-x: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+    margin: -20px -20px 18px; width: calc(100% + 40px);
   }
   .sec-carousel::-webkit-scrollbar { display: none; }
   .sec-carousel-card {
-    position: relative; flex: 0 0 auto; scroll-snap-align: start; width: 78%; max-width: 320px;
-    display: block; text-align: left; text-decoration: none; color: var(--chalk);
-    background: var(--paper); border: 1px solid var(--line); border-radius: 18px;
-    padding: 14px 16px; overflow: hidden;
+    position: relative; flex: 0 0 100%; scroll-snap-align: start; scroll-snap-stop: always;
+    width: 100%; height: 58vh; min-height: 380px; max-height: 560px;
+    display: block; text-decoration: none; color: var(--chalk); overflow: hidden;
+    background: var(--paper);
+  }
+  .sec-carousel-card img {
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  }
+  .sec-carousel-card::before {
+    /* bottom scrim so overlaid text stays legible over any photo */
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to top, rgba(0,0,0,.78) 0%, rgba(0,0,0,.35) 35%, rgba(0,0,0,0) 62%);
   }
   .sec-carousel-card::after {
-    content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none;
+    content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none; mix-blend-mode: overlay;
   }
-  /* Scholarships (\u00a78's highest-polish section): richer border + glow than
-     the shared carousel card, matching the premium chip-row treatment above. */
-  .sec-carousel-card.premium { border-color: transparent; box-shadow: 0 0 0 1px rgba(255,79,163,.35), 0 10px 26px rgba(124,92,255,.22); }
+  .sec-carousel-card.premium::before { background: linear-gradient(to top, rgba(43,6,32,.85) 0%, rgba(124,92,255,.28) 40%, rgba(0,0,0,0) 65%); }
   .sec-carousel-card.premium .sc-kind { background: var(--grad-brand); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .sec-carousel-card img {
-    width: calc(100% + 32px); margin: -14px -16px 10px; display: block;
-    height: 120px; object-fit: cover;
+  .sec-carousel-card .sc-body {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 20px 22px 40px; z-index: 1;
+    text-shadow: 0 2px 10px rgba(0,0,0,.5);
   }
   .sec-carousel-card .sc-kind { color: var(--marker); font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
-  .sec-carousel-card strong { display: block; margin: 4px 0 2px; overflow-wrap: anywhere; }
-  .sec-carousel-card small { color: var(--dim); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+  .sec-carousel-card strong { display: block; margin: 6px 0 2px; font-family: var(--serif); font-size: 24px; overflow-wrap: anywhere; }
+  .sec-carousel-card small { color: rgba(242,237,247,.85); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .sec-carousel-dots {
+    position: absolute; left: 0; right: 0; bottom: 16px; z-index: 2;
+    display: flex; justify-content: center; gap: 6px; pointer-events: none;
+  }
+  .sec-carousel-dots span { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.4); transition: background .15s, width .15s; }
+  .sec-carousel-dots span.on { background: #fff; width: 16px; }
+  .sec-carousel-wrap { position: relative; margin: -20px -20px 18px; }
+  .sec-carousel-wrap .sec-carousel { margin: 0; width: 100%; }
   .sec-chip-row {
     display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
     -webkit-overflow-scrolling: touch;
@@ -3793,12 +3815,26 @@ function buildWorkspace(ids = []) {
    later build steps rather than each rolling their own. */
 function sectionCarousel(cards, premium) {
   if (!cards || !cards.length) return null;
-  return h('div', { class: 'sec-carousel' }, cards.map(c => h('a', {
+  const track = h('div', { class: 'sec-carousel' }, cards.map(c => h('a', {
     class: 'sec-carousel-card' + (premium ? ' premium' : ''), href: c.href },
     c.image ? h('img', { src: c.image, alt: '', loading: 'lazy' }) : null,
-    h('span', { class: 'sc-kind', text: c.kind }),
-    h('strong', { text: c.title }),
-    c.meta ? h('small', { text: c.meta }) : null)));
+    h('div', { class: 'sc-body' },
+      h('span', { class: 'sc-kind', text: c.kind }),
+      h('strong', { text: c.title }),
+      c.meta ? h('small', { text: c.meta }) : null))));
+  if (cards.length === 1) return h('div', { class: 'sec-carousel-wrap' }, track);
+  const dots = h('div', { class: 'sec-carousel-dots' },
+    cards.map((_, i) => h('span', { class: i === 0 ? 'on' : '' })));
+  let raf = null;
+  track.addEventListener('scroll', () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      const active = Math.round(track.scrollLeft / track.clientWidth);
+      [...dots.children].forEach((d, i) => d.classList.toggle('on', i === active));
+    });
+  }, { passive: true });
+  return h('div', { class: 'sec-carousel-wrap' }, track, dots);
 }
 // chips: [{ key, label, href }]. activeKey highlights one chip (null highlights
 // none). href-based for now — every chip still opens the page it always has, same
