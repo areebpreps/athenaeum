@@ -736,12 +736,104 @@
   .check-add { display: flex; gap: 10px; margin-top: 6px; }
   .check-add .control { min-height: 44px; flex: 1; min-width: 0; }
   .check-add .btn { width: auto; padding: 0 18px; }
+
+  /* ---------- Theme redesign step 18: reusable numbered checklist (\u00a76.1) ---------- */
+  .num-checklist { display: grid; gap: 2px; }
+  .num-check-row { position: relative; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 2px 0; }
+  .num-check-num { flex: none; min-width: 22px; font-family: var(--serif); font-weight: 700; color: var(--marker); text-align: right; }
+  .num-check-cb { flex: none; width: 22px; height: 22px; accent-color: var(--marker); }
+  .num-check-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .num-check-row.done .num-check-label { text-decoration: line-through; opacity: .6; }
+  .num-check-row.done .num-check-num { opacity: .6; }
+  .num-check-more {
+    flex: none; min-width: 36px; min-height: 36px; border: 0; border-radius: 999px;
+    background: transparent; color: var(--dim); font-size: 20px; line-height: 1;
+  }
+  .num-check-more:active { background: var(--paper-hi); }
+  .num-check-menu {
+    display: none; position: absolute; right: 0; top: 100%; z-index: 5; min-width: 150px;
+    padding: 6px; margin-top: 2px; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  }
+  .num-check-menu[data-open="true"] { display: grid; gap: 2px; }
+  .num-check-menu-item {
+    min-height: 40px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent;
+    color: var(--chalk); text-align: left; font-size: 15px;
+  }
+  .num-check-menu-item:active { background: var(--paper-hi); }
+  .num-check-menu-item:disabled { opacity: .4; }
+  .num-check-menu-item.danger { color: var(--err); }
+
+  /* ---------- Theme redesign step 19: reusable item editor (\u00a76.2) ---------- */
+  .item-ed-cover {
+    height: 64px; width: 64px; border-radius: 16px; flex: none; position: relative;
+    overflow: hidden; border: 0; padding: 0;
+  }
+  .item-ed-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .rating { display: flex; gap: 6px; }
+  .rating-star { min-width: 40px; min-height: 40px; border: 0; background: transparent; color: var(--marker); font-size: 26px; line-height: 1; }
+  .item-attach-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .item-attach-btn {
+    min-height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--paper); color: var(--chalk); font-size: 14px; font-weight: 600;
+  }
+  .item-attach-btn:active { background: var(--paper-hi); }
   .check-body .msg { margin: 6px 0 0; }
   .session-row { border-top: 1px solid var(--line); padding: 10px 16px; display: grid; gap: 6px; }
   .session-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .session-row .btn { width: auto; padding: 0 16px; min-height: 40px; }
   .session-row .hint-line { margin: 0; }
   .session-row .msg { margin: 0; }
+
+  /* ---------- Theme redesign step 20: settings page (\u00a76.3) + sign-in sheet (\u00a76.4) ----------
+     Settings replaces the interim sheet (step 2) with a real page: a grouped
+     rounded-row list, same visual language as the reference \u2014 several rows
+     inside one rounded card, thin dividers between them, unlike the
+     individually-card-rounded .row/.list used elsewhere in the app. Downloads
+     (\u00a72.1) folds in here as a plain row to its existing #downloads page;
+     Voice settings, Become a teacher and Log out (the interim sheet's whole
+     contents) move into the Account group. Privacy, Personalized
+     Recommendations, Appearance, Language, Rate us / Follow us / Recommend
+     and Legal/Support are placeholder rows \u2014 not built yet, same
+     "coming soon" pattern as \u00a79's Language Hub / Olympiad Hub placeholders. */
+  .settings-user { padding: 4px 4px 18px; }
+  .settings-user strong { display: block; font-family: var(--serif); font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
+  .settings-user small { color: var(--dim); }
+  .settings-group { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; margin-bottom: 18px; }
+  .settings-row {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px; padding: 0 16px;
+    background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--chalk);
+    text-align: left; text-decoration: none; font-size: 15px; font: inherit;
+  }
+  .settings-group > :last-child { border-bottom: 0; }
+  .settings-row:active { background: var(--paper-hi); }
+  .settings-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .settings-row .grow small { display: block; color: var(--dim); font-size: 12px; margin-top: 1px; }
+  .settings-row .chev { flex: none; color: var(--dim); font-size: 22px; line-height: 1; }
+  .settings-row.danger-text { color: var(--err); }
+  .settings-switch { position: relative; flex: none; display: inline-block; width: 46px; height: 28px; }
+  .settings-switch input { position: absolute; inset: 0; opacity: 0; margin: 0; width: 100%; height: 100%; }
+  .settings-switch .track { position: absolute; inset: 0; background: var(--line); border-radius: 999px; transition: background .15s; pointer-events: none; }
+  .settings-switch .track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--chalk); transition: transform .15s; }
+  .settings-switch input:checked + .track { background: var(--marker); }
+  .settings-switch input:checked + .track::after { transform: translateX(18px); background: var(--marker-ink); }
+  .settings-switch input:focus-visible + .track { outline: 2px solid var(--marker); outline-offset: 2px; }
+
+  /* Sign-in: native iOS-style account-picker sheet (\u00a76.4) \u2014 same dark page
+     background, but the form now lives in a centered, elevated, rounded sheet
+     card instead of being laid straight onto the page. */
+  .auth-sheet {
+    width: 100%; background: var(--paper); border: 1px solid var(--line); border-radius: 28px;
+    padding: 30px 22px calc(env(safe-area-inset-bottom, 0px) + 24px);
+    box-shadow: 0 24px 70px rgba(0,0,0,.5);
+  }
+  .auth-sheet-icon {
+    width: 60px; height: 60px; margin: 0 auto 16px; border-radius: 17px; font-size: 28px;
+    background: var(--paper-hi); border: 1px solid var(--line); display: grid; place-items: center;
+  }
+  .auth-sheet .brand { text-align: center; margin-bottom: 22px; }
+  .auth-sheet .brand h1 { font-size: 22px; }
+  .auth-sheet .brand p { font-size: 14px; }
 
   /* Wikipedia article */
   .article h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 24px 0 8px; }
@@ -960,6 +1052,8 @@
 
 <!-- ========== Login / create account ========== -->
 <section id="screen-auth" hidden>
+  <div class="auth-sheet">
+  <div class="auth-sheet-icon" aria-hidden="true">📚</div>
   <div class="brand">
     <h1>Athenaeum</h1>
     <p>Your notes, formulas and study tools in one place.</p>
@@ -1013,6 +1107,7 @@
     </div>
     <button class="btn" id="newpw-submit" type="submit">Set new password</button>
   </form>
+  </div>
 </section>
 
 <!-- ========== App shell ========== -->
@@ -1085,22 +1180,6 @@
   <form class="sheet form-sheet" id="dialog-form" role="dialog" aria-modal="true" aria-labelledby="dialog-title" novalidate></form>
 </div>
 
-<div class="scrim" id="sheet" hidden>
-  <!-- Theme redesign step 2: this sheet is the interim Settings surface, opened by
-       the top bar's Settings icon — a real Settings page (§6.3 of the blueprint)
-       is its own later build step. "My public profile" was dropped from here since
-       the top bar's Profile icon goes straight there now. -->
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
-    <h3 id="sheet-title">Settings</h3>
-    <p id="sheet-user"></p>
-    <a class="btn quiet" id="sheet-posts" href="#workspace/posts">My posts</a>
-    <a class="btn quiet" id="sheet-teach" href="#workspace/teach">Become a teacher</a>
-    <button class="btn quiet" id="sheet-voice" type="button">Voice settings</button>
-    <button class="btn quiet" id="logout-btn" type="button">Log out</button>
-    <button class="btn quiet" id="sheet-close" type="button">Close</button>
-  </div>
-</div>
-
 <div class="viewer" id="viewer" hidden>
   <div class="viewer-bar">
     <button type="button" class="picker-close" id="viewer-close">Close</button>
@@ -1134,6 +1213,7 @@ const CONFIG = {
 const TABS = {
   workspace: { title: 'General workspace' },
   subjects:  { title: 'Subjects' },
+  settings:  { title: 'Settings' },
   downloads: {
     title: 'Download manager',
     head: 'Nothing saved for offline',
@@ -1300,7 +1380,6 @@ async function logout() {
   myProfile = null;
   isAppAdmin = null;
   closeDialog();
-  closeSheet();
   closeViewer();
   stopNotifications(); // G12
   lastHash = null;
@@ -1322,12 +1401,11 @@ function enterApp(user) {
   myProfile = null;
   isAppAdmin = null;
   $('#profile-btn').textContent = (name[0] || '?').toUpperCase();
-  $('#sheet-user').textContent = 'Signed in as ' + name;
   loadMyProfile(); // E25: swap in the chosen name/photo once it loads
   showScreen('app');
   route();
   initPlannerAlarms(); // D3
-  initNotifications(); // G12
+  if (notifPrefEnabled()) initNotifications(); // G12 (Theme redesign step 20: off if Settings > Notifications is off)
 }
 
 /* =====================================================================
@@ -1405,6 +1483,7 @@ function parseHash() {
   const ids = tab === 'subjects' ? parts.slice(1, 4)
             : tab === 'workspace' ? parts.slice(1, 3)
             : tab === 'ai' ? parts.slice(1, 4)
+            : tab === 'settings' ? parts.slice(1, 2)
             : [];
   return { tab, ids };
 }
@@ -1462,7 +1541,6 @@ let backTarget = null;
 // first, same as Android's back button should always do.
 window.handleAndroidBack = function () {
   if (!$('#dialog').hidden) { closeDialog(); return true; }
-  if (!$('#sheet').hidden)  { closeSheet();  return true; }
   if (!$('#viewer').hidden) { closeViewer(); return true; }
   if (backTarget) { location.hash = backTarget; return true; }
   if (location.hash && location.hash !== '#workspace') { location.hash = '#workspace'; return true; }
@@ -1510,6 +1588,7 @@ async function route() {
   const back = tab === 'subjects' && ids.length ? parentHash(ids)
              : tab === 'workspace' && ids.length ? workspaceParentHash(ids)
              : tab === 'ai' && ids.length ? aiParentHash(ids)
+             : tab === 'settings' ? (ids.length ? '#settings' : '#workspace')
              : null;
   setHeader(TABS[tab].title, back);
   if (!same) view.replaceChildren(h('p', { class: 'loading', text: 'Loading…' }));
@@ -1518,6 +1597,7 @@ async function route() {
   try {
     if (tab === 'workspace')      res = await buildWorkspace(ids);
     else if (tab === 'subjects')  res = await buildSubjects(ids);
+    else if (tab === 'settings')  res = buildSettingsPage(ids);
     else if (tab === 'downloads') res = await buildDownloads();
     else if (tab === 'ai')        res = await buildAI(ids);
     else                          res = buildStatic(tab);
@@ -3703,6 +3783,368 @@ function stackTile({ href, color, badge, title, meta }) {
     meta ? h('small', { text: meta }) : null);
 }
 
+/* ---------- Theme redesign step 18: reusable numbered checklist (\u00a76.1) ----------
+   App-wide component for anything checklist-shaped (planner tasks, goal lists,
+   roadmap steps, subject notes, etc.): a large leading number per row, a
+   checkbox, strikethrough + dimmed styling once checked, and a row-level "..."
+   overflow menu for edit/delete/reorder. This step builds the component itself
+   \u2014 it isn't wired into any of the app's existing checklists yet (the
+   Planner's slot/milestone checklists, the Scholarship Center roadmap, project
+   checklists, etc. all keep their own current UI for now); later steps adopt
+   it in place of building their own checklist UI from scratch.
+
+   items: [{ id, text, done }], already in display order.
+   opts:
+     onToggle(item, checked)  \u2014 required. Fires when a row's checkbox flips.
+     onEdit(item)              \u2014 optional. Adds "Edit" to the row's overflow menu.
+     onDelete(item)            \u2014 optional. Adds "Delete" (with the app's usual
+                                   confirm dialog) to the overflow menu.
+     onMove(item, dir)         \u2014 optional (dir: -1 | 1). Adds "Move up" /
+                                   "Move down" to the overflow menu, disabled at
+                                   the ends of the list.
+     numbered                  \u2014 default true. False hides the leading number
+                                   (\u00a75.4: numbering can be toggled off per
+                                   sub-section) while keeping row layout identical.
+     itemLabel                 \u2014 singular noun used in the delete-confirm text
+                                   (default 'item'). */
+function numberedChecklist(items, opts) {
+  opts = opts || {};
+  const numbered = opts.numbered !== false;
+  const list = h('div', { class: 'num-checklist' });
+
+  function closeMenus() {
+    list.querySelectorAll('.num-check-menu[data-open="true"]').forEach(m => { m.dataset.open = 'false'; });
+  }
+  function confirmDelete(item) {
+    showDialog({
+      title: 'Delete this ' + (opts.itemLabel || 'item') + '?',
+      text: 'It will be removed. It cannot be undone.',
+      submitLabel: 'Delete', danger: true,
+      onSubmit: () => opts.onDelete(item)
+    });
+  }
+
+  function rowFor(item, i) {
+    const done = !!item.done;
+    const cb = h('input', { type: 'checkbox', class: 'num-check-cb', 'aria-label': 'Mark \u201c' + item.text + '\u201d done' });
+    cb.checked = done;
+    cb.addEventListener('change', () => opts.onToggle && opts.onToggle(item, cb.checked));
+
+    const menuItems = [];
+    if (opts.onMove) {
+      menuItems.push(h('button', { class: 'num-check-menu-item', type: 'button', disabled: i === 0, text: 'Move up',
+        onclick: () => { closeMenus(); opts.onMove(item, -1); } }));
+      menuItems.push(h('button', { class: 'num-check-menu-item', type: 'button', disabled: i === items.length - 1, text: 'Move down',
+        onclick: () => { closeMenus(); opts.onMove(item, 1); } }));
+    }
+    if (opts.onEdit) menuItems.push(h('button', { class: 'num-check-menu-item', type: 'button', text: 'Edit',
+      onclick: () => { closeMenus(); opts.onEdit(item); } }));
+    if (opts.onDelete) menuItems.push(h('button', { class: 'num-check-menu-item danger', type: 'button', text: 'Delete',
+      onclick: () => { closeMenus(); confirmDelete(item); } }));
+
+    let more = null, menu = null;
+    if (menuItems.length) {
+      menu = h('div', { class: 'num-check-menu', 'data-open': 'false' }, ...menuItems);
+      more = h('button', {
+        class: 'num-check-more', type: 'button', 'aria-label': 'More options for \u201c' + item.text + '\u201d', text: '\u22ef',
+        onclick: e => {
+          e.stopPropagation();
+          const willOpen = menu.dataset.open !== 'true';
+          closeMenus();
+          menu.dataset.open = willOpen ? 'true' : 'false';
+        }
+      });
+    }
+
+    return h('div', { class: 'num-check-row' + (done ? ' done' : '') },
+      numbered ? h('span', { class: 'num-check-num', text: String(i + 1) + '.' }) : null,
+      cb,
+      h('span', { class: 'num-check-label', text: item.text }),
+      more, menu);
+  }
+
+  list.replaceChildren(...items.map(rowFor));
+  return list;
+}
+// One document-level listener closes any open row menu on an outside tap \u2014
+// registered once at module load rather than once per numberedChecklist()
+// call, so re-rendering a checklist-heavy page never piles up listeners.
+document.addEventListener('click', () => {
+  document.querySelectorAll('.num-check-menu[data-open="true"]').forEach(m => { m.dataset.open = 'false'; });
+});
+
+/* ---------- Theme redesign step 19: reusable item editor (add/edit) (\u00a76.2) ----------
+   Standard component for adding or editing any single item app-wide (a note, a
+   saved link, a planner task, a subject entry, etc.). Not wired into any of the
+   app's existing add/edit forms yet \u2014 same in-progress state step 18's checklist
+   component is in; later steps adopt it instead of building their own form.
+
+   Meant to be dropped straight into a showDialog() call's render(form) \u2014 the
+   app's existing modal-editor pattern \u2014 so it returns { get } rather than
+   owning the dialog itself:
+
+     showDialog({
+       title: 'New note', submitLabel: 'Save',
+       render(form) { return itemEditor(form, {
+         title: { placeholder: 'Title', maxlength: 150 },
+         subtitle: { placeholder: 'Subtitle' },
+         body: { placeholder: 'Write something\u2026', rows: 5 },
+         rating: true,
+         cover: { color: '#F3C955' },
+         attachments: ['images', 'date', 'website', 'location']
+       }).get; },
+       onSubmit: async values => { \u2026 }
+     });
+
+   cfg:
+     title       \u2014 required. { value, placeholder, maxlength }
+     subtitle    \u2014 omit to hide the field, or { value, placeholder, maxlength }
+     body        \u2014 omit to hide the field, or { value, placeholder, rows }
+     rating      \u2014 omit/false to hide, or true, or { value: 1-5 } to start filled
+     cover       \u2014 omit to hide the cover picker, or { url, color } (color tints
+                   the empty-state gradient, same idea as a subject's swatch colour)
+     attachments \u2014 which secondary buttons to show \u2014 only the ones relevant to
+                   the content type being edited (\u00a76.2) \u2014 any of 'images',
+                   'date', 'website', 'location', in that order; omit for none
+
+   get() throws a plain Error (shown inline by showDialog, same as any other
+   validation failure) if the title is empty or a filled-in website isn't a
+   usable link; otherwise it returns only the fields that were configured:
+     { title, subtitle?, body?, rating?, coverBlob?, coverRemove?, images?,
+       date?, website?, location? }
+   coverBlob is a resized JPEG Blob ready to upload \u2014 avatarBlob, the same
+   helper the subject and profile cover pickers already use; coverRemove is
+   true when an existing cover was cleared without picking a new one; images
+   is an array of raw File objects; website is cleaned with pdCleanUrl. */
+function itemEditor(form, cfg) {
+  cfg = cfg || {};
+  let coverBlob = null, coverPreviewUrl = '', coverRemove = false;
+  let rating = (cfg.rating && cfg.rating.value) || 0;
+  let images = [], dateVal = '';
+
+  const fTitle = makeField('Title', cfg.title || {});
+  form.append(fTitle.wrap);
+
+  let fSubtitle = null;
+  if (cfg.subtitle) { fSubtitle = makeField('Subtitle', cfg.subtitle === true ? {} : cfg.subtitle); form.append(fSubtitle.wrap); }
+
+  let fBody = null;
+  if (cfg.body) {
+    const o = cfg.body === true ? {} : cfg.body;
+    fBody = makeField('Description', Object.assign({}, o, { multiline: true, rows: o.rows || 5 }));
+    form.append(fBody.wrap);
+  }
+
+  if (cfg.cover) {
+    const color = (cfg.cover === true ? null : cfg.cover.color) || '#F3C955';
+    const existingUrl = cfg.cover === true ? '' : (cfg.cover.url || '');
+    const shownUrl = () => coverPreviewUrl || (!coverRemove ? existingUrl : '');
+    const preview = h('div', { class: 'item-ed-cover', 'aria-hidden': 'true' });
+    const fileIn = h('input', { type: 'file', accept: 'image/*', hidden: true, 'aria-label': 'Choose a cover photo' });
+    const pickBtn = h('button', { class: 'btn quiet small', type: 'button' });
+    const removeBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo' });
+    const coverMsg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+    function paintCover() {
+      const url = shownUrl();
+      preview.replaceChildren();
+      preview.style.background = url ? '' : ('linear-gradient(135deg, ' + hexToRgba(color, .35) + ', var(--paper))');
+      if (url) preview.append(h('img', { src: url, alt: '' }));
+      pickBtn.textContent = url ? 'Change photo' : 'Add photo';
+      removeBtn.hidden = !url;
+    }
+    pickBtn.addEventListener('click', () => fileIn.click());
+    removeBtn.addEventListener('click', () => {
+      if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
+      coverBlob = null; coverPreviewUrl = ''; coverRemove = true; fileIn.value = ''; paintCover();
+    });
+    fileIn.addEventListener('change', async () => {
+      const file = fileIn.files && fileIn.files[0]; if (!file) return;
+      coverMsg.hidden = true;
+      if (!/^image\//.test(file.type || '')) { coverMsg.textContent = 'Choose a photo (JPG, PNG or WebP).'; coverMsg.hidden = false; return; }
+      try {
+        const blob = await avatarBlob(file, 192);
+        if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
+        coverBlob = blob; coverPreviewUrl = URL.createObjectURL(blob); coverRemove = false; paintCover();
+      } catch (e) { coverMsg.textContent = (e && e.message) || 'Could not read that photo.'; coverMsg.hidden = false; }
+    });
+    paintCover();
+    form.append(h('div', { class: 'field' }, h('label', { text: 'Cover photo' }), preview, fileIn,
+      h('div', { class: 'edit-row', style: 'display:flex;gap:8px;margin-top:8px' }, pickBtn, removeBtn), coverMsg));
+  }
+
+  if (cfg.rating) {
+    const group = h('div', { class: 'rating', role: 'radiogroup', 'aria-label': 'Rating' });
+    function syncStars() {
+      group.querySelectorAll('.rating-star').forEach((b, i) => {
+        b.setAttribute('aria-checked', String(i < rating));
+        b.textContent = i < rating ? '\u2605' : '\u2606';
+      });
+    }
+    for (let i = 1; i <= 5; i++) {
+      const n = i;
+      group.append(h('button', {
+        class: 'rating-star', type: 'button', role: 'radio', 'aria-label': n + ' star' + (n > 1 ? 's' : ''),
+        onclick: () => { rating = (rating === n) ? 0 : n; syncStars(); }
+      }));
+    }
+    syncStars();
+    form.append(h('div', { class: 'field' }, h('label', { text: 'Rating' }), group));
+  }
+
+  const atts = cfg.attachments || [];
+  let fWebsite = null, fLocation = null;
+  if (atts.length) {
+    const imagesLabel = h('p', { class: 'hint-line', hidden: true });
+    const dateLabel = h('p', { class: 'hint-line', hidden: true });
+    const imagesIn = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+    const dateIn = h('input', { type: 'date', hidden: true });
+    const row = h('div', { class: 'item-attach-row' });
+    const extra = h('div');
+    if (atts.includes('images')) {
+      row.append(h('button', { class: 'item-attach-btn', type: 'button', text: 'Images', onclick: () => imagesIn.click() }));
+      imagesIn.addEventListener('change', () => {
+        images = Array.from(imagesIn.files || []);
+        imagesLabel.hidden = !images.length;
+        imagesLabel.textContent = images.length ? plural(images.length, 'image', 'images') + ' attached' : '';
+      });
+      extra.append(imagesIn, imagesLabel);
+    }
+    if (atts.includes('date')) {
+      row.append(h('button', {
+        class: 'item-attach-btn', type: 'button', text: 'Add date',
+        onclick: () => (dateIn.showPicker ? dateIn.showPicker() : dateIn.click())
+      }));
+      dateIn.addEventListener('change', () => {
+        dateVal = dateIn.value;
+        dateLabel.hidden = !dateVal;
+        dateLabel.textContent = dateVal ? 'Date: ' + dateVal : '';
+      });
+      extra.append(dateIn, dateLabel);
+    }
+    if (atts.includes('website')) {
+      fWebsite = makeField('Website', { placeholder: 'https://\u2026' });
+      fWebsite.wrap.hidden = true;
+      row.append(h('button', {
+        class: 'item-attach-btn', type: 'button', text: 'Website',
+        onclick: () => { fWebsite.wrap.hidden = false; fWebsite.input.focus(); }
+      }));
+    }
+    if (atts.includes('location')) {
+      fLocation = makeField('Location', { placeholder: 'e.g. Dhaka, Bangladesh' });
+      fLocation.wrap.hidden = true;
+      row.append(h('button', {
+        class: 'item-attach-btn', type: 'button', text: 'Location',
+        onclick: () => { fLocation.wrap.hidden = false; fLocation.input.focus(); }
+      }));
+    }
+    form.append(h('div', { class: 'field' }, h('label', { text: 'Add to this item' }), row, extra,
+      fWebsite ? fWebsite.wrap : null, fLocation ? fLocation.wrap : null));
+  }
+
+  function get() {
+    const out = { title: fTitle.input.value.trim() };
+    if (!out.title) throw new Error('Add a title.');
+    if (fSubtitle) out.subtitle = fSubtitle.input.value.trim();
+    if (fBody) out.body = fBody.input.value.trim();
+    if (cfg.rating) out.rating = rating;
+    if (cfg.cover) { out.coverBlob = coverBlob; out.coverRemove = coverRemove; }
+    if (atts.includes('images')) out.images = images;
+    if (atts.includes('date')) out.date = dateVal;
+    if (atts.includes('website')) {
+      const raw = fWebsite.input.value.trim();
+      if (!raw) out.website = '';
+      else { const clean = pdCleanUrl(raw); if (!clean) throw new Error('That website link doesn\u2019t look right.'); out.website = clean; }
+    }
+    if (atts.includes('location')) out.location = fLocation.input.value.trim();
+    return out;
+  }
+  return { get };
+}
+
+/* ---------- Theme redesign step 20: settings page (\u00a76.3) ----------
+   Replaces the interim sheet from step 2. A grouped rounded-row list \u2014
+   Notifications is a real, wired toggle (a per-device preference, since this
+   app's notifications are in-app/Realtime rather than OS push \u2014 there's no
+   system permission to request); Downloads (\u00a72.1) is a real link to the
+   existing #downloads page. Privacy, Personalized Recommendations,
+   Appearance, Language, Rate us / Follow us, and Legal/Support open the same
+   "coming soon" placeholder pattern \u00a713 used for Language Hub / Olympiad
+   Hub \u2014 not built yet. Voice settings, Become a teacher and Log out (the
+   interim sheet's entire old contents) land in the Account group. */
+const NOTIF_PREF_KEY = 'aw.notifEnabled';
+function notifPrefEnabled() { return store.get(NOTIF_PREF_KEY) !== 'off'; }
+function settingsRow(label, opts = {}) {
+  const kids = [h('span', { class: 'grow' }, h('span', { text: label }), opts.sub ? h('small', { text: opts.sub }) : null)];
+  if (!opts.noChevron) kids.push(h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' }));
+  const cls = 'settings-row' + (opts.danger ? ' danger-text' : '');
+  return opts.href
+    ? h('a', { class: cls, href: opts.href }, kids)
+    : h('button', { class: cls, type: 'button', onclick: opts.onclick }, kids);
+}
+function settingsToggleRow(label, checked, onChange) {
+  const input = h('input', { type: 'checkbox', ...(checked ? { checked: true } : {}) });
+  input.addEventListener('change', () => onChange(input.checked));
+  // A plain row (not a button) \u2014 a <label>/<input> pair can't nest inside a
+  // <button>, and the switch itself is the only interactive control on this row.
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'grow', text: label }),
+    h('label', { class: 'settings-switch' }, input, h('span', { class: 'track', 'aria-hidden': 'true' })));
+}
+function settingsGroup(...rows) { return h('div', { class: 'settings-group' }, rows.filter(Boolean)); }
+function settingsPlaceholderPage(title, text) {
+  return { title, nodes: [crumbs([{ text: 'Settings', href: '#settings' }]), emptyBlock(title + ' is coming soon', text)] };
+}
+const SETTINGS_PLACEHOLDERS = {
+  privacy:        ['Privacy', 'Controls for what others can see about you will live here.'],
+  recommendations:['Personalized Recommendations', 'A toggle for tailoring suggestions across the app will live here.'],
+  appearance:     ['Appearance', 'Theme and display options will live here \u2014 the global color/typography pass is its own later step.'],
+  language:       ['Language', 'A choice of app display language will live here.'],
+  rate:           ['Rate us', 'A link to rate Athenaeum will live here once the app is listed.'],
+  follow:         ['Follow us', 'Links to Athenaeum\u2019s social accounts will live here.'],
+  legal:          ['Legal', 'Terms of service and privacy policy will live here.'],
+  support:        ['Support', 'A way to reach out for help will live here.']
+};
+function buildSettingsPage(ids) {
+  const key = ids[0];
+  if (key && SETTINGS_PLACEHOLDERS[key]) return settingsPlaceholderPage(...SETTINGS_PLACEHOLDERS[key]);
+  const name = currentUser ? usernameFrom(currentUser) : '';
+  const recommend = async () => {
+    const url = location.origin + location.pathname;
+    if (navigator.share) { try { await navigator.share({ title: 'Athenaeum', text: 'Studying with Athenaeum \u2014 you might like it too.', url }); return; } catch (e) { return; } }
+    try { await navigator.clipboard.writeText(url); alert('Link copied \u2014 send it to a friend.'); } catch (e) { alert(url); }
+  };
+  return { title: 'Settings', nodes: [
+    h('div', { class: 'settings-user' }, h('strong', { text: name || 'Athenaeum' }), h('small', { text: currentUser ? 'Signed in as ' + name : '' })),
+    settingsGroup(
+      settingsToggleRow('Notifications', notifPrefEnabled(), on => {
+        store.set(NOTIF_PREF_KEY, on ? 'on' : 'off');
+        if (on) initNotifications(); else stopNotifications();
+      }),
+      settingsRow('Privacy', { href: '#settings/privacy' }),
+      settingsRow('Personalized Recommendations', { href: '#settings/recommendations' }),
+      settingsRow('Appearance', { href: '#settings/appearance' }),
+      settingsRow('Language', { href: '#settings/language' })
+    ),
+    settingsGroup(
+      settingsRow('Downloads', { href: '#downloads' })
+    ),
+    settingsGroup(
+      settingsRow('Rate us', { href: '#settings/rate' }),
+      settingsRow('Follow us', { href: '#settings/follow' }),
+      settingsRow('Recommend to friends', { onclick: recommend, noChevron: true })
+    ),
+    settingsGroup(
+      settingsRow('Legal', { href: '#settings/legal' }),
+      settingsRow('Support', { href: '#settings/support' })
+    ),
+    settingsGroup(
+      settingsRow('Become a teacher', { href: '#workspace/teach' }),
+      settingsRow('Voice settings', { onclick: openVoiceSettings }),
+      settingsRow('Log out', { onclick: logout, danger: true, noChevron: true })
+    )
+  ] };
+}
+
 /* ---------- Theme redesign step 3: Community carousel data ----------
    Mixes the newest public community posts with a few Wikipedia article summaries
    as the "articles from open sources" the blueprint calls for (§3.2). There's no
@@ -4606,10 +5048,128 @@ const AI_TOOLS_LIST = [
 ];
 const aiToolMeta = t => typeof t.meta === 'function' ? t.meta() : t.meta;
 
-function buildAIRoot() {
-  return { nodes: [
-    section('AI tools', null, null,
-      h('div', { class: 'list' }, AI_TOOLS_LIST.map(t => linkRow({ href: t.href, title: t.title, meta: aiToolMeta(t) }))))
+/* ---------- Theme redesign step 16: AI tools section, part A ----------
+   Replaces the plain 13-row list above with the \u00a73 page template (chip row +
+   stacked feed of blocks), same pattern Community (steps 3-5) and Explore/Hubs
+   (steps 6-8) used. \u00a73.2 lists no carousel for this section, so it's just the
+   chip row (\u00a74's 13-item order \u2014 Settings isn't one of the 13; it now lives
+   behind the top bar's Settings icon, \u00a72.2, added in step 2) followed by the
+   stacked feed. This step builds the first 6 blocks (Ask AI through Summarizer &
+   Formula Excerptor); the remaining 7 chips still open their existing standalone
+   pages until step 17 gives them blocks too \u2014 same in-progress state Explore's
+   chip row was in between steps 6 and 8. */
+const AI_CHIPS = [
+  { key: 'ask',        label: 'Ask AI',                          href: '#ai/ask' },
+  { key: 'solver',     label: 'Question Solver',                 href: '#ai/solver' },
+  { key: 'factcheck',  label: 'Fact Checker',                    href: '#ai/factcheck' },
+  { key: 'ocr',        label: 'OCR',                              href: '#ai/ocr' },
+  { key: 'youtube',    label: 'YouTube summarizer',              href: '#ai/youtube' },
+  { key: 'summarizer', label: 'Summarizer & Formula Excerptor',  href: '#ai/summarizer' },
+  { key: 'quiz',       label: 'Quiz Generator',                  href: '#ai/quiz' },
+  { key: 'flashgen',   label: 'Flashcard Generator',             href: '#ai/flashgen' },
+  { key: 'vault',      label: 'Mistake Vault',                   href: '#ai/vault' },
+  { key: 'translate',  label: 'Translator',                      href: '#ai/translate' },
+  { key: 'study',      label: 'Grounded Study Engine',           href: '#ai/study' },
+  { key: 'notebook',   label: 'Notebook Studio',                 href: '#ai/notebook' },
+  { key: 'export',     label: 'Export to NotebookLM',            href: '#ai/export' }
+];
+async function aiAskBlock() {
+  try {
+    const page = await askAIHub();
+    return sectionFeedBlock('ask', 'Ask AI', '#ai/ask', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('ask', 'Ask AI', '#ai/ask', [errorCard(e)]); }
+}
+async function aiSolverBlock() {
+  try {
+    const page = await solverHub();
+    return sectionFeedBlock('solver', 'Question Solver', '#ai/solver', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('solver', 'Question Solver', '#ai/solver', [errorCard(e)]); }
+}
+async function aiFactcheckBlock() {
+  try {
+    const page = await factcheckHub();
+    return sectionFeedBlock('factcheck', 'Fact Checker', '#ai/factcheck', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('factcheck', 'Fact Checker', '#ai/factcheck', [errorCard(e)]); }
+}
+async function aiOcrBlock() {
+  try {
+    const page = await ocrHub();
+    return sectionFeedBlock('ocr', 'OCR', '#ai/ocr', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('ocr', 'OCR', '#ai/ocr', [errorCard(e)]); }
+}
+async function aiYoutubeBlock() {
+  try {
+    const page = await youtubeHub();
+    return sectionFeedBlock('youtube', 'YouTube summarizer', '#ai/youtube', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('youtube', 'YouTube summarizer', '#ai/youtube', [errorCard(e)]); }
+}
+async function aiSummarizerBlock() {
+  try {
+    const page = await summarizerHub();
+    return sectionFeedBlock('summarizer', 'Summarizer & Formula Excerptor', '#ai/summarizer', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('summarizer', 'Summarizer & Formula Excerptor', '#ai/summarizer', [errorCard(e)]); }
+}
+/* ---------- Theme redesign step 17: AI tools section, part B ----------
+   The remaining 7 blocks \u2014 Quiz Generator through Export to NotebookLM \u2014
+   completing the AI tools chip row (all 13 now have a stacked block), same
+   pattern as part A above. */
+async function aiQuizBlock() {
+  try {
+    const page = await quizHub();
+    return sectionFeedBlock('quiz', 'Quiz Generator', '#ai/quiz', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('quiz', 'Quiz Generator', '#ai/quiz', [errorCard(e)]); }
+}
+async function aiFlashgenBlock() {
+  try {
+    const page = await flashcardGenHub();
+    return sectionFeedBlock('flashgen', 'Flashcard Generator', '#ai/flashgen', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('flashgen', 'Flashcard Generator', '#ai/flashgen', [errorCard(e)]); }
+}
+async function aiVaultBlock() {
+  try {
+    const page = await vaultHub();
+    return sectionFeedBlock('vault', 'Mistake Vault', '#ai/vault', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('vault', 'Mistake Vault', '#ai/vault', [errorCard(e)]); }
+}
+async function aiTranslateBlock() {
+  try {
+    const page = await translatorHub();
+    return sectionFeedBlock('translate', 'Translator', '#ai/translate', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('translate', 'Translator', '#ai/translate', [errorCard(e)]); }
+}
+async function aiStudyBlock() {
+  try {
+    const page = await studyHub();
+    return sectionFeedBlock('study', 'Grounded Study Engine', '#ai/study', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('study', 'Grounded Study Engine', '#ai/study', [errorCard(e)]); }
+}
+async function aiNotebookBlock() {
+  try {
+    const page = await notebookHub();
+    return sectionFeedBlock('notebook', 'Notebook Studio', '#ai/notebook', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('notebook', 'Notebook Studio', '#ai/notebook', [errorCard(e)]); }
+}
+async function aiExportBlock() {
+  try {
+    const page = await exportHub();
+    return sectionFeedBlock('export', 'Export to NotebookLM', '#ai/export', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('export', 'Export to NotebookLM', '#ai/export', [errorCard(e)]); }
+}
+async function buildAIRoot() {
+  const [
+    askBlock, solverBlock, factcheckBlock, ocrBlock, youtubeBlock, summarizerBlock,
+    quizBlock, flashgenBlock, vaultBlock, translateBlock, studyBlock, notebookBlock, exportBlock
+  ] = await Promise.all([
+    aiAskBlock(), aiSolverBlock(), aiFactcheckBlock(), aiOcrBlock(), aiYoutubeBlock(), aiSummarizerBlock(),
+    aiQuizBlock(), aiFlashgenBlock(), aiVaultBlock(), aiTranslateBlock(), aiStudyBlock(), aiNotebookBlock(), aiExportBlock()
+  ]);
+  return { title: 'AI tools', nodes: [
+    sectionChipRow(AI_CHIPS, null),
+    askBlock, solverBlock, factcheckBlock, ocrBlock, youtubeBlock, summarizerBlock,
+    quizBlock, flashgenBlock, vaultBlock, translateBlock, studyBlock, notebookBlock, exportBlock
+    // Every chip in AI_CHIPS now has its own stacked block above \u2014 no chip
+    // left pointing only at a standalone page, same end state Community and
+    // Explore/Hubs reached after their own final part.
   ] };
 }
 
@@ -15946,9 +16506,6 @@ function openVoiceSettings() {
   });
 }
 
-function openSheet()  { $('#sheet').hidden = false; $('#logout-btn').focus(); }
-function closeSheet() { $('#sheet').hidden = true; }
-
 /* ---------- start-up ---------- */
 async function boot() {
   $('#mode-login').addEventListener('click',  () => setMode('login'));
@@ -15974,22 +16531,17 @@ async function boot() {
   // page (peoplePage, viewing yourself) rather than jumping straight to the
   // editor — the editor is still one tap away from there via Edit profile.
   $('#profile-btn').addEventListener('click', () => go('#workspace/people/' + currentUser.id));
-  // Theme redesign step 2: Settings icon opens the interim sheet (see the sheet's own
-  // comment); Search is now global everywhere rather than scoped per tab; Add's target
-  // is a sensible default for now (see the header's own comment above the markup).
-  $('#settings-btn').addEventListener('click', openSheet);
+  // Theme redesign step 20: Settings icon now opens the real Settings page (§6.3)
+  // instead of the interim sheet; Search is now global everywhere rather than scoped
+  // per tab; Add's target is a sensible default for now (see the header's own comment
+  // above the markup).
+  $('#settings-btn').addEventListener('click', () => go('#settings'));
   $('#search-btn').addEventListener('click', () => go('#workspace/search'));
   $('#add-btn').addEventListener('click', () => go('#subjects'));
-  $('#sheet-close').addEventListener('click', closeSheet);
-  $('#sheet-posts').addEventListener('click', closeSheet);
-  $('#sheet-teach').addEventListener('click', closeSheet);
-  $('#sheet-voice').addEventListener('click', () => { closeSheet(); openVoiceSettings(); });
-  $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   $('#viewer-close').addEventListener('click', closeViewer);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); closeSheet(); } });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeViewer(); closeDialog(); } });
   $('#back-btn').addEventListener('click', () => { if (backTarget) location.hash = backTarget; });
   $('#dialog').addEventListener('click', e => { if (e.target.id === 'dialog') closeDialog(); });
-  $('#logout-btn').addEventListener('click', logout);
 
   if (!isConfigured() || !window.supabase) {
     if (isConfigured() && !window.supabase) {
