@@ -4665,12 +4665,13 @@ async function communityUnifiedFeed() {
   return h('div', {}, chipsWrap, mineWrap, list);
 }
 
-async function communityTeachBlock() {
-  try {
-    const page = await teacherPage();
-    return sectionFeedBlock('teach', 'Teach', '#workspace/teach', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('teach', 'Teach', '#workspace/teach', [errorCard(e)]); }
-}
+// Phase (folder): the Teach chip used to also drop its whole edit form (status
+// banner, subjects/qualifications/experience/about/proof, save/stop buttons)
+// into the Community feed as its own stacked block \u2014 communityTeachBlock()
+// below, now removed. It's your own teacher profile, not a stream of other
+// people's content, so it now lives as a small folder-style entry on the
+// Profile page instead (peoplePage, next to "My posts"); the Teach chip above
+// still opens the same full #workspace/teach page either way.
 async function communityBooksBlock() {
   try {
     const page = await booksPage();
@@ -4678,14 +4679,14 @@ async function communityBooksBlock() {
   } catch (e) { return sectionFeedBlock('books', 'Book reviews', '#workspace/books', [errorCard(e)]); }
 }
 async function communityHubPage() {
-  const [admin, carousel, feed, teachBlock, booksBlock] = await Promise.all([
+  const [admin, carousel, feed, booksBlock] = await Promise.all([
     loadAdminFlag(), loadCommunityCarousel().catch(() => []),
-    communityUnifiedFeed(), communityTeachBlock(), communityBooksBlock()
+    communityUnifiedFeed(), communityBooksBlock()
   ]);
   return { title: 'Community', nodes: [
     sectionCarousel(carousel),
     feed,
-    teachBlock, booksBlock,
+    booksBlock,
     // Verification requests was never one of the 8 chips (owner/admin only,
     // not in the blueprint), so it stays as a plain link.
     admin ? h('div', { class: 'list', style: 'margin-top:30px' },
@@ -9618,6 +9619,47 @@ function schSummaryFacts(row) {
   ];
 }
 
+// Scholarship Center university spotlight: a curated list of universities well
+// known for funding international students, rather than the scraped listing
+// loadScholarshipsCarousel already covers above. Same technique as the
+// Community/Explore article carousels (WIKI_API generator=search for a
+// thumbnail) but the card opens the university's own official site instead of
+// the in-app Wikipedia reader — via schUniversityPage's launchPage, the same
+// "confirm, then hand off to a real browser tab" pattern Portals/Hubs use for
+// every other external site in this app.
+const SCHOLARSHIP_UNIVERSITIES = [
+  { key: 'mit',       name: 'MIT',                            wiki: 'Massachusetts Institute of Technology', url: 'https://mit.edu/',                 meta: 'USA \u00b7 need-based aid, meets full need for all admits' },
+  { key: 'oxford',    name: 'University of Oxford',           wiki: 'University of Oxford',                  url: 'https://www.ox.ac.uk/',            meta: 'UK \u00b7 Clarendon & Reach Oxford scholarships' },
+  { key: 'cambridge', name: 'University of Cambridge',        wiki: 'University of Cambridge',               url: 'https://www.cam.ac.uk/',           meta: 'UK \u00b7 Gates Cambridge & Cambridge Trust' },
+  { key: 'eth',       name: 'ETH Zurich',                     wiki: 'ETH Zurich',                            url: 'https://ethz.ch/',                 meta: 'Switzerland \u00b7 ETH Excellence Scholarship' },
+  { key: 'nus',       name: 'National University of Singapore', wiki: 'National University of Singapore',    url: 'https://www.nus.edu.sg/',          meta: 'Singapore \u00b7 NUS Global Merit Scholarship' },
+  { key: 'utoronto',  name: 'University of Toronto',          wiki: 'University of Toronto',                 url: 'https://www.utoronto.ca/',         meta: 'Canada \u00b7 Lester B. Pearson International Scholarship' },
+  { key: 'melbourne', name: 'University of Melbourne',        wiki: 'University of Melbourne',                url: 'https://www.unimelb.edu.au/',      meta: 'Australia \u00b7 Melbourne International Scholarships' },
+  { key: 'tum',       name: 'Technical University of Munich', wiki: 'Technical University of Munich',        url: 'https://www.tum.de/',              meta: 'Germany \u00b7 DAAD & TUM merit scholarships' }
+];
+async function loadUniversitySpotlightCarousel() {
+  return Promise.all(SCHOLARSHIP_UNIVERSITIES.map(async u => {
+    let image = null;
+    try {
+      const resp = await fetch(WIKI_API + '?action=query&format=json&origin=*&generator=search&gsrsearch=' +
+        encodeURIComponent(u.wiki) + '&gsrlimit=1&prop=pageimages&piprop=thumbnail&pithumbsize=480');
+      if (resp.ok) {
+        const data = await resp.json();
+        const page = data.query && data.query.pages ? Object.values(data.query.pages)[0] : null;
+        image = page && page.thumbnail ? page.thumbnail.source : null;
+      }
+    } catch (e) { /* card still shows without an image */ }
+    return { kind: 'University', title: u.name, meta: u.meta, image, href: '#workspace/scholarships/uni-' + u.key };
+  }));
+}
+function schUniversityPage(key) {
+  const u = SCHOLARSHIP_UNIVERSITIES.find(x => x.key === key);
+  if (!u) return go('#workspace/scholarships');
+  return launchPage(u.name, u.url,
+    [{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }],
+    [], u.name + '\u2019s official site, for its scholarships and admissions pages.');
+}
+
 async function scholarshipsHub(sub) {
   if (sub === 'cv') return schCvPage();
   if (sub === 'shortlist') return schShortlistPage();
@@ -9630,6 +9672,7 @@ async function scholarshipsHub(sub) {
   if (sub === 'whatif') return schWhatIfPage();
   if (sub && sub.startsWith('bundle-')) return schBundlePage(sub.slice(7)); // bundle-<shortlist id>
   if (sub && sub.startsWith('detail-')) return schDetailPage(sub.slice(7)); // detail-<shortlist id> or detail-u-<encoded page url>
+  if (sub && sub.startsWith('uni-')) return schUniversityPage(sub.slice(4)); // uni-<key>, from the university spotlight carousel
   // Theme redesign step 13: Language Hub and Olympiad Hub are folded into this
   // section (§2.1) but not yet built (§9 Known Gaps) — these two sub-routes
   // exist only so their chips (SCHOLARSHIPS_CHIPS below) and any direct link
@@ -9638,27 +9681,17 @@ async function scholarshipsHub(sub) {
   if (sub === 'language') return schPlaceholderHubPage('Language Hub', 'Language-learning resources and test prep for scholarship applications will live here. Not built yet.');
   if (sub === 'olympiad') return schPlaceholderHubPage('Olympiad Hub', 'Olympiad prep and resources will live here. Not built yet.');
 
-  const [res, carousel] = await Promise.all([
+  const [res, carousel, uniCarousel] = await Promise.all([
     sb.from('scholarship_profiles').select('*').maybeSingle(),
-    loadScholarshipsCarousel().catch(() => [])
+    loadScholarshipsCarousel().catch(() => []),
+    loadUniversitySpotlightCarousel().catch(() => [])
   ]);
   if (res.error) {
-    return { title: 'Scholarship Center', nodes: [sectionCarousel(carousel, true),
+    return { title: 'Scholarship Center', nodes: [sectionCarousel(uniCarousel, true), sectionCarousel(carousel, true),
       h('div', { class: 'status bad' }, h('strong', { text: 'Scholarship Center is not set up yet' }),
         'Run the update SQL in Supabase (schema-update-E1-scholarship-profile.sql), then reload. (' + res.error.message + ') ',
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
   }
-
-  const shortlistLink = tileRow([
-    sqTile({ href: '#workspace/scholarships/roadmap',  title: 'My roadmap',        meta: 'Checklist' }),
-    sqTile({ href: '#workspace/scholarships/whatif',   title: 'What-if simulator', meta: 'Simulator' }),
-    sqTile({ href: '#workspace/scholarships/gap',      title: 'Gap analysis',      meta: 'Compare' }),
-    sqTile({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines' }),
-    sqTile({ href: '#workspace/scholarships/search',   title: 'Find scholarships', meta: 'Search' }),
-    sqTile({ href: '#workspace/scholarships/cv',       title: 'CV / resume maker', meta: 'Build' }),
-    sqTile({ href: '#workspace/scholarships/shortlist', title: 'Shortlist',        meta: 'Saved' }),
-    sqTile({ href: '#workspace/scholarships/peers',    title: 'Peers',             meta: 'Community' })
-  ]);
 
   let row = res.data || null;
   let mode = row ? 'summary' : 'wizard';
@@ -9666,15 +9699,33 @@ async function scholarshipsHub(sub) {
   let draft = schDraftFromRow(row);
   const box = h('div');
 
+  // Phase 8: "My profile" used to be its own large standalone block above the
+  // nav row (facts grid + hint line). It's now just one more sqTile in the
+  // same horizontal row as roadmap/what-if/etc \u2014 tapping it opens the same
+  // edit wizard the old "Edit" button did. Rebuilt on every paint() (not just
+  // once) since its meta reflects whether a profile exists yet.
+  const tilesBox = h('div');
+  function paintTiles() {
+    tilesBox.replaceChildren(tileRow([
+      sqTile({
+        onClick: () => { draft = schDraftFromRow(row); step = 0; mode = 'wizard'; paint(); },
+        title: 'My profile', meta: row ? 'Edit' : 'Set up'
+      }),
+      sqTile({ href: '#workspace/scholarships/roadmap',  title: 'My roadmap',        meta: 'Checklist' }),
+      sqTile({ href: '#workspace/scholarships/whatif',   title: 'What-if simulator', meta: 'Simulator' }),
+      sqTile({ href: '#workspace/scholarships/gap',      title: 'Gap analysis',      meta: 'Compare' }),
+      sqTile({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines' }),
+      sqTile({ href: '#workspace/scholarships/search',   title: 'Find scholarships', meta: 'Search' }),
+      sqTile({ href: '#workspace/scholarships/cv',       title: 'CV / resume maker', meta: 'Build' }),
+      sqTile({ href: '#workspace/scholarships/shortlist', title: 'Shortlist',        meta: 'Saved' }),
+      sqTile({ href: '#workspace/scholarships/peers',    title: 'Peers',             meta: 'Community' })
+    ]));
+  }
+
   function paintSummary() {
-    const facts = schSummaryFacts(row);
-    box.replaceChildren(
-      section('My profile', 'Edit', () => { draft = schDraftFromRow(row); step = 0; mode = 'wizard'; paint(); },
-        h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:12px' },
-          facts.map(([k, v]) => h('div', {},
-            h('small', { text: k }),
-            h('strong', { style: 'display:block;white-space:pre-line;font-weight:600', text: v })))),
-        h('p', { class: 'hint-line', text: 'This profile is what search, your roadmap and gap analysis will use to fit scholarships to you. Update it whenever a score or result changes \u2014 your roadmap follows it.' })));
+    // The facts grid this used to show now only appears inside the edit
+    // wizard's own review step (schSummaryFacts is still used there).
+    box.replaceChildren();
   }
 
   function paintWizard() {
@@ -9810,10 +9861,10 @@ async function scholarshipsHub(sub) {
       stepper, body, err, h('div', { class: 'actions' }, nextBtn, back, cancel)));
   }
 
-  function paint() { if (mode === 'summary') paintSummary(); else paintWizard(); }
+  function paint() { paintTiles(); if (mode === 'summary') paintSummary(); else paintWizard(); }
   paint();
-  return { title: 'Scholarship Center', nodes: [sectionCarousel(carousel, true), sectionChipRow(SCHOLARSHIPS_CHIPS, null, true),
-    sectionFeedBlock('scholarships', 'Scholarship Center', null, [shortlistLink, box]),
+  return { title: 'Scholarship Center', nodes: [sectionCarousel(uniCarousel, true), sectionCarousel(carousel, true), sectionChipRow(SCHOLARSHIPS_CHIPS, null, true),
+    sectionFeedBlock('scholarships', 'Scholarship Center', null, [tilesBox, box]),
     languageHubBlock(), olympiadHubBlock()] };
 }
 
@@ -14789,6 +14840,14 @@ async function peoplePage(uid) {
       myPostsCount = allRes.error ? 0 : (allRes.count || 0);
       stats.unshift({ n: myPostsCount, label: 'My posts' });
     }
+    // Folder-style entry into the teacher edit form (moved off the Community
+    // feed, which used to embed the whole form here \u2014 see the comment by the
+    // now-removed communityTeachBlock()). Own profile only, like "My posts".
+    let teachActive = false;
+    if (mine) {
+      const ta = await sb.from('teacher_applications').select('active').eq('user_id', uid).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      teachActive = !!(ta.data && ta.data.active);
+    }
     const header = h('div', { class: 'stack-header', style: 'align-items:flex-start' }, av,
       h('div', { class: 'stack-header-body' },
         h('strong', { text: name }),
@@ -14798,6 +14857,7 @@ async function peoplePage(uid) {
 
     return { title: name, nodes: [crumb, header,
       mine ? stackTile({ href: '#workspace/posts', color: null, title: 'My posts', meta: plural(myPostsCount, 'post', 'posts') }) : null,
+      mine ? stackTile({ href: '#workspace/teach', color: null, title: 'Teach', meta: teachActive ? 'You are teaching' : 'Become a teacher' }) : null,
       mine ? null : reportBtn('profile', uid, uid, name),
       await profileDetailsSection(uid, mine),
       await teacherProfileSection(uid, mine),
