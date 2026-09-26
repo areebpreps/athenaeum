@@ -450,6 +450,12 @@
     background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; margin-bottom: 2px;
   }
   .sq-tile .row-del { position: absolute; top: 2px; right: 2px; width: 24px; height: 24px; font-size: 16px; }
+  /* Selectable variant \u2014 Subject/Chapter/Topic chain pickers and any other
+     "pick one of these squares" control (AI tools). Plain button reset so
+     sq-tile's look isn't fought by default <button> styling. */
+  button.sq-tile { font: inherit; cursor: pointer; }
+  .sq-tile.selected { border-color: var(--marker); background: var(--paper-hi); box-shadow: inset 0 0 0 1.5px var(--marker); }
+  .sq-tile:disabled { opacity: .5; pointer-events: none; }
 
   /* Horizontally-scrolling row for richer cards that don't fit the fixed
      108px sq-tile mold \u2014 Community's "My own uploads" folder items and the
@@ -1987,13 +1993,17 @@ function arrangeSection(entries, opts) {
 
 // A history row for a saved AI chat: tap to open it, tap × to delete it (with confirmation).
 // chip (optional) shows a small type badge (e.g. quiz type) before the title.
+// Phase: AI tools' "past X" history lists (Ask AI, Question Solver, Fact
+// Checker, YouTube summarizer, Summarizer, Quiz Generator, Translator,
+// Grounded Study Engine, Notebook Studio) all render this as a horizontally-
+// scrolling row of sq-tile squares — the same square-tile language as OCR's
+// "Past scans" row — instead of a stacked vertical list. Every call site
+// wraps its chats in tileRow(...) rather than a `class: 'list'` div.
 function chatRow(href, title, meta, chatId, chip) {
-  return h('div', { class: 'row hist-row' },
-    h('a', { class: 'row-link grow', href },
-      h('span', { class: 'grow' },
-        chip ? h('span', { class: 'chip', text: chip }) : null,
-        h('strong', { text: title }), h('small', { text: meta })),
-      h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+  return h('a', { class: 'sq-tile', href },
+    chip ? h('span', { class: 'sq-tile-badge', text: chip }) : null,
+    h('strong', { text: title }),
+    h('small', { text: meta }),
     h('button', {
       class: 'row-del', type: 'button', 'aria-label': 'Delete chat',
       onclick: e => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(chatId); }
@@ -5967,7 +5977,7 @@ async function askAIList() {
   return { title: 'Ask AI', nodes: [
     crumbs([{ text: 'AI tools', href: '#ai' }]),
     newBtn,
-    h('div', { class: 'list' }, chats.map(c => chatRow('#ai/ask/' + c.id, c.title || 'New chat', new Date(c.created_at).toLocaleString(), c.id)))
+    tileRow(chats.map(c => chatRow('#ai/ask/' + c.id, c.title || 'New chat', new Date(c.created_at).toLocaleString(), c.id)))
   ] };
 }
 
@@ -6098,7 +6108,7 @@ async function solverList() {
 
   const history = chats.length
     ? [section('Past questions', null, null,
-        h('div', { class: 'list' }, chats.map(c => chatRow('#ai/solver/' + c.id, c.title || 'Solved question', new Date(c.created_at).toLocaleString(), c.id))))]
+        tileRow(chats.map(c => chatRow('#ai/solver/' + c.id, c.title || 'Solved question', new Date(c.created_at).toLocaleString(), c.id))))]
     : [h('p', { class: 'none', text: 'No questions solved yet.' })];
 
   return { title: 'Question Solver', nodes: [
@@ -6112,8 +6122,9 @@ async function solverList() {
 function solverPanel() {
   const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
   const galleryInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
-  const snapBtn = h('button', { class: 'btn small', type: 'button', text: 'Take a photo', onclick: () => cameraInput.click() });
-  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose from gallery', onclick: () => galleryInput.click() });
+  const snapTile = sqTile({ onClick: () => cameraInput.click(), title: 'Take a photo', meta: 'Camera' });
+  const galleryTile = sqTile({ onClick: () => galleryInput.click(), title: 'Choose from gallery', meta: 'Gallery' });
+  const status = h('p', { class: 'hint-line', hidden: true });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
@@ -6122,15 +6133,14 @@ function solverPanel() {
     if (!file.type.startsWith('image/')) { err.textContent = 'Choose a photo.'; err.hidden = false; return; }
 
     err.hidden = true; result.replaceChildren();
-    snapBtn.disabled = true; galleryBtn.disabled = true;
-    const restoreLabel = snapBtn.textContent;
-    snapBtn.textContent = 'Reading photo…';
+    snapTile.disabled = true; galleryTile.disabled = true;
+    status.hidden = false; status.textContent = 'Reading photo…';
     try {
       const blob = await compressImage(file);
       const mime = blob.type || 'image/jpeg';
       const b64 = await blobToBase64(blob);
 
-      snapBtn.textContent = 'Solving…';
+      status.textContent = 'Solving…';
       const answer = await callAIVision(SOLVER_ANSWER_SYSTEM, 'Give the direct answer to the question in this photo.', b64, mime);
       result.replaceChildren(solverResultBlock(answer, null, null, null));
 
@@ -6150,7 +6160,7 @@ function solverPanel() {
       err.textContent = (e && e.message) ? e.message : 'Could not solve that photo. Try again.';
       err.hidden = false;
     } finally {
-      snapBtn.disabled = false; galleryBtn.disabled = false; snapBtn.textContent = restoreLabel;
+      snapTile.disabled = false; galleryTile.disabled = false; status.hidden = true;
     }
   }
 
@@ -6160,8 +6170,8 @@ function solverPanel() {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New question' })),
     h('p', { class: 'hint-line', text: 'Snap a photo of a question for a direct answer first, then tap Explain for the steps.' }),
-    h('div', { class: 'vault-actions' }, snapBtn, galleryBtn, cameraInput, galleryInput),
-    err, result);
+    tileRow([snapTile, galleryTile]), cameraInput, galleryInput,
+    status, err, result);
 }
 
 // Builds the Explain control: appends the explanation bubble into `log`
@@ -6326,7 +6336,7 @@ function factcheckPanel() {
   const ta = h('textarea', { class: 'control area', rows: 3, placeholder: 'Paste a claim to check…' });
   const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
   let pickedFile = null;
-  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add a photo instead', onclick: () => fileInput.click() });
+  const photoTile = sqTile({ onClick: () => fileInput.click(), title: 'Add a photo', meta: 'Instead of typing' });
   const photoLabel = h('p', { class: 'hint-line', hidden: true });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Check' });
   const err = h('p', { class: 'msg err', hidden: true });
@@ -6376,7 +6386,7 @@ function factcheckPanel() {
     h('div', { class: 'sec-head' }, h('h3', { text: 'New claim' })),
     h('p', { class: 'hint-line', text: 'Paste a claim, or add a photo of one, and get a verdict.' }),
     h('div', { class: 'field' }, ta),
-    h('div', { class: 'vault-actions' }, photoBtn, fileInput),
+    tileRow([photoTile]), fileInput,
     photoLabel, goBtn, err, result);
 }
 
@@ -6388,7 +6398,7 @@ async function factcheckList() {
     factcheckPanel(),
     ...(chats.length
       ? [section('Past checks', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/factcheck/' + c.id, c.title || 'Checked claim', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/factcheck/' + c.id, c.title || 'Checked claim', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No claims checked yet.' })])
   ] };
 }
@@ -6515,7 +6525,7 @@ async function youtubeList() {
     youtubePanel(),
     ...(chats.length
       ? [section('Past summaries', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/youtube/' + c.id, c.title || 'Video summary', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/youtube/' + c.id, c.title || 'Video summary', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No summaries yet.' })])
   ] };
 }
@@ -6566,8 +6576,8 @@ function summarizerPanel() {
   const ta = h('textarea', { class: 'control area', rows: 6, placeholder: 'Paste your notes here…' });
   const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
   const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
-  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add a page photo', onclick: () => cameraInput.click() });
-  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose pages from gallery', onclick: () => galleryInput.click() });
+  const photoTile = sqTile({ onClick: () => cameraInput.click(), title: 'Add a page photo', meta: 'Camera' });
+  const galleryTile = sqTile({ onClick: () => galleryInput.click(), title: 'Choose pages', meta: 'Gallery' });
   const pagesLabel = h('p', { class: 'hint-line', hidden: true });
   const clearPhotoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove all pages', hidden: true });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Summarize' });
@@ -6664,7 +6674,7 @@ function summarizerPanel() {
     h('div', { class: 'sec-head' }, h('h3', { text: 'New summary' })),
     h('p', { class: 'hint-line', text: 'Paste notes, or add up to ' + SUMMARIZER_MAX_PAGES + ' page photos, then either get a summary with formulas pulled out, or a detailed note you can save straight into a subject, chapter or topic.' }),
     h('div', { class: 'field' }, ta),
-    h('div', { class: 'vault-actions' }, photoBtn, galleryBtn, cameraInput, galleryInput),
+    tileRow([photoTile, galleryTile]), cameraInput, galleryInput,
     pagesLabel, clearPhotoBtn,
     h('div', { class: 'vault-actions' }, goBtn, noteBtn),
     err, result);
@@ -6678,7 +6688,7 @@ async function summarizerList() {
     summarizerPanel(),
     ...(chats.length
       ? [section('Past summaries', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/summarizer/' + c.id, c.title || 'Summary', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/summarizer/' + c.id, c.title || 'Summary', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No summaries yet.' })])
   ] };
 }
@@ -7087,7 +7097,7 @@ async function quizList() {
     quizPanel(tree),
     ...(chats.length
       ? [section('Past quizzes', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/quiz/' + c.id, c.title || 'Quiz', new Date(c.created_at).toLocaleString(), c.id,
+          tileRow(chats.map(c => chatRow('#ai/quiz/' + c.id, c.title || 'Quiz', new Date(c.created_at).toLocaleString(), c.id,
             QUIZ_KINDS[types[c.id]] ? QUIZ_KINDS[types[c.id]].label : null))))]
       : [h('p', { class: 'none', text: 'No quizzes yet.' })])
   ] };
@@ -7258,7 +7268,7 @@ async function vaultHub() {
   const picker = scopePickerFields(tree);
   const search = h('input', { class: 'control', type: 'search', placeholder: 'Search your mistakes', 'aria-label': 'Search Mistake Vault' });
   const count = h('p', { class: 'hint-line' });
-  const list = h('div', { class: 'list' });
+  const list = h('div', { class: 'h-scroll-row' });
 
   function paint() {
     const scope = picker.getScope();
@@ -7277,7 +7287,7 @@ async function vaultHub() {
     list.append(...pool.map(mistakeCard));
   }
   search.addEventListener('input', paint);
-  picker.wrap.querySelectorAll('select').forEach(s => s.addEventListener('change', paint));
+  picker.onChange(paint);
   paint();
 
   return { title: 'Mistake Vault', nodes: [
@@ -7385,7 +7395,7 @@ async function translatorList() {
     translatorPanel(),
     ...(chats.length
       ? [section('Past translations', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/translate/' + c.id, c.title || 'Translation', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/translate/' + c.id, c.title || 'Translation', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No translations yet.' })])
   ] };
 }
@@ -7515,7 +7525,7 @@ async function checkWritingList() {
     checkWritingPanel(),
     ...(chats.length
       ? [section('Past checks', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/translate/check/' + c.id, c.title || 'Writing check', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/translate/check/' + c.id, c.title || 'Writing check', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No writing checks yet.' })])
   ] };
 }
@@ -7829,33 +7839,74 @@ async function loadScopeTree() {
 }
 
 function scopePickerFields(tree) {
-  const subjSel  = h('select', { class: 'control' }, h('option', { value: '', text: 'Choose a subject…' }),
-    tree.subjects.map(s => h('option', { value: s.id, text: s.name })));
-  const chapSel  = h('select', { class: 'control' }, h('option', { value: '', text: 'Whole subject' }));
-  const topicSel = h('select', { class: 'control' }, h('option', { value: '', text: 'Whole chapter' }));
+  // Phase: chained square-tile picker. Subject/Chapter/Topic each render as a
+  // horizontally-scrolling row of sq-tile squares (same component as OCR's
+  // upload squares and past-scans row) instead of a stacked <select> chain.
+  // Picking a subject reveals its chapter row; picking a chapter reveals its
+  // topic row. Behaves like the old <select> chain: chapter/topic reset when
+  // an earlier level changes, and "Whole subject"/"Whole chapter" are real
+  // selectable squares (null selection) rather than a blank default.
+  let selSubject = null, selChapter = null, selTopic = null;
+  const changeHandlers = [];
+  const fireChange = () => changeHandlers.forEach(fn => fn());
 
-  const fillTopics = chapterId => {
-    topicSel.replaceChildren(h('option', { value: '', text: 'Whole chapter' }),
-      ...tree.topics.filter(t => t.chapter_id === chapterId).map(t => h('option', { value: t.id, text: t.title })));
-  };
-  const fillChapters = subjectId => {
-    chapSel.replaceChildren(h('option', { value: '', text: 'Whole subject' }),
-      ...tree.chapters.filter(c => c.subject_id === subjectId).map(c => h('option', { value: c.id, text: c.title })));
-    fillTopics('');
-  };
-  subjSel.addEventListener('change', () => fillChapters(subjSel.value));
-  chapSel.addEventListener('change', () => fillTopics(chapSel.value));
+  const subjWrap = h('div');
+  const chapWrap = h('div');
+  const topicWrap = h('div');
+
+  function renderSubjects() {
+    if (!tree.subjects.length) { subjWrap.replaceChildren(h('p', { class: 'none', text: 'No subjects yet — add one first.' })); return; }
+    subjWrap.replaceChildren(tileRow(tree.subjects.map(s => {
+      const tile = sqTile({ onClick: () => selectSubject(s), title: s.name });
+      if (selSubject && selSubject.id === s.id) tile.classList.add('selected');
+      return tile;
+    })));
+  }
+  function renderChapters() {
+    if (!selSubject) { chapWrap.replaceChildren(h('p', { class: 'none', text: 'Choose a subject first.' })); return; }
+    const chapters = tree.chapters.filter(c => c.subject_id === selSubject.id);
+    const wholeTile = sqTile({ onClick: () => selectChapter(null), title: 'Whole subject' });
+    if (!selChapter) wholeTile.classList.add('selected');
+    const chapTiles = chapters.map(c => {
+      const tile = sqTile({ onClick: () => selectChapter(c), title: c.title });
+      if (selChapter && selChapter.id === c.id) tile.classList.add('selected');
+      return tile;
+    });
+    chapWrap.replaceChildren(tileRow([wholeTile, ...chapTiles]));
+  }
+  function renderTopics() {
+    if (!selChapter) { topicWrap.replaceChildren(h('p', { class: 'none', text: 'Choose a chapter to narrow further.' })); return; }
+    const topics = tree.topics.filter(t => t.chapter_id === selChapter.id);
+    const wholeTile = sqTile({ onClick: () => selectTopic(null), title: 'Whole chapter' });
+    if (!selTopic) wholeTile.classList.add('selected');
+    const topicTiles = topics.map(t => {
+      const tile = sqTile({ onClick: () => selectTopic(t), title: t.title });
+      if (selTopic && selTopic.id === t.id) tile.classList.add('selected');
+      return tile;
+    });
+    topicWrap.replaceChildren(tileRow([wholeTile, ...topicTiles]));
+  }
+  function selectSubject(s) { selSubject = s; selChapter = null; selTopic = null; renderSubjects(); renderChapters(); renderTopics(); fireChange(); }
+  function selectChapter(c) { selChapter = c; selTopic = null; renderChapters(); renderTopics(); fireChange(); }
+  function selectTopic(t) { selTopic = t; renderTopics(); fireChange(); }
+
+  renderSubjects(); renderChapters(); renderTopics();
 
   const wrap = h('div', {},
-    h('div', { class: 'field' }, h('label', { text: 'Subject' }), subjSel),
-    h('div', { class: 'field' }, h('label', { text: 'Chapter (optional — narrows the search)' }), chapSel),
-    h('div', { class: 'field' }, h('label', { text: 'Topic (optional — narrows further)' }), topicSel));
+    h('div', { class: 'field' }, h('label', { text: 'Subject' }), subjWrap),
+    h('div', { class: 'field' }, h('label', { text: 'Chapter (optional — narrows the search)' }), chapWrap),
+    h('div', { class: 'field' }, h('label', { text: 'Topic (optional — narrows further)' }), topicWrap));
   const getScopeNames = () => ({
-    subject: subjSel.value ? subjSel.selectedOptions[0].text : null,
-    chapter: chapSel.value ? chapSel.selectedOptions[0].text : null,
-    topic: topicSel.value ? topicSel.selectedOptions[0].text : null
+    subject: selSubject ? selSubject.name : null,
+    chapter: selChapter ? selChapter.title : null,
+    topic: selTopic ? selTopic.title : null
   });
-  return { wrap, getScope: () => ({ subjectId: subjSel.value || null, chapterId: chapSel.value || null, topicId: topicSel.value || null }), getScopeNames };
+  return {
+    wrap,
+    onChange: fn => changeHandlers.push(fn),
+    getScope: () => ({ subjectId: selSubject ? selSubject.id : null, chapterId: selChapter ? selChapter.id : null, topicId: selTopic ? selTopic.id : null }),
+    getScopeNames
+  };
 }
 
 function studyAnswerBlock(answer, chunks) {
@@ -7870,8 +7921,8 @@ function studyPanel(tree) {
   const picker = scopePickerFields(tree);
   const fQuestion = makeField('Your question', { multiline: true, rows: 2, placeholder: 'e.g. What is the difference between speed and velocity?' });
   const askBtn = h('button', { class: 'btn small', type: 'button', text: 'Ask' });
-  const pasteBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Add source material', onclick: () => openAddSourceMaterial(picker.getScope) });
-  const pdfBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Add text from a PDF', onclick: () => openPdfExtractDialog(picker.getScope) });
+  const pasteTile = sqTile({ onClick: () => openAddSourceMaterial(picker.getScope), title: '+ Add source', meta: 'Paste text' });
+  const pdfTile = sqTile({ onClick: () => openPdfExtractDialog(picker.getScope), title: 'From a PDF', meta: 'Vault PDF' });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
@@ -7902,7 +7953,8 @@ function studyPanel(tree) {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'Ask a question' })),
     picker.wrap, fQuestion.wrap,
-    h('div', { class: 'vault-actions' }, askBtn, pasteBtn, pdfBtn),
+    tileRow([pasteTile, pdfTile]),
+    h('div', { class: 'vault-actions' }, askBtn),
     err, result);
 }
 
@@ -8014,7 +8066,7 @@ async function studyList() {
     studyPanel(tree),
     ...(chats.length
       ? [section('Past questions', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/study/' + c.id, c.title || 'Question', new Date(c.created_at).toLocaleString(), c.id))))]
+          tileRow(chats.map(c => chatRow('#ai/study/' + c.id, c.title || 'Question', new Date(c.created_at).toLocaleString(), c.id))))]
       : [h('p', { class: 'none', text: 'No questions asked yet.' })])
   ] };
 }
@@ -8791,7 +8843,7 @@ async function notebookList() {
     notebookPanel(tree),
     section('History', null, null,
       chats.length
-        ? h('div', { class: 'list' }, chats.map(c => chatRow('#ai/notebook/' + c.id, c.title || NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]].label,
+        ? tileRow(chats.map(c => chatRow('#ai/notebook/' + c.id, c.title || NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]].label,
             new Date(c.created_at).toLocaleString(), c.id, NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]] ? NOTEBOOK_KINDS[NOTEBOOK_TOOL_KIND[c.tool]].label : null)))
         : h('p', { class: 'none', text: 'Nothing generated yet.' }))
   ] };
