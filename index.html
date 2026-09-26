@@ -320,7 +320,16 @@
      collapsed state and numbering-on/off are a per-device view preference
      (localStorage, same pattern as hubsSection's own "Sort"), not per-subject
      data, since the same six section types apply to every subject alike. */
-  .subj-cover { height: 64px; width: 64px; border-radius: 16px; flex: none; }
+  .subj-cover {
+    height: 64px; width: 64px; border-radius: 16px; flex: none; position: relative;
+    overflow: hidden; border: 0; padding: 0; cursor: pointer;
+  }
+  .subj-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .subj-cover-edit {
+    position: absolute; inset: auto 0 0 0; padding: 3px 0; text-align: center;
+    font-size: 9px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+    background: rgba(0,0,0,.5); color: #fff;
+  }
   .subj-subsec { margin-top: 14px; }
   .subsec-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .subsec-num { font-family: var(--serif); font-size: 15px; font-weight: 700; color: var(--marker); min-width: 18px; }
@@ -7449,7 +7458,13 @@ async function subjectPage(sid) {
   return { title: subject.name, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }]),
     h('div', { class: 'stack-header', style: 'align-items:flex-start' },
-      h('div', { class: 'subj-cover', style: 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(subject.color), .35) + ', var(--paper))' }),
+      h('button', {
+          class: 'subj-cover', type: 'button', 'aria-label': (subject.cover_path ? 'Change' : 'Add') + ' cover photo',
+          style: subject.cover_path ? '' : 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(subject.color), .35) + ', var(--paper))',
+          onclick: () => entityDialog('subject', subject, {})
+        },
+        subject.cover_path ? h('img', { src: subjectCoverUrl(subject.cover_path), alt: '' }) : null,
+        h('span', { class: 'subj-cover-edit', text: subject.cover_path ? 'Change' : 'Add' })),
       h('div', { class: 'stack-header-body' },
         h('strong', { text: subject.name }),
         h('small', { text: plural(chapters.length, 'chapter', 'chapters') + ' \u00b7 ' +
@@ -7649,6 +7664,8 @@ function openSelectSheet(sel) {
 function entityDialog(kind, existing, ctx) {
   const E = ENTITY[kind];
   let color = existing ? colorOf(existing.color) : PALETTE[0].hex;
+  // Subject cover photo state (§5.4) — only used when kind === 'subject'.
+  let coverBlob = null, coverRemove = false, coverPreviewUrl = '';
 
   showDialog({
     title: (existing ? 'Edit ' : 'New ') + E.label,
@@ -7667,6 +7684,47 @@ function entityDialog(kind, existing, ctx) {
         });
         sync();
         form.append(h('div', { class: 'field' }, h('label', { id: 'colour-label', text: 'Colour' }), group));
+
+        // Cover photo (§5.4's addable cover image) — schema-update-I1-subject-cover.sql
+        const shownCoverUrl = () => coverPreviewUrl || (!coverRemove && existing && existing.cover_path ? subjectCoverUrl(existing.cover_path) : '');
+        const hasCover = () => !!shownCoverUrl();
+        const preview = h('div', { class: 'subj-cover', 'aria-hidden': 'true' });
+        const fileIn = h('input', { type: 'file', accept: 'image/*', hidden: true, 'aria-label': 'Choose a cover photo' });
+        const pickBtn = h('button', { class: 'btn quiet small', type: 'button' });
+        const removeBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo' });
+        const coverMsg = h('p', { class: 'msg err', role: 'alert', hidden: true });
+
+        function paintCoverPreview() {
+          const url = shownCoverUrl();
+          preview.replaceChildren();
+          preview.style.background = url ? '' : ('linear-gradient(135deg, ' + hexToRgba(color, .35) + ', var(--paper))');
+          if (url) preview.append(h('img', { src: url, alt: '' }));
+          pickBtn.textContent = hasCover() ? 'Change photo' : 'Add photo';
+          removeBtn.hidden = !hasCover();
+        }
+        // Keep the placeholder gradient in step with the chosen colour swatch.
+        group.querySelectorAll('.swatch').forEach(b => b.addEventListener('click', paintCoverPreview));
+        pickBtn.addEventListener('click', () => fileIn.click());
+        removeBtn.addEventListener('click', () => {
+          if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
+          coverBlob = null; coverPreviewUrl = ''; coverRemove = true; fileIn.value = ''; paintCoverPreview();
+        });
+        fileIn.addEventListener('change', async () => {
+          const file = fileIn.files && fileIn.files[0]; if (!file) return;
+          coverMsg.hidden = true;
+          if (!/^image\//.test(file.type || '')) { coverMsg.textContent = 'Choose a photo (JPG, PNG or WebP).'; coverMsg.hidden = false; return; }
+          try {
+            const blob = await avatarBlob(file, 192);
+            if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
+            coverBlob = blob; coverPreviewUrl = URL.createObjectURL(blob); coverRemove = false; paintCoverPreview();
+          } catch (e) { coverMsg.textContent = (e && e.message) || 'Could not read that photo.'; coverMsg.hidden = false; }
+        });
+        paintCoverPreview();
+        form.append(h('div', { class: 'field' },
+          h('label', { text: 'Cover photo' }),
+          preview, fileIn,
+          h('div', { class: 'edit-row', style: 'display:flex;gap:8px;margin-top:8px' }, pickBtn, removeBtn),
+          coverMsg));
       }
       return () => {
         const name = f.input.value.trim();
@@ -7676,7 +7734,20 @@ function entityDialog(kind, existing, ctx) {
     },
     async onSubmit({ name }) {
       const payload = { [E.nameCol]: name };
-      if (kind === 'subject') payload.color = color;
+      let oldCoverPath = null, newCoverPath = null;
+      if (kind === 'subject') {
+        payload.color = color;
+        if (coverBlob) {
+          newCoverPath = currentUser.id + '/' + crypto.randomUUID() + '.jpg';
+          const up = await sb.storage.from(SUBJECT_COVER_BUCKET).upload(newCoverPath, coverBlob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
+          if (up.error) { newCoverPath = null; throw up.error; }
+          oldCoverPath = existing && existing.cover_path;
+          payload.cover_path = newCoverPath;
+        } else if (coverRemove && existing && existing.cover_path) {
+          oldCoverPath = existing.cover_path;
+          payload.cover_path = null;
+        }
+      }
       let res;
       if (existing) {
         res = await sb.from(E.table).update(payload).eq('id', existing.id);
@@ -7686,7 +7757,12 @@ function entityDialog(kind, existing, ctx) {
         if (kind === 'topic')   payload.chapter_id = ctx.chapterId;
         res = await sb.from(E.table).insert(payload);
       }
-      if (res.error) throw res.error;
+      if (res.error) {
+        if (newCoverPath) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([newCoverPath]); } catch (e) {} }
+        if ('cover_path' in payload) throw new Error(res.error.message + ' (run schema-update-I1-subject-cover.sql in Supabase, then try again)');
+        throw res.error;
+      }
+      if (oldCoverPath && oldCoverPath !== newCoverPath) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([oldCoverPath]); } catch (e) {} }
       route();
     },
     extra: existing ? { label: 'Delete ' + E.label, onClick: () => confirmDeleteEntity(kind, existing, ctx) } : null
@@ -8230,11 +8306,21 @@ async function scholarshipsHub(sub) {
   if (sub === 'whatif') return schWhatIfPage();
   if (sub && sub.startsWith('bundle-')) return schBundlePage(sub.slice(7)); // bundle-<shortlist id>
   if (sub && sub.startsWith('detail-')) return schDetailPage(sub.slice(7)); // detail-<shortlist id> or detail-u-<encoded page url>
+  // Theme redesign step 13: Language Hub and Olympiad Hub are folded into this
+  // section (§2.1) but not yet built (§9 Known Gaps) — these two sub-routes
+  // exist only so their chips (SCHOLARSHIPS_CHIPS below) and any direct link
+  // to them lands on a real page instead of a dead link, until each is
+  // separately defined and built.
+  if (sub === 'language') return schPlaceholderHubPage('Language Hub', 'Language-learning resources and test prep for scholarship applications will live here. Not built yet.');
+  if (sub === 'olympiad') return schPlaceholderHubPage('Olympiad Hub', 'Olympiad prep and resources will live here. Not built yet.');
 
-  const res = await sb.from('scholarship_profiles').select('*').maybeSingle();
+  const [res, carousel] = await Promise.all([
+    sb.from('scholarship_profiles').select('*').maybeSingle(),
+    loadScholarshipsCarousel().catch(() => [])
+  ]);
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   if (res.error) {
-    return { title: 'Scholarship Center', nodes: [crumb,
+    return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel),
       h('div', { class: 'status bad' }, h('strong', { text: 'Scholarship Center is not set up yet' }),
         'Run the update SQL in Supabase (schema-update-E1-scholarship-profile.sql), then reload. (' + res.error.message + ') ',
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
@@ -8402,7 +8488,9 @@ async function scholarshipsHub(sub) {
 
   function paint() { if (mode === 'summary') paintSummary(); else paintWizard(); }
   paint();
-  return { title: 'Scholarship Center', nodes: [crumb, shortlistLink, box] };
+  return { title: 'Scholarship Center', nodes: [crumb, sectionCarousel(carousel), sectionChipRow(SCHOLARSHIPS_CHIPS, null),
+    sectionFeedBlock('scholarships', 'Scholarship Center', null, [shortlistLink, box]),
+    languageHubBlock(), olympiadHubBlock()] };
 }
 
 /* ---------- E24: Scholarship Center -- CV / resume maker -------------------
@@ -8966,6 +9054,62 @@ async function schFetchListing(url) {
   if (pr.status === 404) return [];
   if (!pr.ok) throw new Error('The scholarship proxy returned an error (' + pr.status + '). Try again shortly.');
   return schParseListing(await pr.text());
+}
+
+/* ---------- Theme redesign step 12: Scholarships carousel ----------
+   Scholarships (bottom-nav section 4) starts its own §3 page template with
+   just the carousel this step — the chip row and the first stacked block
+   (folding the existing Scholarship Center dashboard below in) are their
+   own next step, same "smaller steps" reasoning as Community/Explore's
+   split (§3.1's skeleton is carousel, then chip row, then feed — built in
+   that order here rather than carousel+chips together like those two).
+   Reuses the ScholarshipsAds listing scraper already built for Search (E7)
+   rather than a new data source — its "latest scholarships" page is exactly
+   §3.2's "universities that currently have open scholarships", and each
+   card already carries a banner image, giving the aesthetic preview the
+   blueprint asks for with no new fetch logic. Cards open the same in-app
+   detail page every other scholarship card in the app already opens
+   (never the raw external listing link). */
+async function loadScholarshipsCarousel() {
+  const cards = await schFetchListing(SCH_SRC + 'latest-scholarships');
+  return cards.slice(0, 10).map(c => ({
+    kind: 'Open scholarship',
+    title: c.name,
+    meta: joinParts([c.provider, c.country], ' \u00b7 '),
+    image: c.img || null,
+    href: '#workspace/scholarships/detail-u-' + encodeURIComponent(c.url)
+  }));
+}
+
+/* ---------- Theme redesign step 13: Scholarships chip row + stacked blocks ----------
+   Completes §3's page template for this section: the existing Scholarship
+   Center dashboard (profile summary/wizard + the roadmap/search/CV/etc. link
+   list, unchanged) becomes the section's first stacked block, and Language
+   Hub / Olympiad Hub (§2.1's two "new, not yet built" folds) get empty
+   placeholder blocks and chips per §9 Known Gaps — the structure exists so
+   nothing needs rewiring once each is actually built, but their real
+   content is out of scope until separately defined. The Scholarship Center
+   chip has no "Open full page" link like other sections' chips get,
+   because unlike Community/Explore's sub-items, this block's content IS
+   this page — there's no separate legacy route to fall back to. */
+const SCHOLARSHIPS_CHIPS = [
+  { key: 'scholarships', label: 'Scholarship Center', href: '#workspace/scholarships' },
+  { key: 'language',     label: 'Language Hub',       href: '#workspace/scholarships/language' },
+  { key: 'olympiad',     label: 'Olympiad Hub',       href: '#workspace/scholarships/olympiad' }
+];
+function schPlaceholderHubPage(title, text) {
+  return { title, nodes: [
+    crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Scholarship Center', href: '#workspace/scholarships' }]),
+    emptyBlock(title + ' is coming soon', text)
+  ] };
+}
+function languageHubBlock() {
+  return sectionFeedBlock('language', 'Language Hub', null,
+    [emptyBlock('Coming soon', 'Language-learning resources and test prep for scholarship applications will live here. Not built yet.')]);
+}
+function olympiadHubBlock() {
+  return sectionFeedBlock('olympiad', 'Olympiad Hub', null,
+    [emptyBlock('Coming soon', 'Olympiad prep and resources will live here. Not built yet.')]);
 }
 
 async function schLoadResults(f, page, from) {
@@ -12634,6 +12778,14 @@ function openLibraryDialog(existing, presetUrl, presetTitle, presetCat) {
    replace the initial in the header button. Photos are centre-cropped to a square
    and shrunk on this device before upload. */
 const AVATAR_BUCKET = 'avatars';
+/* Theme redesign step 11: subject cover photos (§5.4's "addable cover image").
+   One photo per subject in the public `subject-covers` bucket, under the
+   owning user's folder (schema-update-I1-subject-cover.sql, which also adds
+   subjects.cover_path). Reuses avatarBlob()'s square-crop/shrink pipeline
+   below since the requirements are identical. Falls back to the existing
+   colour-tinted gradient when no photo has been added yet. */
+const SUBJECT_COVER_BUCKET = 'subject-covers';
+const subjectCoverUrl = path => (path ? sb.storage.from(SUBJECT_COVER_BUCKET).getPublicUrl(path).data.publicUrl : '');
 let myProfile = null;
 // null = not checked yet, true/false once known. app_admins; schema-update-G15.
 let isAppAdmin = null;
