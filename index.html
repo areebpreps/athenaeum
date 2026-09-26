@@ -4424,14 +4424,17 @@ const COMMUNITY_CHIPS = [
 ];
 const COMMUNITY_HUB_KEYS = ['groups', 'classes', 'community', 'consult', 'qa', 'market', 'teach'];
 // Theme redesign step 5: one interleaved feed (posts, classes, groups, Q&A,
-// courses and consult offers, all sorted by recency) instead of a full stacked
-// block per category. The chip row now filters this one list in place instead
-// of navigating away. Teach and Book reviews stay as plain nav chips into
-// their own stacked block below \u2014 Teach is your own profile editor (not a
-// stream of other people's content) and Book reviews wasn't part of the mix
-// the redesign called for.
-const COMMUNITY_FEED_KEYS = new Set(['classes', 'posts', 'groups', 'qa', 'market', 'consult']);
-const COMMUNITY_FEED_LABELS = { classes: 'live classes', posts: 'posts', groups: 'groups', qa: 'Q&A', market: 'courses', consult: 'consult offers' };
+// courses, consult offers and now book reviews, all sorted by recency)
+// instead of a full stacked block per category. The chip row filters this one
+// list in place instead of navigating away. Teach is the one chip that still
+// opens its own standalone page directly \u2014 it's your own profile editor,
+// not a stream of other people's content, so it doesn't belong in a feed of
+// things to browse. Book reviews used to get the same standalone-page
+// treatment (its own stacked block, "Open full page" link) but now folds into
+// the feed like everything else here; #workspace/books still exists underneath
+// for posting a new review or searching by title/author.
+const COMMUNITY_FEED_KEYS = new Set(['classes', 'posts', 'groups', 'qa', 'market', 'consult', 'books']);
+const COMMUNITY_FEED_LABELS = { classes: 'live classes', posts: 'posts', groups: 'groups', qa: 'Q&A', market: 'courses', consult: 'consult offers', books: 'book reviews' };
 
 // Phase 6, part 2: the feed's "classes" entries now come from live_sessions
 // (the real in-app broadcast feature, H1-H7) instead of the personal
@@ -4469,7 +4472,7 @@ function teacherClassesFeedCard(group, teacherName) {
 
 async function loadCommunityFeedData() {
   const me = currentUser.id;
-  const [pr, cr, gr, gcr, qr, mr, ofr, tpr] = await Promise.all([
+  const [pr, cr, gr, gcr, qr, mr, ofr, tpr, brr] = await Promise.all([
     sb.from('posts').select('*').eq('visibility', 'public').neq('user_id', me).order('created_at', { ascending: false }).limit(30),
     sb.from('live_sessions').select('*').order('created_at', { ascending: false }).limit(60),
     sb.from('study_groups').select('*').order('created_at', { ascending: false }).limit(20),
@@ -4477,14 +4480,15 @@ async function loadCommunityFeedData() {
     sb.from('qa_questions').select('*, qa_answers!question_id(count)').order('created_at', { ascending: false }).limit(20),
     sb.from('courses').select('*').eq('published', true).order('created_at', { ascending: false }).limit(20),
     sb.from('consult_offers').select('*').eq('enabled', true).neq('teacher_id', me).order('created_at', { ascending: false }).limit(20),
-    sb.from('teachers_public').select('user_id,subjects')
+    sb.from('teachers_public').select('user_id,subjects'),
+    sb.from('book_reviews').select('*').neq('user_id', me).order('created_at', { ascending: false }).limit(20)
   ]);
   const posts = pr.data || [], classGroups = groupLiveSessionsByTeacher(cr.data || []), groups = gr.data || [], qs = qr.data || [],
-        courses = mr.data || [], offers = ofr.data || [], teachers = tpr.data || [], counts = {};
+        courses = mr.data || [], offers = ofr.data || [], teachers = tpr.data || [], bookReviews = brr.data || [], counts = {};
   (gcr.data || []).forEach(c => { counts[c.group_id] = c.members; });
   const names = await profNames([
     ...posts.map(p => p.user_id), ...classGroups.map(g => g.teacher_id), ...groups.map(g => g.owner_id), ...qs.map(q => q.user_id),
-    ...courses.map(c => c.teacher_id), ...offers.map(o => o.teacher_id)
+    ...courses.map(c => c.teacher_id), ...offers.map(o => o.teacher_id), ...bookReviews.map(r => r.user_id)
   ]);
   const subjOf = uid => (teachers.find(x => x.user_id === uid) || {}).subjects || '';
   const answerCount = q => (q.qa_answers && q.qa_answers[0] && q.qa_answers[0].count) || 0;
@@ -4494,7 +4498,8 @@ async function loadCommunityFeedData() {
     ...groups.map(g => ({ ftype: 'groups', created_at: g.created_at, data: g })),
     ...qs.map(q => ({ ftype: 'qa', created_at: q.created_at, data: q, answers: answerCount(q) })),
     ...courses.map(c => ({ ftype: 'market', created_at: c.created_at, data: c })),
-    ...offers.map(o => ({ ftype: 'consult', created_at: o.created_at, data: o }))
+    ...offers.map(o => ({ ftype: 'consult', created_at: o.created_at, data: o })),
+    ...bookReviews.map(r => ({ ftype: 'books', created_at: r.created_at, data: r }))
   ].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   return { items, names, counts, subjOf };
 }
@@ -4527,17 +4532,19 @@ const COMMUNITY_MINE_META = {
   groups:  { label: 'My groups',        empty: 'You haven\u2019t started a study group yet.' },
   qa:      { label: 'My questions',     empty: 'You haven\u2019t asked a question yet.' },
   consult: { label: 'My consult offers', empty: 'You\u2019re not offering consults yet.' },
-  market:  { label: 'My courses',       empty: 'You haven\u2019t published a course yet.' }
+  market:  { label: 'My courses',       empty: 'You haven\u2019t published a course yet.' },
+  books:   { label: 'My reviews',       empty: 'You haven\u2019t reviewed a book yet.' }
 };
 async function loadMyUploadsData() {
   const me = currentUser.id;
-  const [pr, cr, gr, qr, mr, ofr] = await Promise.all([
+  const [pr, cr, gr, qr, mr, ofr, br] = await Promise.all([
     sb.from('posts').select('*').eq('user_id', me).eq('visibility', 'public').order('created_at', { ascending: false }).limit(15),
     sb.from('live_sessions').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15),
     sb.from('study_groups').select('*').eq('owner_id', me).order('created_at', { ascending: false }).limit(15),
     sb.from('qa_questions').select('*, qa_answers!question_id(count)').eq('user_id', me).order('created_at', { ascending: false }).limit(15),
     sb.from('courses').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15),
-    sb.from('consult_offers').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15)
+    sb.from('consult_offers').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15),
+    sb.from('book_reviews').select('*').eq('user_id', me).order('created_at', { ascending: false }).limit(15)
   ]);
   const sessions = cr.data || [], answerCount = q => (q.qa_answers && q.qa_answers[0] && q.qa_answers[0].count) || 0;
   return {
@@ -4546,7 +4553,8 @@ async function loadMyUploadsData() {
     groups:  (gr.data || []).map(g => ({ ftype: 'groups', data: g })),
     qa:      (qr.data || []).map(q => ({ ftype: 'qa', data: q, answers: answerCount(q) })),
     market:  (mr.data || []).map(c => ({ ftype: 'market', data: c })),
-    consult: (ofr.data || []).map(o => ({ ftype: 'consult', data: o }))
+    consult: (ofr.data || []).map(o => ({ ftype: 'consult', data: o })),
+    books:   (br.data || []).map(x => ({ ftype: 'books', data: x }))
   };
 }
 function mineCardFor(item, myName) {
@@ -4567,6 +4575,10 @@ function mineCardFor(item, myName) {
   if (item.ftype === 'market') {
     const c = item.data;
     return feedCompactCard('Course', c.title, c.price_bdt ? TAKA + c.price_bdt : 'Free', { href: '#workspace/market/' + c.id });
+  }
+  if (item.ftype === 'books') {
+    const r = item.data;
+    return feedCompactCard('Book review', r.book_title, [r.author, starsOf(r.rating)].filter(Boolean).join(' \u00b7 '), { href: '#workspace/books' });
   }
   const o = item.data;
   return feedCompactCard('Consult', 'Your consult offer', [o.duration_min ? o.duration_min + ' min' : '', priceTxt(o.price_bdt)].filter(Boolean).join(' \u00b7 '), { href: '#workspace/teach' });
@@ -4648,6 +4660,7 @@ async function communityUnifiedFeed() {
       return feedCompactCard('Course', c.title,
         [c.price_bdt ? TAKA + c.price_bdt : 'Free', c.subject, names[c.teacher_id] || 'Athenaeum user'].filter(Boolean).join(' \u00b7 '), { href: '#workspace/market/' + c.id });
     }
+    if (item.ftype === 'books') return bookCard(item.data, names);
     const o = item.data, name = names[o.teacher_id] || 'this teacher';
     return feedCompactCard('Consult', name + ' \u2014 open for consults',
       [subjOf(o.teacher_id), o.duration_min ? o.duration_min + ' min' : '', priceTxt(o.price_bdt), o.about].filter(Boolean).join(' \u00b7 '), { onClick: () => consultBookDialog(o, name) });
@@ -4672,21 +4685,18 @@ async function communityUnifiedFeed() {
 // people's content, so it now lives as a small folder-style entry on the
 // Profile page instead (peoplePage, next to "My posts"); the Teach chip above
 // still opens the same full #workspace/teach page either way.
-async function communityBooksBlock() {
-  try {
-    const page = await booksPage();
-    return sectionFeedBlock('books', 'Book reviews', '#workspace/books', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('books', 'Book reviews', '#workspace/books', [errorCard(e)]); }
-}
+//
+// Book reviews used to get the same standalone-block treatment as Teach
+// (communityBooksBlock(), removed here) \u2014 now folded into the unified feed
+// above like every other content type (see COMMUNITY_FEED_KEYS).
 async function communityHubPage() {
-  const [admin, carousel, feed, booksBlock] = await Promise.all([
+  const [admin, carousel, feed] = await Promise.all([
     loadAdminFlag(), loadCommunityCarousel().catch(() => []),
-    communityUnifiedFeed(), communityBooksBlock()
+    communityUnifiedFeed()
   ]);
   return { title: 'Community', nodes: [
     sectionCarousel(carousel),
     feed,
-    booksBlock,
     // Verification requests was never one of the 8 chips (owner/admin only,
     // not in the blueprint), so it stays as a plain link.
     admin ? h('div', { class: 'list', style: 'margin-top:30px' },
@@ -4791,17 +4801,32 @@ async function explorePage() {
    below. The "+" reuses the existing weekly-routine dialog (openPlannerDialog,
    kind 'slot'), pre-selecting the tapped day \u2014 same underlying data
    (planner_items) and feature logic as the Planner hub, only the shell
-   is new. Today and Projects, also folded into this section per \u00a72.1,
-   stay one tap away for now via the quick-link row below the toggle. */
+   is new.
+   Phase 9: Today and Projects/Assignments/Learning, previously one tap away
+   via a plain quick-link row above the toggle, are now inlined directly \u2014
+   Today's whole page (summary, overdue, today's schedule, due soon) above
+   the calendar, Projects/Assignments/Learning's whole page below it. Same
+   sectionFeedBlock wrapper (title + "Open full page \u2192") the Community
+   merges (Teach, Book reviews) already use, and #workspace/today /
+   #workspace/projects still exist underneath for that full-page link and
+   for internal "View all \u2192" links elsewhere in the app. */
 let plannerCalView = 'week';   // 'week' | 'month' | 'year' -- kept across re-renders
 let plannerWeekOffset = 0;     // weeks from the current week; 0 = this week
 
+async function plannerTodayBlock() {
+  try {
+    const page = await todayHub();
+    return sectionFeedBlock('today', 'Today', '#workspace/today', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('today', 'Today', '#workspace/today', [errorCard(e)]); }
+}
+async function plannerProjectsBlock() {
+  try {
+    const page = await projectsHub();
+    return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects', page.nodes.slice(1));
+  } catch (e) { return sectionFeedBlock('projects', 'Projects, Assignments & Learning', '#workspace/projects', [errorCard(e)]); }
+}
 async function plannerHubPage() {
   const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
-
-  const quickLinks = h('div', { class: 'list' },
-    linkRow({ href: '#workspace/today',    title: 'Today',    meta: 'Everything due or scheduled today, in one place' }),
-    linkRow({ href: '#workspace/projects', title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you\u2019re learning' }));
 
   const toggle = h('div', { class: 'seg seg-3 cal-viewtoggle', role: 'group', 'aria-label': 'Calendar view' },
     ['week', 'month', 'year'].map(v => h('button', {
@@ -4812,12 +4837,13 @@ async function plannerHubPage() {
 
   const quickRow = quickScheduleRow();
 
-  let body;
-  if (plannerCalView === 'week') body = await calWeekView();
-  else if (plannerCalView === 'month') body = await calMonthView();
-  else body = calYearView();
+  const calBody = plannerCalView === 'week' ? calWeekView()
+    : plannerCalView === 'month' ? calMonthView()
+    : Promise.resolve(calYearView());
 
-  return { title: 'Planner', nodes: [crumb, quickLinks, toggle, quickRow, body] };
+  const [todayBlock, projectsBlock, body] = await Promise.all([plannerTodayBlock(), plannerProjectsBlock(), calBody]);
+
+  return { title: 'Planner', nodes: [crumb, todayBlock, toggle, quickRow, body, projectsBlock] };
 }
 
 // \u00a77.2: the week's own recurring slots (planner_items, kind 'slot'), one
