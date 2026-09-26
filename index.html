@@ -291,23 +291,33 @@
   }
   .sec-carousel::-webkit-scrollbar { display: none; }
   .sec-carousel-card {
+    /* Theme redesign step 3 (ratio pass): carousel is 55% of the viewport,
+       the body/content below it is the other 45% (was 58vh). */
     position: relative; flex: 0 0 100%; scroll-snap-align: start; scroll-snap-stop: always;
-    width: 100%; height: 58vh; min-height: 380px; max-height: 560px;
+    width: 100%; height: 55vh; min-height: 360px; max-height: 540px;
     display: block; text-decoration: none; color: var(--chalk); overflow: hidden;
-    background: var(--paper);
+    background: #000;
   }
   .sec-carousel-card img {
     position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    /* Theme redesign step 3 (fade pass): the photo itself dissolves into the
+       card's black background at the bottom instead of stopping dead at the
+       card edge (a hard cutoff). Fully opaque for the top ~68%, then eases
+       out to transparent so the black shows through underneath. */
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 68%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 0%, #000 68%, transparent 100%);
   }
   .sec-carousel-card::before {
-    /* bottom scrim so overlaid text stays legible over any photo */
+    /* bottom scrim so overlaid text stays legible over any photo, and now
+       reaches full black at the very bottom so the scrim matches the black
+       the photo is fading into (no seam between the two). */
     content: ""; position: absolute; inset: 0;
-    background: linear-gradient(to top, rgba(0,0,0,.78) 0%, rgba(0,0,0,.35) 35%, rgba(0,0,0,0) 62%);
+    background: linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(0,0,0,.85) 18%, rgba(0,0,0,.35) 40%, rgba(0,0,0,0) 66%);
   }
   .sec-carousel-card::after {
     content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none; mix-blend-mode: overlay;
   }
-  .sec-carousel-card.premium::before { background: linear-gradient(to top, rgba(43,6,32,.85) 0%, rgba(124,92,255,.28) 40%, rgba(0,0,0,0) 65%); }
+  .sec-carousel-card.premium::before { background: linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(43,6,32,.9) 18%, rgba(124,92,255,.28) 40%, rgba(0,0,0,0) 65%); }
   .sec-carousel-card.premium .sc-kind { background: var(--grad-brand); -webkit-background-clip: text; background-clip: text; color: transparent; }
   .sec-carousel-card .sc-body {
     position: absolute; left: 0; right: 0; bottom: 0; padding: 20px 22px 40px; z-index: 1;
@@ -332,6 +342,7 @@
   .sec-chip {
     flex: 0 0 auto; border: 1px solid var(--line); background: var(--paper-hi); color: var(--dim);
     font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 999px; text-decoration: none;
+    appearance: none; -webkit-appearance: none; cursor: pointer; font-family: inherit; margin: 0;
   }
   .sec-chip[aria-current="true"] {
     background: var(--grad-brand); border-color: transparent; color: #fff;
@@ -401,6 +412,35 @@
   }
   .stack-tile strong { display: block; font-family: var(--serif); font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
   .stack-tile small { display: block; color: var(--dim); margin-top: 4px; }
+
+  /* ---------- Phase 7: horizontal square-tile row ----------
+     Replaces a long vertical linkRow list with a horizontally-scrolling row
+     of fixed-size square tiles \u2014 used for Explore/Hubs' site and saved-item
+     lists, the OCR tool's action buttons and past-scans history, and the
+     Scholarship Center's main nav list. */
+  .sq-tile-row {
+    display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  }
+  .sq-tile-row::-webkit-scrollbar { display: none; }
+  .sq-tile {
+    flex: 0 0 108px; width: 108px; aspect-ratio: 1; scroll-snap-align: start;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 4px;
+    padding: 10px 8px; border-radius: 18px; border: 1px solid var(--line); background: var(--paper);
+    color: var(--chalk); text-decoration: none; position: relative; overflow: hidden;
+  }
+  .sq-tile::after { content: ""; position: absolute; inset: 0; background: var(--sheen); pointer-events: none; }
+  .sq-tile > * { position: relative; }
+  .sq-tile strong {
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    font-size: 13px; font-weight: 600; line-height: 1.25;
+  }
+  .sq-tile small { display: block; color: var(--dim); font-size: 11px; margin-top: 1px; }
+  .sq-tile .sq-tile-badge {
+    font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--dim);
+    background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; margin-bottom: 2px;
+  }
+  .sq-tile .row-del { position: absolute; top: 2px; right: 2px; width: 24px; height: 24px; font-size: 16px; }
 
   /* ---------- Reusable interactive tile (feed-tile) ----------
      stack-tile above is an <a> and can't safely hold buttons/embeds inside
@@ -746,6 +786,7 @@
 
   /* projects with checklists */
   .proj { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .feed-compact-card { appearance: none; -webkit-appearance: none; cursor: pointer; font: inherit; margin: 0; display: block; }
   .proj-head {
     display: flex; align-items: center; gap: 14px; width: 100%; min-height: 64px; padding: 12px 16px;
     border: 0; background: transparent; color: var(--chalk); text-align: left;
@@ -1249,7 +1290,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       </button>
     </div>
-    <h2 id="page-title">General workspace</h2>
+    <h2 id="page-title">Community</h2>
     <div class="tb-right">
       <button class="tb-icon" id="add-btn" type="button" aria-label="Add">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1636,9 +1677,10 @@ function activeSectionKey(tab, ids) {
   if (tab === 'ai') return 'ai';
   if (tab === 'workspace') {
     const first = ids[0];
+    if (!first) return 'community'; // bare #workspace root now opens Community Hub (step 4 landing switch)
     for (const key in SECTION_HUB_KEYS) { if (SECTION_HUB_KEYS[key].includes(first)) return key; }
   }
-  return null; // bare #workspace root, downloads, etc. — none of the 6 sections highlight
+  return null; // downloads, #workspace/home, etc. — none of the 6 sections highlight
 }
 
 /* ---------- router ---------- */
@@ -1689,9 +1731,10 @@ async function route() {
   });
 
   // Community, Explore and Scholarships open on a full-bleed hero carousel
-  // (§3.2) — see the "Hero pages" CSS block for what this toggles.
+  // (§3.2) — see the "Hero pages" CSS block for what this toggles. The bare
+  // #workspace root is included since step 4 made it alias Community Hub.
   document.body.classList.toggle('hero-page', tab === 'workspace' && (
-    ids[0] === 'communityhub' || ids[0] === 'explore' || (ids[0] === 'scholarships' && !ids[1])
+    !ids[0] || ids[0] === 'communityhub' || ids[0] === 'explore' || (ids[0] === 'scholarships' && !ids[1])
   ));
 
   const view = $('#view');
@@ -3838,7 +3881,12 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'explore')    return explorePage();
   if (ids[0] === 'plannerhub') return plannerHubPage();
   if (ids[0] === 'admin' && ids[1] === 'verifications') return adminVerificationsPage();
-  return buildWorkspaceRoot();
+  // Theme redesign step 4 (landing switch): General workspace is no longer the
+  // app's home — it moved to #workspace/home (linked from Settings). The bare
+  // #workspace root (and any unrecognized sub-path) now opens Community Hub,
+  // same page as the explicit #workspace/communityhub route.
+  if (ids[0] === 'home')     return buildWorkspaceRoot();
+  return communityHubPage();
 }
 
 // Community Hub (folder like Portals / 3D simulation hub): a landing page
@@ -3880,9 +3928,9 @@ function sectionCarousel(cards, premium) {
 // takes over once each section's blocks exist (later steps), without needing to
 // change this builder.
 function sectionChipRow(chips, activeKey, premium) {
-  return h('div', { class: 'sec-chip-row' + (premium ? ' premium' : '') }, chips.map(c => h('a', {
-    class: 'sec-chip', href: c.href, 'aria-current': c.key === activeKey ? 'true' : null, text: c.label
-  })));
+  return h('div', { class: 'sec-chip-row' + (premium ? ' premium' : '') }, chips.map(c => c.onClick
+    ? h('button', { class: 'sec-chip', type: 'button', 'aria-current': c.key === activeKey ? 'true' : null, text: c.label, onclick: c.onClick })
+    : h('a', { class: 'sec-chip', href: c.href, 'aria-current': c.key === activeKey ? 'true' : null, text: c.label })));
 }
 /* ---------- Theme redesign step 4: reusable stacked feed-block wrapper ----------
    Wraps one sub-item's full existing content \u2014 the exact same page function
@@ -3928,6 +3976,31 @@ function stackTile({ href, color, badge, title, meta }) {
     badge ? h('span', { class: 'stack-tile-badge', text: badge }) : null,
     h('strong', { text: title }),
     meta ? h('small', { text: meta }) : null);
+}
+
+// Phase 7: a single square tile (nav destination, saved item, or quick
+// action) for a horizontally-scrolling .sq-tile-row.
+function sqTile({ href, onClick, badge, title, meta }) {
+  const attrs = { class: 'sq-tile' };
+  if (onClick) { attrs.type = 'button'; attrs.onclick = onClick; } else { attrs.href = href; }
+  return h(onClick ? 'button' : 'a', attrs,
+    badge ? h('span', { class: 'sq-tile-badge', text: badge }) : null,
+    h('strong', { text: title }),
+    meta ? h('small', { text: meta }) : null);
+}
+function tileRow(tiles) {
+  return h('div', { class: 'sq-tile-row' }, tiles);
+}
+// Phase 7: OCR's "Past scans" tile \u2014 like sqTile, but with chatRow's delete
+// affordance (top-right, absolutely positioned over the square).
+function ocrScanTile(c) {
+  return h('a', { class: 'sq-tile', href: '#ai/ocr/' + c.id },
+    h('strong', { text: c.title || 'Scan' }),
+    h('small', { text: new Date(c.created_at).toLocaleDateString() }),
+    h('button', {
+      class: 'row-del', type: 'button', 'aria-label': 'Delete scan',
+      onclick: e => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id); }
+    }, '\u00d7'));
 }
 
 /* ---------- Theme redesign step 18: reusable numbered checklist (\u00a76.1) ----------
@@ -4273,6 +4346,7 @@ function buildSettingsPage(ids) {
       settingsRow('Language', { href: '#settings/language' })
     ),
     settingsGroup(
+      settingsRow('General workspace', { href: '#workspace/home' }),
       settingsRow('Downloads', { href: '#downloads' })
     ),
     settingsGroup(
@@ -4349,51 +4423,248 @@ const COMMUNITY_CHIPS = [
   { key: 'books',   label: 'Book reviews',    href: '#workspace/books' }
 ];
 const COMMUNITY_HUB_KEYS = ['groups', 'classes', 'community', 'consult', 'qa', 'market', 'teach'];
-// Theme redesign step 4: Live classes, Posts and Groups render as full stacked
-// blocks (\u00a73.3) below the chip row \u2014 each one the exact same content its own
-// page always showed, not a re-summarized version. \u00a73 is explicit that this
-// redesign only changes the shell, never the underlying feature logic.
-async function communityLiveClassesBlock() {
-  try {
-    const page = await schClassesPage();
-    return sectionFeedBlock('classes', 'Live classes', '#workspace/classes', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('classes', 'Live classes', '#workspace/classes', [errorCard(e)]); }
+// Theme redesign step 5: one interleaved feed (posts, classes, groups, Q&A,
+// courses and consult offers, all sorted by recency) instead of a full stacked
+// block per category. The chip row now filters this one list in place instead
+// of navigating away. Teach and Book reviews stay as plain nav chips into
+// their own stacked block below \u2014 Teach is your own profile editor (not a
+// stream of other people's content) and Book reviews wasn't part of the mix
+// the redesign called for.
+const COMMUNITY_FEED_KEYS = new Set(['classes', 'posts', 'groups', 'qa', 'market', 'consult']);
+const COMMUNITY_FEED_LABELS = { classes: 'live classes', posts: 'posts', groups: 'groups', qa: 'Q&A', market: 'courses', consult: 'consult offers' };
+
+// Phase 6, part 2: the feed's "classes" entries now come from live_sessions
+// (the real in-app broadcast feature, H1-H7) instead of the personal
+// scholarship_classes link list \u2014 grouped one entry per teacher so a
+// teacher who has run several sessions doesn't crowd the feed. created_at
+// on the group is its most recent session's, for feed sort order.
+function groupLiveSessionsByTeacher(rows) {
+  const byTeacher = {};
+  rows.forEach(s => { (byTeacher[s.teacher_id] = byTeacher[s.teacher_id] || []).push(s); });
+  return Object.keys(byTeacher).map(teacherId => {
+    const sessions = byTeacher[teacherId].slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    return { teacher_id: teacherId, sessions, created_at: sessions[0].created_at };
+  });
 }
-async function communityPostsBlock() {
-  try {
-    const feed = await communityFeed({ emptyTitle: 'No public posts yet', emptyBody: 'When other people share notes, mnemonics or links publicly, they show up here. You can share your own from any note, mnemonic or saved link.' });
-    return sectionFeedBlock('posts', 'Posts', '#workspace/community', [
-      h('p', { class: 'hint-line', text: 'Public posts from other students. Tap a name to see their profile, and Save to copy a post into your own workspace.' }),
-      feed]);
-  } catch (e) { return sectionFeedBlock('posts', 'Posts', '#workspace/community', [communitySetupCard(e)]); }
+function liveSessionStatusLabel(s) {
+  return s.status === 'live' ? 'Live now'
+    : s.status === 'ended' ? (s.recording_url ? 'Ended \u00b7 recording available' : 'Ended')
+    : (s.scheduled_start ? 'Scheduled \u00b7 ' + fmtLiveWhen(s.scheduled_start) : 'Scheduled');
 }
-async function communityGroupsBlock() {
-  try {
-    const page = await groupsPage();
-    return sectionFeedBlock('groups', 'Groups', '#workspace/groups', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('groups', 'Groups', '#workspace/groups', [errorCard(e)]); }
+// One feed card per teacher: the most recent session up top, older sessions
+// from the same teacher in a horizontally-swipeable row underneath.
+function teacherClassesFeedCard(group, teacherName) {
+  const latest = group.sessions[0], older = group.sessions.slice(1);
+  return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+      h('span', { class: 'chip', text: liveSessionStatusLabel(latest) }),
+      h('small', { text: teacherName })),
+    h('a', { href: '#workspace/live/' + latest.id, style: 'text-decoration:none;color:inherit;font-size:15px;font-weight:600;overflow-wrap:anywhere', text: latest.title || 'Live class' }),
+    older.length ? h('div', { style: 'display:flex;gap:8px;overflow-x:auto;padding-bottom:2px' },
+      older.map(s => h('a', {
+        href: '#workspace/live/' + s.id, class: 'btn quiet small', style: 'flex:none;white-space:nowrap',
+        text: (s.title || 'Session') + ' \u00b7 ' + liveSessionStatusLabel(s)
+      }))) : null);
 }
-// Theme redesign step 5: the remaining five chips (Q&A, Consult a teacher,
-// Marketplace, Teach, Book reviews) as stacked blocks too, same pattern as
-// step 4 \u2014 same page function, crumb dropped, title matches its chip label.
-async function communityQaBlock() {
-  try {
-    const page = await qaPage();
-    return sectionFeedBlock('qa', 'Q&A', '#workspace/qa', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('qa', 'Q&A', '#workspace/qa', [errorCard(e)]); }
+
+async function loadCommunityFeedData() {
+  const me = currentUser.id;
+  const [pr, cr, gr, gcr, qr, mr, ofr, tpr] = await Promise.all([
+    sb.from('posts').select('*').eq('visibility', 'public').neq('user_id', me).order('created_at', { ascending: false }).limit(30),
+    sb.from('live_sessions').select('*').order('created_at', { ascending: false }).limit(60),
+    sb.from('study_groups').select('*').order('created_at', { ascending: false }).limit(20),
+    sb.from('group_member_counts').select('*'),
+    sb.from('qa_questions').select('*, qa_answers!question_id(count)').order('created_at', { ascending: false }).limit(20),
+    sb.from('courses').select('*').eq('published', true).order('created_at', { ascending: false }).limit(20),
+    sb.from('consult_offers').select('*').eq('enabled', true).neq('teacher_id', me).order('created_at', { ascending: false }).limit(20),
+    sb.from('teachers_public').select('user_id,subjects')
+  ]);
+  const posts = pr.data || [], classGroups = groupLiveSessionsByTeacher(cr.data || []), groups = gr.data || [], qs = qr.data || [],
+        courses = mr.data || [], offers = ofr.data || [], teachers = tpr.data || [], counts = {};
+  (gcr.data || []).forEach(c => { counts[c.group_id] = c.members; });
+  const names = await profNames([
+    ...posts.map(p => p.user_id), ...classGroups.map(g => g.teacher_id), ...groups.map(g => g.owner_id), ...qs.map(q => q.user_id),
+    ...courses.map(c => c.teacher_id), ...offers.map(o => o.teacher_id)
+  ]);
+  const subjOf = uid => (teachers.find(x => x.user_id === uid) || {}).subjects || '';
+  const answerCount = q => (q.qa_answers && q.qa_answers[0] && q.qa_answers[0].count) || 0;
+  const items = [
+    ...posts.map(p => ({ ftype: 'posts', created_at: p.created_at, data: p })),
+    ...classGroups.map(g => ({ ftype: 'classes', created_at: g.created_at, data: g })),
+    ...groups.map(g => ({ ftype: 'groups', created_at: g.created_at, data: g })),
+    ...qs.map(q => ({ ftype: 'qa', created_at: q.created_at, data: q, answers: answerCount(q) })),
+    ...courses.map(c => ({ ftype: 'market', created_at: c.created_at, data: c })),
+    ...offers.map(o => ({ ftype: 'consult', created_at: o.created_at, data: o }))
+  ].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return { items, names, counts, subjOf };
 }
-async function communityConsultBlock() {
-  try {
-    const page = await consultPage();
-    return sectionFeedBlock('consult', 'Consult a teacher', '#workspace/consult', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('consult', 'Consult a teacher', '#workspace/consult', [errorCard(e)]); }
+
+// Compact card for the non-post feed types (Live classes, Groups, Q&A, Courses,
+// Consult) \u2014 a type badge, a meta line and a title, opening the full item on
+// tap (or, for Consult, opening the booking dialog directly since there is no
+// standalone consult page to land on).
+function feedCompactCard(typeLabel, title, meta, opts) {
+  const attrs = {
+    class: 'proj feed-compact-card', style: 'padding:12px 14px;display:grid;gap:4px;min-width:0;text-decoration:none;color:inherit;text-align:left;width:100%'
+  };
+  if (opts.onClick) { attrs.type = 'button'; attrs.onclick = opts.onClick; } else { attrs.href = opts.href; }
+  return h(opts.onClick ? 'button' : 'a', attrs,
+    h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+      h('span', { class: 'chip', text: typeLabel }),
+      meta ? h('small', { text: meta }) : null),
+    h('strong', { style: 'overflow-wrap:anywhere;font-size:15px', text: title }));
 }
-async function communityMarketBlock() {
-  try {
-    const page = await marketPage();
-    return sectionFeedBlock('market', 'Marketplace', '#workspace/market', page.nodes.slice(1));
-  } catch (e) { return sectionFeedBlock('market', 'Marketplace', '#workspace/market', [errorCard(e)]); }
+
+// Phase 6, part 1: a compact "my own uploads" folder, matching every tab of
+// the feed (all six COMMUNITY_FEED_KEYS types, plus the mixed "All" tab).
+// Fetches just the signed-in user's own rows of each type \u2014 the community
+// feed above already mixes everyone else's in, so this is a quick way back
+// to your own without leaving the page.
+const COMMUNITY_MINE_META = {
+  all:     { label: 'My own uploads',   empty: 'Nothing you\u2019ve posted, taught or offered shows up here yet.' },
+  classes: { label: 'My live classes',  empty: 'You haven\u2019t taught a live class yet.' },
+  posts:   { label: 'My posts',         empty: 'No public posts yet.' },
+  groups:  { label: 'My groups',        empty: 'You haven\u2019t started a study group yet.' },
+  qa:      { label: 'My questions',     empty: 'You haven\u2019t asked a question yet.' },
+  consult: { label: 'My consult offers', empty: 'You\u2019re not offering consults yet.' },
+  market:  { label: 'My courses',       empty: 'You haven\u2019t published a course yet.' }
+};
+async function loadMyUploadsData() {
+  const me = currentUser.id;
+  const [pr, cr, gr, qr, mr, ofr] = await Promise.all([
+    sb.from('posts').select('*').eq('user_id', me).eq('visibility', 'public').order('created_at', { ascending: false }).limit(15),
+    sb.from('live_sessions').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15),
+    sb.from('study_groups').select('*').eq('owner_id', me).order('created_at', { ascending: false }).limit(15),
+    sb.from('qa_questions').select('*, qa_answers!question_id(count)').eq('user_id', me).order('created_at', { ascending: false }).limit(15),
+    sb.from('courses').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15),
+    sb.from('consult_offers').select('*').eq('teacher_id', me).order('created_at', { ascending: false }).limit(15)
+  ]);
+  const sessions = cr.data || [], answerCount = q => (q.qa_answers && q.qa_answers[0] && q.qa_answers[0].count) || 0;
+  return {
+    posts:   (pr.data || []).map(p => ({ ftype: 'posts', data: p })),
+    classes: sessions.length ? [{ ftype: 'classes', data: { teacher_id: me, sessions: sessions.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } }] : [],
+    groups:  (gr.data || []).map(g => ({ ftype: 'groups', data: g })),
+    qa:      (qr.data || []).map(q => ({ ftype: 'qa', data: q, answers: answerCount(q) })),
+    market:  (mr.data || []).map(c => ({ ftype: 'market', data: c })),
+    consult: (ofr.data || []).map(o => ({ ftype: 'consult', data: o }))
+  };
 }
+function mineCardFor(item, myName) {
+  if (item.ftype === 'posts') {
+    const p = item.data, cat = postCatLabel(p.kind, p.category);
+    return feedCompactCard(POST_KIND_LABEL[p.kind] || p.kind, p.title || (p.body ? p.body.slice(0, 60) : 'Untitled'),
+      [cat, fmtDate(new Date(p.created_at))].filter(Boolean).join(' \u00b7 '), { href: '#workspace/posts' });
+  }
+  if (item.ftype === 'classes') return teacherClassesFeedCard(item.data, myName);
+  if (item.ftype === 'groups') {
+    const g = item.data;
+    return feedCompactCard('Group', g.name, [g.subject, g.chapter].filter(Boolean).join(' \u00b7 '), { href: '#workspace/groups/' + g.id });
+  }
+  if (item.ftype === 'qa') {
+    const q = item.data;
+    return feedCompactCard('Q&A', q.title, q.accepted_answer_id ? 'Answered \u2713' : (item.answers ? item.answers + ' answers' : 'Unanswered'), { href: '#workspace/qa/' + q.id });
+  }
+  if (item.ftype === 'market') {
+    const c = item.data;
+    return feedCompactCard('Course', c.title, c.price_bdt ? TAKA + c.price_bdt : 'Free', { href: '#workspace/market/' + c.id });
+  }
+  const o = item.data;
+  return feedCompactCard('Consult', 'Your consult offer', [o.duration_min ? o.duration_min + ' min' : '', priceTxt(o.price_bdt)].filter(Boolean).join(' \u00b7 '), { href: '#workspace/teach' });
+}
+function communityMineFolder(filter, mineData, myName) {
+  const meta = COMMUNITY_MINE_META[filter || 'all'];
+  const list = filter ? (mineData[filter] || []) : Object.values(mineData).flat();
+  const count = list.length;
+  let open = false;
+  const arrow = h('span', { 'aria-hidden': 'true', text: '\u203a' });
+  const body = h('div', { hidden: true, class: 'list', style: 'margin-top:10px' });
+  const btn = h('button', { class: 'row', type: 'button', onclick: () => {
+    open = !open;
+    body.hidden = !open;
+    arrow.textContent = open ? '\u2304' : '\u203a';
+    if (open) body.replaceChildren(...(count ? list.map(i => mineCardFor(i, myName)) : [emptyBlock('Nothing here yet', meta.empty)]));
+  } },
+    folderIcon(), h('span', { class: 'grow' }, h('strong', { text: meta.label }), h('small', { text: plural(count, 'item', 'items') })), arrow);
+  return h('div', { class: 'proj', style: 'padding:6px 10px;margin-bottom:12px' }, btn, body);
+}
+
+async function communityUnifiedFeed() {
+  let feedData, mineData;
+  try { [feedData, mineData] = await Promise.all([loadCommunityFeedData(), loadMyUploadsData()]); }
+  catch (e) { return h('div', {}, sectionChipRow(COMMUNITY_CHIPS, null), communitySetupCard(e)); }
+  const { items, names, counts, subjOf } = feedData;
+  const myName = (myProfile && myProfile.display_name) || usernameFrom(currentUser);
+  const postIds = items.filter(i => i.ftype === 'posts').map(i => i.data.id);
+  const saved = new Set();
+  if (postIds.length) {
+    const sv = await sb.from('post_saves').select('post_id').in('post_id', postIds);
+    (sv.data || []).forEach(x => saved.add(x.post_id));
+  }
+  let filter = null; // null = every type, mixed together
+  const chipsWrap = h('div'), mineWrap = h('div'), list = h('div', { class: 'list' });
+
+  function postCard(post) {
+    const name = names[post.user_id] || 'Athenaeum user', isSaved = saved.has(post.id);
+    const href = safeHref(post.url), cat = postCatLabel(post.kind, post.category);
+    const body = post.body ? h('p', { class: 'post-body', text: post.body }) : null;
+    if (body) body.addEventListener('click', () => body.classList.toggle('open'));
+    const err = h('p', { class: 'msg err', role: 'alert', hidden: true, style: 'margin:0' });
+    const saveBtn = h('button', { class: 'btn small' + (isSaved ? ' quiet' : ''), type: 'button', text: isSaved ? 'Save again' : 'Save' });
+    saveBtn.addEventListener('click', async () => {
+      err.hidden = true;
+      if (post.kind === 'note' || post.kind === 'definition' || post.kind === 'mnemonic') { openSavePostDialog(post, () => { saved.add(post.id); paint(); }); return; }
+      saveBtn.disabled = true;
+      try { await savePostCopy(post, null); saved.add(post.id); paint(); }
+      catch (e) { err.textContent = 'Could not save: ' + ((e && e.message) || 'try again'); err.hidden = false; saveBtn.disabled = false; }
+    });
+    return h('div', { class: 'proj', style: 'padding:14px 16px;display:grid;gap:8px;min-width:0' },
+      h('a', { href: '#workspace/people/' + post.user_id, style: 'text-decoration:none;color:inherit;font-size:15px;font-weight:600', text: name }),
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        h('span', { class: 'chip', text: POST_KIND_LABEL[post.kind] || post.kind }),
+        cat ? h('small', { text: cat }) : null,
+        h('small', { text: fmtDate(new Date(post.created_at)) })),
+      post.title ? h('strong', { style: 'overflow-wrap:anywhere', text: post.title }) : null,
+      body,
+      post.url ? (href ? h('a', { href, target: '_blank', rel: 'noopener noreferrer', style: 'overflow-wrap:anywhere;font-size:14px', text: post.url }) : h('small', { text: post.url })) : null,
+      err,
+      h('div', { class: 'vault-actions', style: 'margin:0' }, saveBtn, reportBtn('post', post.id, post.user_id, post.title || post.body)));
+  }
+
+  function cardFor(item) {
+    if (item.ftype === 'posts') return postCard(item.data);
+    if (item.ftype === 'classes') return teacherClassesFeedCard(item.data, names[item.data.teacher_id] || 'A teacher');
+    if (item.ftype === 'groups') {
+      const g = item.data;
+      return feedCompactCard('Group', g.name,
+        [g.subject, g.chapter, (counts[g.id] || 0) + ' members', names[g.owner_id] ? 'by ' + names[g.owner_id] : ''].filter(Boolean).join(' \u00b7 '), { href: '#workspace/groups/' + g.id });
+    }
+    if (item.ftype === 'qa') {
+      const q = item.data;
+      return feedCompactCard('Q&A', q.title,
+        [q.accepted_answer_id ? 'Answered \u2713' : (item.answers ? item.answers + ' answers' : 'Unanswered'), q.subject, names[q.user_id] || 'Athenaeum user'].filter(Boolean).join(' \u00b7 '), { href: '#workspace/qa/' + q.id });
+    }
+    if (item.ftype === 'market') {
+      const c = item.data;
+      return feedCompactCard('Course', c.title,
+        [c.price_bdt ? TAKA + c.price_bdt : 'Free', c.subject, names[c.teacher_id] || 'Athenaeum user'].filter(Boolean).join(' \u00b7 '), { href: '#workspace/market/' + c.id });
+    }
+    const o = item.data, name = names[o.teacher_id] || 'this teacher';
+    return feedCompactCard('Consult', name + ' \u2014 open for consults',
+      [subjOf(o.teacher_id), o.duration_min ? o.duration_min + ' min' : '', priceTxt(o.price_bdt), o.about].filter(Boolean).join(' \u00b7 '), { onClick: () => consultBookDialog(o, name) });
+  }
+
+  function paint() {
+    chipsWrap.replaceChildren(sectionChipRow(COMMUNITY_CHIPS.map(c => COMMUNITY_FEED_KEYS.has(c.key)
+      ? { key: c.key, label: c.label, onClick: () => { filter = filter === c.key ? null : c.key; paint(); } } : c), filter));
+    mineWrap.replaceChildren(communityMineFolder(filter, mineData, myName));
+    const shown = filter ? items.filter(i => i.ftype === filter) : items;
+    list.replaceChildren(...(shown.length ? shown.map(cardFor)
+      : [emptyBlock('Nothing here yet', filter ? 'No ' + COMMUNITY_FEED_LABELS[filter] + ' yet.' : 'When other students post, teach classes, open groups or Q&A, it shows up here.')]));
+  }
+  paint();
+  return h('div', {}, chipsWrap, mineWrap, list);
+}
+
 async function communityTeachBlock() {
   try {
     const page = await teacherPage();
@@ -4407,23 +4678,21 @@ async function communityBooksBlock() {
   } catch (e) { return sectionFeedBlock('books', 'Book reviews', '#workspace/books', [errorCard(e)]); }
 }
 async function communityHubPage() {
-  const [admin, carousel, classesBlock, postsBlock, groupsBlock, qaBlock, consultBlock, marketBlock, teachBlock, booksBlock] = await Promise.all([
+  const [admin, carousel, feed, teachBlock, booksBlock] = await Promise.all([
     loadAdminFlag(), loadCommunityCarousel().catch(() => []),
-    communityLiveClassesBlock(), communityPostsBlock(), communityGroupsBlock(),
-    communityQaBlock(), communityConsultBlock(), communityMarketBlock(), communityTeachBlock(), communityBooksBlock()
+    communityUnifiedFeed(), communityTeachBlock(), communityBooksBlock()
   ]);
   return { title: 'Community', nodes: [
     sectionCarousel(carousel),
-    sectionChipRow(COMMUNITY_CHIPS, null),
-    classesBlock, postsBlock, groupsBlock, qaBlock, consultBlock, marketBlock, teachBlock, booksBlock,
-    // Every chip in COMMUNITY_CHIPS now has its own stacked block above \u2014 the
-    // link list this page used to end with is gone. Verification requests was
-    // never one of the 8 chips (owner/admin only, not in the blueprint), so it
-    // stays as a plain link.
+    feed,
+    teachBlock, booksBlock,
+    // Verification requests was never one of the 8 chips (owner/admin only,
+    // not in the blueprint), so it stays as a plain link.
     admin ? h('div', { class: 'list', style: 'margin-top:30px' },
       linkRow({ href: '#workspace/admin/verifications', title: 'Verification requests', meta: 'Review teacher verification requests \u2014 accept, reject, or restore from the dump' })) : null
   ] };
 }
+
 
 /* ---------- Theme redesign step 6: Explore/Hubs carousel + chip row skeleton ----------
    Explore/Hubs (bottom-nav section 2) gets the same \u00a73 page template Community
@@ -7082,8 +7351,10 @@ function ocrResultBlock(initialText, scope) {
 function ocrPanel() {
   const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
   const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
-  const photoBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Snap a photo', onclick: () => cameraInput.click() });
-  const galleryBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Choose from gallery', onclick: () => galleryInput.click() });
+  const actionTiles = tileRow([
+    sqTile({ onClick: () => cameraInput.click(), title: 'Snap a photo', meta: 'Camera' }),
+    sqTile({ onClick: () => galleryInput.click(), title: 'Choose from gallery', meta: 'Gallery' })
+  ]);
   const pages = h('div', { class: 'ocr-pages' });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Extract text', disabled: true });
   const err = h('p', { class: 'msg err', hidden: true });
@@ -7144,7 +7415,7 @@ function ocrPanel() {
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New scan' })),
     h('p', { class: 'hint-line', text: 'Snap or upload up to ' + OCR_MAX_PAGES + ' photos — printed text, handwriting and math equations all work. Math comes back rendered, and the text is editable before you save it into Notes.' }),
-    h('div', { class: 'vault-actions' }, photoBtn, galleryBtn, cameraInput, galleryInput),
+    actionTiles, cameraInput, galleryInput,
     pages, goBtn, err, result);
 }
 
@@ -7160,8 +7431,7 @@ async function ocrList() {
     crumbs([{ text: 'AI tools', href: '#ai' }]),
     ocrPanel(),
     ...(chats.length
-      ? [section('Past scans', null, null,
-          h('div', { class: 'list' }, chats.map(c => chatRow('#ai/ocr/' + c.id, c.title || 'Scan', new Date(c.created_at).toLocaleString(), c.id))))]
+      ? [section('Past scans', null, null, tileRow(chats.map(ocrScanTile)))]
       : [h('p', { class: 'none', text: 'No scans yet.' })])
   ] };
 }
@@ -9379,15 +9649,16 @@ async function scholarshipsHub(sub) {
         h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }))] };
   }
 
-  const shortlistLink = h('div', { class: 'list', style: 'margin-bottom:16px' },
-    linkRow({ href: '#workspace/scholarships/roadmap', title: 'My roadmap', meta: 'Your step-by-step application checklist' }),
-    linkRow({ href: '#workspace/scholarships/whatif', title: 'What-if simulator', meta: 'Change a score and see which scholarships open up' }),
-    linkRow({ href: '#workspace/scholarships/gap', title: 'Gap analysis', meta: 'How you compare with admitted applicants, in numbers' }),
-    linkRow({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines, test dates and prep milestones on one line' }),
-    linkRow({ href: '#workspace/scholarships/search', title: 'Find scholarships', meta: 'Search by destination, level and funding type' }),
-    linkRow({ href: '#workspace/scholarships/cv', title: 'CV / resume maker', meta: 'Build a CV for scholarship applications \u2014 preview, print or download' }),
-    linkRow({ href: '#workspace/scholarships/shortlist', title: 'Shortlist', meta: 'Scholarships you\u2019re saving and following' }),
-    linkRow({ href: '#workspace/scholarships/peers', title: 'Peers', meta: 'Other students applying to the same scholarships this year' }));
+  const shortlistLink = tileRow([
+    sqTile({ href: '#workspace/scholarships/roadmap',  title: 'My roadmap',        meta: 'Checklist' }),
+    sqTile({ href: '#workspace/scholarships/whatif',   title: 'What-if simulator', meta: 'Simulator' }),
+    sqTile({ href: '#workspace/scholarships/gap',      title: 'Gap analysis',      meta: 'Compare' }),
+    sqTile({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines' }),
+    sqTile({ href: '#workspace/scholarships/search',   title: 'Find scholarships', meta: 'Search' }),
+    sqTile({ href: '#workspace/scholarships/cv',       title: 'CV / resume maker', meta: 'Build' }),
+    sqTile({ href: '#workspace/scholarships/shortlist', title: 'Shortlist',        meta: 'Saved' }),
+    sqTile({ href: '#workspace/scholarships/peers',    title: 'Peers',             meta: 'Community' })
+  ]);
 
   let row = res.data || null;
   let mode = row ? 'summary' : 'wizard';
@@ -13240,9 +13511,9 @@ function portalsPage(itemKey) {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.c === portalFilter)));
     const list = PORTALS.filter(i => i.url && show(i.country));
     box.replaceChildren(list.length
-      ? h('div', { class: 'list' }, list.map(it => linkRow({
+      ? tileRow(list.map(it => sqTile({
           href: '#workspace/portals/' + it.key, title: it.name,
-          meta: [portalCountryLabel(it.country), it.subject, it.note].filter(Boolean).join(' · ') })))
+          meta: [portalCountryLabel(it.country), it.subject].filter(Boolean).join(' \u00b7 ') })))
       : h('p', { class: 'none', text: 'No portals for this filter yet.' }));
   };
   [{ key: 'all', label: 'All' }, ...PORTAL_COUNTRIES].forEach(c => chips.append(h('button', {
@@ -13308,11 +13579,11 @@ async function simHub(itemKey) {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === simFilter)));
     const sites = SIM_SITES.filter(x => show(x.cat));
     sitesBox.replaceChildren(sites.length
-      ? h('div', { class: 'list' }, sites.map(x => linkRow({ href: '#workspace/threed/' + x.key, title: x.name, meta: simCatLabel(x.cat) + ' · ' + x.note })))
+      ? tileRow(sites.map(x => sqTile({ href: '#workspace/threed/' + x.key, title: x.name, meta: simCatLabel(x.cat) })))
       : h('p', { class: 'none', text: 'No sites for this subject yet.' }));
     const mine = saved.filter(r => show(r.category));
     mineBox.replaceChildren(mine.length
-      ? h('div', { class: 'list' }, mine.map(r => linkRow({ href: '#workspace/threed/' + r.id, title: r.title, meta: simCatLabel(r.category) })))
+      ? tileRow(mine.map(r => sqTile({ href: '#workspace/threed/' + r.id, title: r.title, meta: simCatLabel(r.category) })))
       : h('p', { class: 'none', text: saved.length ? 'Nothing saved for this subject yet.' : 'Nothing saved yet.' }));
   };
   [{ key: 'all', label: 'All' }, ...SIM_CATS].forEach(c => chips.append(h('button', {
@@ -13526,7 +13797,7 @@ async function youtubeHubHome() {
   paintResults();
 
   const mineBox = saved.length
-    ? h('div', { class: 'list' }, saved.map(r => linkRow({ href: '#workspace/youtube/' + r.id, title: r.title, meta: 'Saved video' })))
+    ? tileRow(saved.map(r => sqTile({ href: '#workspace/youtube/' + r.id, title: r.title, meta: 'Saved video' })))
     : h('p', { class: 'none', text: 'Nothing saved yet.' });
 
   return { title: 'YouTube hub', nodes: [
@@ -13735,11 +14006,11 @@ async function libraryHubHome() {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === libFilter)));
     const sites = LIBRARY_SITES.filter(x => show(x.cat));
     sitesBox.replaceChildren(sites.length
-      ? h('div', { class: 'list' }, sites.map(x => linkRow({ href: '#workspace/library/' + x.key, title: x.name, meta: libraryCatLabel(x.cat) + ' · ' + x.note })))
+      ? tileRow(sites.map(x => sqTile({ href: '#workspace/library/' + x.key, title: x.name, meta: libraryCatLabel(x.cat) })))
       : h('p', { class: 'none', text: 'No sources for this type yet.' }));
     const mine = saved.filter(r => show(r.category));
     mineBox.replaceChildren(mine.length
-      ? h('div', { class: 'list' }, mine.map(r => linkRow({ href: '#workspace/library/' + r.id, title: r.title, meta: libraryCatLabel(r.category) })))
+      ? tileRow(mine.map(r => sqTile({ href: '#workspace/library/' + r.id, title: r.title, meta: libraryCatLabel(r.category) })))
       : h('p', { class: 'none', text: saved.length ? 'Nothing saved for this type yet.' : 'Nothing saved yet.' }));
   };
   [{ key: 'all', label: 'All' }, ...LIBRARY_CATS].forEach(c => chips.append(h('button', {
