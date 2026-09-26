@@ -163,6 +163,29 @@
     background: var(--paper); border-bottom: 1px solid var(--line);
   }
   .topbar h2 { font-size: 24px; }
+
+  /* ---------- Hero pages (Community / Explore / Scholarships root) ----------
+     These three open on a full-bleed carousel (sectionCarousel above). Per
+     the reference, nothing sits in a separate bar above that photo — the
+     top-bar icons float directly over the image instead, and the photo
+     itself reaches the true top edge of the screen (under the status bar),
+     not just under the topbar. route() toggles this class; every other page
+     keeps the normal solid topbar untouched. */
+  body.hero-page .topbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+    background: transparent; border-bottom: 0; pointer-events: none;
+  }
+  body.hero-page .topbar #page-title { display: none; }
+  body.hero-page .topbar .tb-left,
+  body.hero-page .topbar .tb-right { pointer-events: auto; }
+  body.hero-page .topbar .back,
+  body.hero-page .topbar .tb-icon,
+  body.hero-page .topbar .who {
+    background: rgba(0,0,0,.35);
+    border-radius: 999px;
+  }
+  body.hero-page main { padding-top: 0; }
+  body.hero-page .sec-carousel-wrap { margin-top: 0; }
   .who {
     width: 44px; height: 44px; flex: none;
     min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 50%;
@@ -1665,6 +1688,12 @@ async function route() {
     if (b.dataset.tab === activeSection) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
+
+  // Community, Explore and Scholarships open on a full-bleed hero carousel
+  // (§3.2) — see the "Hero pages" CSS block for what this toggles.
+  document.body.classList.toggle('hero-page', tab === 'workspace' && (
+    ids[0] === 'communityhub' || ids[0] === 'explore' || (ids[0] === 'scholarships' && !ids[1])
+  ));
 
   const view = $('#view');
   const same = lastHash === location.hash;          // a refresh of the same page keeps its scroll position
