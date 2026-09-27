@@ -509,8 +509,8 @@
      subject page's existing content sections (Chapters, All items,
      Flashcards, Information boxes, Trap tracker, Sources) \u2014 §5.4. Order,
      collapsed state and numbering-on/off are a per-device view preference
-     (localStorage, same pattern as hubsSection's own "Sort"), not per-subject
-     data, since the same six section types apply to every subject alike. */
+     (localStorage), not per-subject data, since the same six section types
+     apply to every subject alike. */
   .subj-cover {
     height: 64px; width: 64px; border-radius: 16px; flex: none; position: relative;
     overflow: hidden; border: 0; padding: 0; cursor: pointer;
@@ -1426,7 +1426,7 @@ const CONFIG = {
 };
 
 const TABS = {
-  workspace: { title: 'General workspace' },
+  workspace: { title: 'Community' },
   subjects:  { title: 'Subjects' },
   settings:  { title: 'Settings' },
   downloads: {
@@ -3975,7 +3975,6 @@ function backupPanel() {
     rStatus, rErr);
 }
 
-/* ---------- General workspace: shortcuts grouped by subject ---------- */
 // Hubs (Phase 3.1) live under the Workspace tab: #workspace/<hub>[/<item>]
 function buildWorkspace(ids = []) {
   if (ids[0] === 'today')   return todayHub();
@@ -4008,11 +4007,9 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'explore')    return explorePage();
   if (ids[0] === 'plannerhub') return plannerHubPage();
   if (ids[0] === 'admin' && ids[1] === 'verifications') return adminVerificationsPage();
-  // Theme redesign step 4 (landing switch): General workspace is no longer the
-  // app's home — it moved to #workspace/home (linked from Settings). The bare
-  // #workspace root (and any unrecognized sub-path) now opens Community Hub,
-  // same page as the explicit #workspace/communityhub route.
-  if (ids[0] === 'home')     return buildWorkspaceRoot();
+  // The bare #workspace root (and any unrecognized sub-path) opens Community
+  // Hub, same page as the explicit #workspace/communityhub route. The old
+  // General workspace shortcuts-grid page has been removed.
   return communityHubPage();
 }
 
@@ -4512,7 +4509,6 @@ function buildSettingsPage(ids) {
       settingsRow('Language', { href: '#settings/language' })
     ),
     settingsGroup(
-      settingsRow('General workspace', { href: '#workspace/home' }),
       settingsRow('Downloads', { href: '#downloads' })
     ),
     settingsGroup(
@@ -5386,39 +5382,6 @@ async function adminVerificationsPage() {
     section('Dump (rejected)', null, null, dumpList)] };
 }
 
-// Hub row order is stored locally (there's no server table for this list),
-// keyed by hub id, so "Arrange" persists across visits without needing a
-// schema change. Any hub not yet in a saved order is appended at the end,
-// which also covers new hubs added after someone has already reordered.
-const HUB_ORDER_KEY = 'hubOrder';
-function hubEntries() {
-  return [
-    { key: 'today',        href: '#workspace/today',        title: 'Today',              meta: 'Everything due or scheduled today, in one place' },
-    { key: 'scholarships', href: '#workspace/scholarships', title: 'Scholarship Center', meta: 'Your profile and scholarship planning' },
-    { key: 'planner',      href: '#workspace/planner',      title: 'Planner',            meta: 'Weekly routine and milestones' },
-    { key: 'projects',     href: '#workspace/projects',     title: 'Projects, Assignments & Learning', meta: 'Track projects, assignments and what you’re learning' },
-    { key: 'wiki',         href: '#workspace/wiki',         title: 'Wikipedia reader',   meta: 'Search and read articles' },
-    { key: 'portals',      href: '#workspace/portals',      title: 'Portals',            meta: 'Question banks — Bangladesh & international' },
-    { key: 'threed',       href: '#workspace/threed',       title: '3D simulation hub',  meta: 'Math, physics, chemistry, biology' },
-    { key: 'youtube',      href: '#workspace/youtube',      title: 'YouTube hub',        meta: 'Search, watch and summarize videos in-app' },
-    { key: 'library',      href: '#workspace/library',      title: 'Library hub',        meta: 'Free ebooks and open-access articles, searchable in-app' },
-    { key: 'communityhub', href: '#workspace/communityhub', title: 'Community',      meta: 'Study groups, live classes, posts, Q&A, teacher consults and the marketplace' },
-    { key: 'posts',        href: '#workspace/posts',        title: 'My posts',           meta: 'Notes, mnemonics and saved links you\u2019ve shared \u2014 public or private' },
-    { key: 'books',        href: '#workspace/books',        title: 'Book reviews',       meta: 'Search reviews \u2014 what people liked, disliked and found wrong in a book' }
-  ];
-}
-function orderedHubs() {
-  const list = hubEntries();
-  let order = null;
-  try { order = JSON.parse(store.get(HUB_ORDER_KEY) || 'null'); } catch (e) { order = null; }
-  if (!Array.isArray(order)) return list;
-  const byKey = {}; list.forEach(e => { byKey[e.key] = e; });
-  const out = order.map(k => byKey[k]).filter(Boolean);
-  list.forEach(e => { if (!out.includes(e)) out.push(e); });
-  return out;
-}
-function saveHubOrder(list) { store.set(HUB_ORDER_KEY, JSON.stringify(list.map(e => e.key))); }
-
 /* ---------- Theme redesign step 11: subject page's collapsible/sortable/
    numbered sub-sections (§5.4). Same local-storage-order idea as the hubs
    list above, plus a per-key collapsed set and a per-key "numbering off" set.
@@ -5506,95 +5469,6 @@ function subjectSectionsBlock(blocks) {
   }
   paintToolbar(); paintBody();
   return h('div', {}, toolbar, body);
-}
-
-function hubsSection() {
-  const list = orderedHubs();
-  let arranging = false;
-  const head = h('div', { class: 'sec-head' });
-  const body = h('div');
-  const wrap = h('section', { class: 'sec' }, head, body);
-
-  function paintBody() {
-    body.replaceChildren(arranging
-      ? h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
-          h('span', { class: 'grow', text: e.title }),
-          h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
-          h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }))))
-      : h('div', { class: 'list' }, list.map(e => linkRow({ href: e.href, title: e.title, meta: e.meta }))));
-  }
-  function move(i, dir) {
-    const j = i + dir;
-    if (j < 0 || j >= list.length) return;
-    [list[i], list[j]] = [list[j], list[i]];
-    saveHubOrder(list);
-    paintBody();
-  }
-  function paintHead() {
-    head.replaceChildren(
-      h('h3', { text: 'Hubs' }),
-      arranging
-        ? h('button', { class: 'btn quiet small', type: 'button', text: 'Done', onclick: () => { arranging = false; paintHead(); paintBody(); } })
-        : h('button', {
-            class: 'btn quiet small', type: 'button', text: 'Sort', 'aria-label': 'Sort hubs',
-            onclick: () => showDialog({
-              title: 'Sort hubs',
-              text: 'Choose how to arrange your hubs list.',
-              submitLabel: 'Sort A\u2013Z',
-              async onSubmit() {
-                list.sort((a, b) => a.title.localeCompare(b.title));
-                saveHubOrder(list);
-                paintBody();
-              },
-              extras: [{ label: 'Arrange manually', danger: false, onClick: () => { closeDialog(); arranging = true; paintHead(); paintBody(); } }]
-            })
-          }));
-  }
-  paintHead();
-  paintBody();
-  return wrap;
-}
-
-async function buildWorkspaceRoot() {
-  const [s, c, t] = await Promise.all([
-    ordered(sb.from('subjects').select('*')),
-    ordered(sb.from('chapters').select('id, subject_id, title, position, created_at')),
-    ordered(sb.from('topics').select('id, chapter_id, title, position, created_at'))
-  ]);
-  const subjects = must(s), chapters = must(c), topics = must(t);
-
-  if (!subjects.length) {
-    return { nodes: [
-      hubsSection(),
-      emptyBlock('Your workspace is empty', 'Shortcuts to your subjects, chapters and topics will collect here.'),
-      h('a', { class: 'btn', href: '#subjects', text: 'Create your first subject' })
-    ] };
-  }
-
-  const chaptersBySubject = {}, topicsByChapter = {};
-  chapters.forEach(x => (chaptersBySubject[x.subject_id] = chaptersBySubject[x.subject_id] || []).push(x));
-  topics.forEach(x => (topicsByChapter[x.chapter_id] = topicsByChapter[x.chapter_id] || []).push(x));
-
-  const cards = subjects.map(sub => {
-    const chs = chaptersBySubject[sub.id] || [];
-    const dot = h('span', { class: 'dot-c', 'aria-hidden': 'true' });
-    dot.style.setProperty('--c', colorOf(sub.color));
-    return h('details', { class: 'ws', open: subjects.length <= 3 },
-      h('summary', null, dot, h('strong', { text: sub.name }), h('small', { text: plural(chs.length, 'chapter', 'chapters') })),
-      h('div', { class: 'inner' },
-        h('a', { class: 'chl open', href: '#subjects/' + sub.id, text: 'Open subject' }),
-        chs.length ? chs.map(ch => {
-          const tps = topicsByChapter[ch.id] || [];
-          return h('div', { class: 'ch' },
-            h('a', { class: 'chl', href: '#subjects/' + sub.id + '/' + ch.id, text: ch.title }),
-            tps.length ? h('div', { class: 'tps' }, tps.map(tp =>
-              h('a', { href: '#subjects/' + sub.id + '/' + ch.id + '/' + tp.id, text: tp.title }))) : null);
-        }) : h('p', { class: 'none', text: 'No chapters yet.' })));
-  });
-
-  const allItems = await buildAllItemsSection(subjects, chapters, topics);
-
-  return { nodes: [hubsSection(), h('p', { class: 'hint-line', text: 'Shortcuts to every subject, chapter and topic.' }), ...cards, allItems] };
 }
 
 /* =====================================================================
@@ -9066,11 +8940,13 @@ async function subjectItemCounts() {
 }
 
 async function subjectsRoot() {
-  const [s, counts] = await Promise.all([
+  const [s, counts, c, t] = await Promise.all([
     ordered(sb.from('subjects').select('*')),
-    subjectItemCounts()
+    subjectItemCounts(),
+    ordered(sb.from('chapters').select('id, subject_id, title, position, created_at')),
+    ordered(sb.from('topics').select('id, chapter_id, title, position, created_at'))
   ]);
-  const subjects = must(s);
+  const subjects = must(s), chapters = must(c), topics = must(t);
   if (!myProfile) await loadMyProfile();
   const totalItems = subjects.reduce((sum, sub) => sum + (counts[sub.id] || 0), 0);
 
@@ -9089,6 +8965,8 @@ async function subjectsRoot() {
     onclick: () => entityDialog('subject', null, { position: subjects.length })
   });
 
+  const allItems = subjects.length ? await buildAllItemsSection(subjects, chapters, topics) : null;
+
   return { nodes: [
     header, addBtn,
     subjects.length
@@ -9099,7 +8977,8 @@ async function subjectsRoot() {
             meta: plural(counts[sub.id] || 0, 'item', 'items')
           })
         })
-      : emptyBlock('No subjects yet', 'Create a subject, then add chapters and topics inside it.')
+      : emptyBlock('No subjects yet', 'Create a subject, then add chapters and topics inside it.'),
+    allItems
   ] };
 }
 
