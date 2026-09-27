@@ -4047,6 +4047,19 @@ function sectionCarousel(cards, premium) {
 // as before this redesign; true tap-to-anchor-scroll within one stacked feed (§3.3)
 // takes over once each section's blocks exist (later steps), without needing to
 // change this builder.
+// Bug fix: chip rows and tile rows (sectionChipRow / tileRow) are horizontally
+// scrolling elements that get thrown away and rebuilt from scratch on every
+// repaint (selecting a chip, opening a tile, etc.) — a brand-new element always
+// starts at scrollLeft 0, so any scrolling the user did snaps back to the start
+// the moment they tap something in the row. Swap children through this helper
+// instead of calling wrap.replaceChildren(...) directly, and the new row picks
+// up the old one's scroll position instead of resetting it.
+function replaceScrollable(wrap, node) {
+  const prev = wrap.firstElementChild;
+  const left = prev ? prev.scrollLeft : 0;
+  wrap.replaceChildren(node);
+  if (left) node.scrollLeft = left;
+}
 function sectionChipRow(chips, activeKey, premium) {
   return h('div', { class: 'sec-chip-row' + (premium ? ' premium' : '') }, chips.map(c => c.onClick
     ? h('button', { class: 'sec-chip', type: 'button', 'aria-current': c.key === activeKey ? 'true' : null, text: c.label, onclick: c.onClick })
@@ -4813,7 +4826,7 @@ async function communityUnifiedFeed() {
   }
 
   function paint() {
-    chipsWrap.replaceChildren(sectionChipRow(COMMUNITY_CHIPS.map(c => COMMUNITY_FEED_KEYS.has(c.key)
+    replaceScrollable(chipsWrap, sectionChipRow(COMMUNITY_CHIPS.map(c => COMMUNITY_FEED_KEYS.has(c.key)
       ? { key: c.key, label: c.label, onClick: () => { filter = filter === c.key ? null : c.key; paint(); } } : c), filter));
     mineWrap.replaceChildren(communityMineFolder(filter, mineData, myName));
     const shown = filter ? items.filter(i => i.ftype === filter) : items;
@@ -4941,7 +4954,7 @@ async function explorePage() {
   const chipsWrap = h('div');
   const blocksWrap = h('div');
   function paint() {
-    chipsWrap.replaceChildren(sectionChipRow(EXPLORE_CHIPS.map(c =>
+    replaceScrollable(chipsWrap, sectionChipRow(EXPLORE_CHIPS.map(c =>
       ({ key: c.key, label: c.label, onClick: () => { filter = filter === c.key ? null : c.key; paint(); } })), filter));
     const keys = filter ? [filter] : EXPLORE_CHIPS.map(c => c.key);
     blocksWrap.replaceChildren(...keys.map(k => blocksByKey[k]));
@@ -5899,7 +5912,7 @@ async function buildAIRoot() {
   const chipsWrap = h('div');
   const blocksWrap = h('div');
   function paint() {
-    chipsWrap.replaceChildren(sectionChipRow(AI_CHIPS.map(c =>
+    replaceScrollable(chipsWrap, sectionChipRow(AI_CHIPS.map(c =>
       ({ key: c.key, label: c.label, onClick: () => { filter = filter === c.key ? null : c.key; paint(); } })), filter, true));
     const keys = filter ? [filter] : AI_CHIPS.map(c => c.key);
     blocksWrap.replaceChildren(...keys.map(k => blocksByKey[k]));
@@ -7916,7 +7929,7 @@ function scopePickerFields(tree) {
 
   function renderSubjects() {
     if (!tree.subjects.length) { subjWrap.replaceChildren(h('p', { class: 'none', text: 'No subjects yet — add one first.' })); return; }
-    subjWrap.replaceChildren(tileRow(tree.subjects.map(s => {
+    replaceScrollable(subjWrap, tileRow(tree.subjects.map(s => {
       const tile = sqTile({ onClick: () => selectSubject(s), title: s.name });
       if (selSubject && selSubject.id === s.id) tile.classList.add('selected');
       return tile;
@@ -7933,7 +7946,7 @@ function scopePickerFields(tree) {
       if (selChapter && selChapter.id === c.id) tile.classList.add('selected');
       return tile;
     });
-    chapWrap.replaceChildren(tileRow([wholeTile, ...chapTiles]));
+    replaceScrollable(chapWrap, tileRow([wholeTile, ...chapTiles]));
   }
   function renderTopics() {
     const topics = selChapter ? tree.topics.filter(t => t.chapter_id === selChapter.id) : [];
@@ -7946,11 +7959,15 @@ function scopePickerFields(tree) {
       if (selTopic && selTopic.id === t.id) tile.classList.add('selected');
       return tile;
     });
-    topicWrap.replaceChildren(tileRow([wholeTile, ...topicTiles]));
+    replaceScrollable(topicWrap, tileRow([wholeTile, ...topicTiles]));
   }
-  function selectSubject(s) { selSubject = s; selChapter = null; selTopic = null; renderSubjects(); renderChapters(); renderTopics(); fireChange(); }
-  function selectChapter(c) { selChapter = c; selTopic = null; renderChapters(); renderTopics(); fireChange(); }
-  function selectTopic(t) { selTopic = t; renderTopics(); fireChange(); }
+  // Bug fix: tapping an already-selected subject/chapter/topic tile again did
+  // nothing — there was no way to back out to "no subject" once one was
+  // picked. Tapping the currently-selected tile now deselects it (falls back
+  // to null, same as the explicit "Whole subject"/"Whole chapter" tiles).
+  function selectSubject(s) { selSubject = (selSubject && s && selSubject.id === s.id) ? null : s; selChapter = null; selTopic = null; renderSubjects(); renderChapters(); renderTopics(); fireChange(); }
+  function selectChapter(c) { selChapter = (selChapter && c && selChapter.id === c.id) ? null : c; selTopic = null; renderChapters(); renderTopics(); fireChange(); }
+  function selectTopic(t) { selTopic = (selTopic && t && selTopic.id === t.id) ? null : t; renderTopics(); fireChange(); }
 
   renderSubjects(); renderChapters(); renderTopics();
 
@@ -10125,7 +10142,7 @@ async function scholarshipsHub(sub) {
       if (openTile === def.key) tile.classList.add('selected');
       return tile;
     });
-    tilesBox.replaceChildren(tileRow([profileTile, ...otherTiles]));
+    replaceScrollable(tilesBox, tileRow([profileTile, ...otherTiles]));
   }
 
   function paintWizard() {
@@ -10289,7 +10306,7 @@ async function scholarshipsHub(sub) {
   const chipsWrap = h('div');
   const blocksWrap = h('div');
   function paintChips() {
-    chipsWrap.replaceChildren(sectionChipRow(SCHOLARSHIPS_CHIPS.map(c =>
+    replaceScrollable(chipsWrap, sectionChipRow(SCHOLARSHIPS_CHIPS.map(c =>
       ({ key: c.key, label: c.label, onClick: () => { chipFilter = chipFilter === c.key ? null : c.key; paintChips(); } })), chipFilter, true));
     const keys = chipFilter ? [chipFilter] : SCHOLARSHIPS_CHIPS.map(c => c.key);
     blocksWrap.replaceChildren(...keys.map(k => blocksByKey[k]));
