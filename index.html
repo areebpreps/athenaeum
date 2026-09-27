@@ -2017,6 +2017,7 @@ function arrangeSection(entries, opts) {
   let arranging = false;
   const list = entries.slice();
   const wrap = h('div');
+  const content = h('div');
 
   async function ensureNormalized() {
     const stale = list.some((e, i) => rec(e).position !== i);
@@ -2039,22 +2040,25 @@ function arrangeSection(entries, opts) {
         sb.from(opts.table(list[j])).update({ position: j }).eq('id', rec(list[j]).id)
       ]);
     } catch (e) { /* keep the local order even if a write failed; next Arrange pass will retry */ }
-    paint();
+    paintContent();
   }
 
-  function paint() {
-    wrap.replaceChildren();
-    if (list.length > 1) {
-      wrap.append(h('button', {
-        class: 'btn quiet small', type: 'button', text: arranging ? 'Done arranging' : 'Arrange',
-        onclick: async () => {
-          if (!arranging) await ensureNormalized();
-          arranging = !arranging;
-          paint();
-        }
-      }));
+  // The Arrange toggle button normally lives right above its own list, but
+  // callers with a shared button bar above several lists (e.g. a type
+  // section's "Select to share" bar) can pass opts.bar so this button lands
+  // there instead, sitting on the same line as the bar's other buttons.
+  const arrangeBtn = list.length > 1 ? h('button', {
+    class: 'btn quiet small', type: 'button', text: 'Arrange',
+    onclick: async () => {
+      if (!arranging) await ensureNormalized();
+      arranging = !arranging;
+      arrangeBtn.textContent = arranging ? 'Done arranging' : 'Arrange';
+      paintContent();
     }
-    wrap.append(arranging
+  }) : null;
+
+  function paintContent() {
+    content.replaceChildren(arranging
       // arrange mode always stays a plain vertical list — the up/down
       // reorder buttons need full-width rows, not squares.
       ? h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
@@ -2063,7 +2067,10 @@ function arrangeSection(entries, opts) {
           h('button', { class: 'btn quiet small', type: 'button', text: '↓', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }))))
       : h('div', { class: opts.squareScroll ? 'list-sq' : (opts.rectScroll ? 'list-rect' : 'list') }, list.map(opts.render)));
   }
-  paint();
+
+  if (arrangeBtn) (opts.bar || wrap).append(arrangeBtn);
+  wrap.append(content);
+  paintContent();
   return wrap;
 }
 
@@ -2501,7 +2508,8 @@ function typeSection(scope, items, type, subjectCtx) {
       label: it => it.row.title || ('Untitled ' + ITEM_TYPES[type].label.toLowerCase()),
       table: () => ITEM_TYPES[type].table,
       render: it => itemCard(scope, it, subjectCtx),
-      rectScroll: true
+      rectScroll: true,
+      bar
     }));
     if (refocus) { const first = bar.querySelector('button'); if (first) first.focus({ preventScroll: true }); }
   };
@@ -2641,14 +2649,23 @@ function openFlashcardReview(queue) {
 function flashcardsSection(scope, items) {
   const cards = items.filter(it => it.type === 'flashcard');
   const due = dueFlashcards(items);
+  const bar = h('div', { class: 'group-bar' });
   const box = h('div');
+
+  if (cards.length) {
+    bar.append(h('button', {
+      class: 'btn small', type: 'button', text: due.length ? 'Study ' + due.length + ' due' : 'Review all cards',
+      onclick: () => openFlashcardReview(due.length ? due : cards)
+    }));
+  }
 
   box.append(cards.length
     ? arrangeSection(cards, {
         label: it => it.row.title || 'Untitled flashcard',
         table: () => 'flashcards',
         render: it => itemCard(scope, it, {}),
-        rectScroll: true
+        rectScroll: true,
+        bar
       })
     : h('p', { class: 'none', text: 'No flashcards yet.' }));
 
@@ -2656,11 +2673,7 @@ function flashcardsSection(scope, items) {
     h('p', { class: 'hint-line', text: cards.length
         ? plural(cards.length, 'card', 'cards') + ' saved here · ' + plural(due.length, 'due now', 'due now')
         : 'Flashcards for this ' + levelName(scope) + '.' }),
-    cards.length ? h('button', {
-      class: 'btn small', type: 'button', text: due.length ? 'Study ' + due.length + ' due' : 'Review all cards',
-      onclick: () => openFlashcardReview(due.length ? due : cards)
-    }) : null,
-    box);
+    bar, box);
 }
 
 // Generic "delete this row" confirmation, shared by info boxes, traps, planner items and projects.
@@ -5523,36 +5536,7 @@ function saveSubjectSectionOrder(list) { store.set(SUBJ_SEC_ORDER_KEY, JSON.stri
 
 function subjectSectionsBlock(blocks) {
   const list = orderedSubjectSections(blocks);
-  let arranging = false;
-  const toolbar = h('div', { style: 'display:flex;justify-content:flex-end;margin-top:18px' });
-  const body = h('div');
-
-  function paintToolbar() {
-    toolbar.replaceChildren(list.length > 1 ? h('button', {
-      class: 'btn quiet small', type: 'button', text: arranging ? 'Done arranging sections' : 'Arrange sections',
-      onclick: () => { arranging = !arranging; paintToolbar(); paintBody(); }
-    }) : null);
-  }
-  function move(i, dir) {
-    const j = i + dir;
-    if (j < 0 || j >= list.length) return;
-    [list[i], list[j]] = [list[j], list[i]];
-    saveSubjectSectionOrder(list);
-    paintBody();
-  }
-  function paintBody() {
-    body.replaceChildren(...list.map((b, i) => {
-      if (arranging) {
-        return h('div', { class: 'row arrange-row' },
-          h('span', { class: 'grow', text: b.label }),
-          h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
-          h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }));
-      }
-      return h('div', { class: 'subj-subsec' }, b.node);
-    }));
-  }
-  paintToolbar(); paintBody();
-  return h('div', {}, toolbar, body);
+  return h('div', {}, list.map(b => h('div', { class: 'subj-subsec' }, b.node)));
 }
 
 /* =====================================================================
@@ -9067,6 +9051,149 @@ async function subjectsRoot() {
   ] };
 }
 
+/* ---------- Theme redesign follow-up: Chapters/Topics as chip-row drill-down ----------
+   Turns a vertical "list of chapters" (or, nested one level in, "list of
+   topics") into the same chip-row + one-filtered-block pattern Explore/Hubs
+   already uses (\u00a73.3), instead of a row of links that navigates to a
+   separate page. Tapping a chip loads that entry's content inline below the
+   row (fetched on demand, since it isn't loaded yet, and cached after that);
+   tapping the same chip again collapses it back to just the row. "Arrange"
+   still works exactly as before (up/down reorder), just toggled from a
+   small button above the row instead of arrangeSection's own copy of it.
+   Used for Chapters inside subjectPage below, and again one level deeper
+   for Topics inside chapterBlock, so opening a topic nests inside its
+   chapter's own block rather than replacing the whole page. */
+function drillSection(title, addLabel, onAdd, entries, opts) {
+  let arranging = false;
+  let selectedId = null;
+  const list = entries.slice();
+  const cache = new Map();
+  const arrangeBtn = list.length > 1 ? h('button', { class: 'btn quiet small', type: 'button', text: 'Arrange' }) : null;
+  const rowWrap = h('div');
+  const blockWrap = h('div');
+
+  async function ensureNormalized() {
+    const stale = list.some((e, i) => e.position !== i);
+    if (!stale) return;
+    await Promise.all(list.map((e, i) => {
+      if (e.position === i) return null;
+      e.position = i;
+      return sb.from(opts.table).update({ position: i }).eq('id', e.id);
+    }));
+  }
+  async function move(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    list[i].position = i; list[j].position = j;
+    try {
+      await Promise.all([
+        sb.from(opts.table).update({ position: i }).eq('id', list[i].id),
+        sb.from(opts.table).update({ position: j }).eq('id', list[j].id)
+      ]);
+    } catch (e) { /* keep local order even if the write failed; next Arrange pass retries */ }
+    paintRow();
+  }
+  async function selectEntry(e) {
+    selectedId = (selectedId === e.id) ? null : e.id;
+    paintRow();
+    if (!selectedId) { blockWrap.replaceChildren(); return; }
+    if (!cache.has(e.id)) {
+      blockWrap.replaceChildren(h('p', { class: 'none', text: 'Loading\u2026' }));
+      try { cache.set(e.id, await opts.loadBlock(e)); }
+      catch (err) { cache.set(e.id, errorCard(err)); }
+    }
+    if (selectedId === e.id) blockWrap.replaceChildren(cache.get(e.id));
+  }
+  function paintRow() {
+    if (arrangeBtn) arrangeBtn.textContent = arranging ? 'Done arranging' : 'Arrange';
+    if (arranging) {
+      rowWrap.replaceChildren(h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
+        h('span', { class: 'grow', text: opts.label(e) }),
+        h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
+        h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) })))));
+      return;
+    }
+    replaceScrollable(rowWrap, sectionChipRow(list.map(e =>
+      ({ key: e.id, label: opts.label(e), onClick: () => selectEntry(e) })), selectedId));
+  }
+  if (arrangeBtn) arrangeBtn.onclick = async () => {
+    if (!arranging) await ensureNormalized();
+    arranging = !arranging;
+    paintRow();
+  };
+  if (list.length) paintRow();
+
+  return section(title, addLabel, onAdd,
+    arrangeBtn ? h('div', { style: 'display:flex;justify-content:flex-end' }, arrangeBtn) : null,
+    list.length ? rowWrap : h('p', { class: 'none', text: opts.empty }),
+    blockWrap);
+}
+
+// Inline version of chapterPage's content (minus its own crumb/edit-page
+// shell), used as the block a selected chip shows in Chapters' drillSection
+// below. Its own Topics list is a nested drillSection rather than a link
+// list, so selecting a topic drills one level further inline (topicBlock)
+// instead of navigating away. subject is passed down (cover_path/color)
+// so this never has to refetch the subject row it already has.
+async function chapterBlock(sid, cid, subject) {
+  const [cRes, tRes] = await Promise.all([
+    sb.from('chapters').select('*').eq('id', cid).maybeSingle(),
+    ordered(sb.from('topics').select('*').eq('chapter_id', cid))
+  ]);
+  const chapter = must(cRes);
+  if (!chapter) return errorCard(new Error('Chapter not found.'));
+  const topics = must(tRes);
+
+  const scope = { subjectId: sid, chapterId: cid, topicId: null };
+  const names = { chapters: { [cid]: chapter.title }, topics: {} };
+  topics.forEach(t => { names.topics[t.id] = t.title; });
+  const [items, sources, infoBoxes, traps] = await Promise.all([
+    loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
+  ]);
+
+  return h('div', {},
+    editButton('Edit chapter', () => entityDialog('chapter', chapter, { subjectId: sid })),
+    drillSection('Topics', '+ Add topic', () => entityDialog('topic', null, { chapterId: cid, position: topics.length }),
+      topics, {
+        label: tp => tp.title, table: 'topics', empty: 'No topics yet.',
+        loadBlock: tp => topicBlock(sid, cid, tp.id, subject)
+      }),
+    typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }),
+    flashcardsSection(scope, items),
+    infoBoxesSection(scope, infoBoxes),
+    trapsSection(scope, traps),
+    sourcesSection(scope, sources));
+}
+
+// Inline version of topicPage's content, used as the block a selected chip
+// shows in a chapterBlock's nested Topics drillSection above.
+async function topicBlock(sid, cid, tid, subject) {
+  const tRes = await sb.from('topics').select('*').eq('id', tid).maybeSingle();
+  const topic = must(tRes);
+  if (!topic) return errorCard(new Error('Topic not found.'));
+
+  const scope = { subjectId: sid, chapterId: cid, topicId: tid };
+  const names = { chapters: {}, topics: {} };
+  const [items, sources, infoBoxes, traps] = await Promise.all([
+    loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
+  ]);
+
+  return h('div', {},
+    editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
+    typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }),
+    flashcardsSection(scope, items),
+    infoBoxesSection(scope, infoBoxes),
+    trapsSection(scope, traps),
+    sourcesSection(scope, sources));
+}
+
 async function subjectPage(sid) {
   const [sRes, cRes] = await Promise.all([
     sb.from('subjects').select('*').eq('id', sid).maybeSingle(),
@@ -9100,18 +9227,15 @@ async function subjectPage(sid) {
       h('div', { class: 'stack-header-body' },
         h('strong', { text: subject.name }),
         h('small', { text: plural(chapters.length, 'chapter', 'chapters') + ' \u00b7 ' +
-            plural(items.length + infoBoxes.length + traps.length + sources.length, 'item', 'items') + ' \u00b7 Added ' + fmtDate(new Date(subject.created_at)) }),
-        h('a', { class: 'btn quiet small', style: 'margin-top:12px', href: '#', onclick: e => { e.preventDefault(); entityDialog('subject', subject, {}); }, text: 'Edit subject' }))),
+            plural(items.length + infoBoxes.length + traps.length + sources.length, 'item', 'items') + ' \u00b7 Added ' + fmtDate(new Date(subject.created_at)) }))),
+    editButton('Edit subject', () => entityDialog('subject', subject, {})),
     subjectSectionsBlock([
-      { key: 'chapters', label: 'Chapters', node: section('Chapters', '+ Add chapter', () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
-          chapters.length
-            ? arrangeSection(chapters, {
-                label: ch => ch.title, table: () => 'chapters',
-                render: ch => linkRow({
-                  href: '#subjects/' + sid + '/' + ch.id, title: ch.title,
-                  meta: plural(counts[ch.id] || 0, 'topic', 'topics') })
-              })
-            : h('p', { class: 'none', text: 'No chapters yet.' })) },
+      { key: 'chapters', label: 'Chapters', node: drillSection('Chapters', '+ Add chapter',
+          () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
+          chapters, {
+            label: ch => ch.title, table: 'chapters', empty: 'No chapters yet.',
+            loadBlock: ch => chapterBlock(sid, ch.id, subject)
+          }) },
       { key: 'notes', label: 'Notes', node: typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }) },
       { key: 'definitions', label: 'Definitions', node: typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }) },
       { key: 'formulas', label: 'Formulas', node: typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }) },
