@@ -14030,7 +14030,7 @@ function portalsPage(itemKey) {
   const paint = () => {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.c === portalFilter)));
     const list = PORTALS.filter(i => i.url && show(i.country));
-    box.replaceChildren(list.length
+    replaceScrollable(box, list.length
       ? tileRow(list.map(it => {
           const tile = sqTile({
             onClick: () => { openKey = openKey === it.key ? null : it.key; paint(); },
@@ -14047,7 +14047,7 @@ function portalsPage(itemKey) {
           h('div', { class: 'dl-actions' },
             h('a', { class: 'btn small launch-btn', href: openItem.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open ' + openItem.name })),
           openItem.note ? h('p', { class: 'hint-line', text: openItem.note }) : null)
-      : null);
+      : '');
   };
   [{ key: 'all', label: 'All' }, ...PORTAL_COUNTRIES].forEach(c => chips.append(h('button', {
     type: 'button', class: 'chip-btn', 'data-c': c.key, text: c.label, onclick: () => { portalFilter = c.key; paint(); }
@@ -14112,7 +14112,7 @@ async function simHub(itemKey, compact) {
   const paint = () => {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === simFilter)));
     const sites = SIM_SITES.filter(x => show(x.cat));
-    sitesBox.replaceChildren(sites.length
+    replaceScrollable(sitesBox, sites.length
       ? tileRow(sites.map(x => {
           const tile = sqTile({
             onClick: () => { openSiteKey = openSiteKey === x.key ? null : x.key; paint(); },
@@ -14129,9 +14129,9 @@ async function simHub(itemKey, compact) {
             h('a', { class: 'btn small launch-btn', href: openSite.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open ' + openSite.name }),
             h('button', { class: 'btn small', type: 'button', text: '+ Save a simulation', onclick: () => openSimDialog(null, openSite.cat) })),
           h('p', { class: 'hint-line', text: 'Found one you like? Copy its link, come back and save it below.' }))
-      : null);
+      : '');
     const mine = saved.filter(r => show(r.category));
-    mineBox.replaceChildren(mine.length
+    replaceScrollable(mineBox, mine.length
       ? tileRow(mine.map(r => sqTile({ href: '#workspace/threed/' + r.id, title: r.title, meta: simCatLabel(r.category) })))
       : h('p', { class: 'none', text: saved.length ? 'Nothing saved for this subject yet.' : 'Nothing saved yet.' }));
   };
@@ -14352,7 +14352,7 @@ async function youtubeHubHome(compact) {
       ? videoDetailNode('https://www.youtube.com/watch?v=' + openR.id, openR.title, openR.channel,
           [h('button', { class: 'btn small', type: 'button', text: 'Save to My videos',
               onclick: () => openSaveVideoDialog(null, 'https://www.youtube.com/watch?v=' + openR.id, openR.title) })])
-      : null);
+      : '');
   }
 
   async function doSearch() {
@@ -14386,7 +14386,7 @@ async function youtubeHubHome(compact) {
   const mineDetailBox = h('div');
   let openMineId = null;
   function paintMine() {
-    mineBox.replaceChildren(saved.length
+    replaceScrollable(mineBox, saved.length
       ? tileRow(saved.map(r => {
           const tile = sqTile({
             onClick: () => { openMineId = openMineId === r.id ? null : r.id; paintMine(); },
@@ -14402,7 +14402,7 @@ async function youtubeHubHome(compact) {
           h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSaveVideoDialog(openRow) }),
           h('button', { class: 'btn quiet small', type: 'button', text: 'Share', onclick: () => openShareDialog(postSrc('video', openRow)) })
         ])
-      : null);
+      : '');
   }
   paintMine();
 
@@ -14619,7 +14619,7 @@ async function libraryHubHome(compact) {
     // Tapping a source shows its "Open <site> / + Save a link" card right
     // below the tile row instead of navigating away; tapping the same tile
     // again closes it. Only one source's card is ever open at a time.
-    sitesBox.replaceChildren(sites.length
+    replaceScrollable(sitesBox, sites.length
       ? tileRow(sites.map(x => {
           const tile = sqTile({
             onClick: () => { openSiteKey = openSiteKey === x.key ? null : x.key; paint(); },
@@ -14636,9 +14636,9 @@ async function libraryHubHome(compact) {
             h('a', { class: 'btn small launch-btn', href: openSite.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open ' + openSite.name }),
             h('button', { class: 'btn small', type: 'button', text: '+ Save a link', onclick: () => openLibraryDialog(null, null, null, openSite.cat) })),
           h('p', { class: 'hint-line', text: 'Found a book or article you like? Copy its link, come back and save it below.' }))
-      : null);
+      : '');
     const mine = saved.filter(r => show(r.category));
-    mineBox.replaceChildren(mine.length
+    replaceScrollable(mineBox, mine.length
       ? tileRow(mine.map(r => sqTile({ href: '#workspace/library/' + r.id, title: r.title, meta: libraryCatLabel(r.category) })))
       : h('p', { class: 'none', text: saved.length ? 'Nothing saved for this type yet.' : 'Nothing saved yet.' }));
   };
