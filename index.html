@@ -611,6 +611,18 @@
   .list-sq > .row .grow { flex: none; width: 100%; }
   .list-sq > .row .chev { display: none; }
   .list-sq > .row .folder-ico { width: 30px; height: 30px; }
+  /* Rectangular horizontal-scroll variant of .list: same idea as .list-sq
+     (a side-scrolling row so new items don't push the page taller) but
+     keeps cards their natural card shape \u2014 wide rectangles like Projects'
+     .list-hscroll \u2014 instead of forcing a square aspect-ratio tile. Used
+     for "All items in this subject" so notes/definitions/formulas/
+     mnemonics/flashcards read like the Projects cards. */
+  .list-rect {
+    display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  }
+  .list-rect::-webkit-scrollbar { display: none; }
+  .list-rect > * { flex: 0 0 78%; max-width: 320px; min-width: 220px; scroll-snap-align: start; }
   .row {
     display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 12px 16px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
@@ -1084,6 +1096,15 @@
 
   /* reference vault actions and full-screen file viewer */
   .vault-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  /* Reference vault's three action buttons ("+ Add files", "+ Add link",
+     "+ Drive / OneDrive link") stay on one line \u2014 scrolling sideways on
+     narrow screens instead of wrapping to a second/third line. */
+  .vault-actions-row {
+    display: flex; flex-wrap: nowrap; gap: 10px; margin-bottom: 14px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+  }
+  .vault-actions-row::-webkit-scrollbar { display: none; }
+  .vault-actions-row > * { flex: none; white-space: nowrap; }
 
   /* ---------- AI tools (3.4): infographics, read-aloud, export ---------- */
   .canvas-wrap { max-width: 100%; overflow-x: auto; border-radius: 16px; border: 1px solid var(--line); margin-bottom: 12px; }
@@ -2040,7 +2061,7 @@ function arrangeSection(entries, opts) {
           h('span', { class: 'grow', text: opts.label(e) }),
           h('button', { class: 'btn quiet small', type: 'button', text: '↑', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
           h('button', { class: 'btn quiet small', type: 'button', text: '↓', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }))))
-      : h('div', { class: opts.squareScroll ? 'list-sq' : 'list' }, list.map(opts.render)));
+      : h('div', { class: opts.squareScroll ? 'list-sq' : (opts.rectScroll ? 'list-rect' : 'list') }, list.map(opts.render)));
   }
   paint();
   return wrap;
@@ -2442,30 +2463,31 @@ function folderIcon() {
   return t.content.firstChild;
 }
 
-function itemsSection(scope, items, heading, hint, subjectCtx) {
+// Notes, definitions, formulas and mnemonics each get their own distinct
+// section — same shape as Information boxes / Trap tracker / Reference
+// vault — instead of being folded together into one combined list.
+// (Flashcards are deliberately not one of these: they already have their
+// own dedicated section, see flashcardsSection below.)
+const TYPE_HINT = {
+  note:       'Short notes',
+  definition: 'Terms and their definitions',
+  formula:    'Formulas',
+  mnemonic:   'Mnemonics'
+};
+
+function typeSection(scope, items, type, subjectCtx) {
+  const rows = items.filter(it => it.type === type);
+  const shareable = !!SHAREABLE[type];
   const bar = h('div', { class: 'group-bar' });
   const box = h('div');
-  const types = Object.keys(ITEM_TYPES);
-  const countOf = k => items.filter(it => it.type === k).length;
 
   const paint = (refocus) => {
     bar.replaceChildren();
     box.replaceChildren();
-    if (!items.length) { box.append(h('p', { class: 'none', text: 'Nothing saved here yet.' })); return; }
+    if (!rows.length) { box.append(h('p', { class: 'none', text: 'No ' + TYPE_PLURAL[type].toLowerCase() + ' yet.' })); return; }
 
-    const grouped = itemsView.mode === 'folders';
-    bar.append(h('button', {
-      class: 'btn quiet small', type: 'button', text: grouped ? 'Ungroup' : 'Group by type',
-      onclick: () => {
-        itemsView.mode = grouped ? 'flat' : 'folders';
-        itemsView.folder = null;
-        store.set(VIEW_KEY, itemsView.mode);
-        paint(true);
-      }
-    }));
-
-    if (items.some(it => SHAREABLE[it.type])) {
-      const visible = () => (itemsView.mode === 'folders' && itemsView.folder ? items.filter(it => it.type === itemsView.folder) : items).filter(it => SHAREABLE[it.type]);
+    if (shareable) {
+      const visible = () => rows.filter(it => SHAREABLE[it.type]);
       bar.append(h('button', {
         class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel selecting' : 'Select to share',
         onclick: () => {
@@ -2475,41 +2497,18 @@ function itemsSection(scope, items, heading, hint, subjectCtx) {
       }));
     }
 
-    const itemArrangeOpts = {
-      label: it => it.row.title || ('Untitled ' + ITEM_TYPES[it.type].label.toLowerCase()),
-      table: it => ITEM_TYPES[it.type].table,
+    box.append(arrangeSection(rows, {
+      label: it => it.row.title || ('Untitled ' + ITEM_TYPES[type].label.toLowerCase()),
+      table: () => ITEM_TYPES[type].table,
       render: it => itemCard(scope, it, subjectCtx),
-      squareScroll: true
-    };
-
-    if (!grouped) {
-      // ungrouped: items in their saved order (drag order via Arrange below);
-      // falls back to newest-first, one type after another, until arranged
-      box.append(arrangeSection(items, itemArrangeOpts));
-    } else if (itemsView.folder && countOf(itemsView.folder)) {
-      // one folder open: only that type
-      bar.append(h('button', {
-        class: 'btn quiet small', type: 'button', text: '‹ All folders',
-        onclick: () => { itemsView.folder = null; paint(true); }
-      }));
-      box.append(
-        h('p', { class: 'hint-line', text: TYPE_PLURAL[itemsView.folder] + ' · ' + plural(countOf(itemsView.folder), 'item', 'items') }),
-        arrangeSection(items.filter(it => it.type === itemsView.folder), itemArrangeOpts));
-    } else {
-      // all folders, one per type that has items
-      itemsView.folder = null;
-      box.append(h('div', { class: 'list' }, types.filter(countOf).map(k =>
-        h('button', { class: 'row', type: 'button', onclick: () => { itemsView.folder = k; paint(true); } },
-          folderIcon(),
-          h('span', { class: 'grow' }, h('strong', { text: TYPE_PLURAL[k] }), h('small', { text: plural(countOf(k), 'item', 'items') })),
-          h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })))));
-    }
+      rectScroll: true
+    }));
     if (refocus) { const first = bar.querySelector('button'); if (first) first.focus({ preventScroll: true }); }
   };
   paint(false);
 
-  return section(heading, '+ Add', () => openItemDialog(scope, null),
-    h('p', { class: 'hint-line', text: hint }),
+  return section(TYPE_PLURAL[type], '+ Add', () => openItemDialog(scope, null, type),
+    h('p', { class: 'hint-line', text: TYPE_HINT[type] + ' for this ' + levelName(scope) + '.' }),
     bar, box);
 }
 
@@ -2641,14 +2640,27 @@ function openFlashcardReview(queue) {
 
 function flashcardsSection(scope, items) {
   const cards = items.filter(it => it.type === 'flashcard');
-  if (!cards.length) return null;
   const due = dueFlashcards(items);
-  return section('Flashcards', null, null,
-    h('p', { class: 'hint-line', text: plural(cards.length, 'card', 'cards') + ' saved here · ' + plural(due.length, 'due now', 'due now') }),
-    h('button', {
+  const box = h('div');
+
+  box.append(cards.length
+    ? arrangeSection(cards, {
+        label: it => it.row.title || 'Untitled flashcard',
+        table: () => 'flashcards',
+        render: it => itemCard(scope, it, {}),
+        rectScroll: true
+      })
+    : h('p', { class: 'none', text: 'No flashcards yet.' }));
+
+  return section('Flashcards', '+ Add', () => openItemDialog(scope, null, 'flashcard'),
+    h('p', { class: 'hint-line', text: cards.length
+        ? plural(cards.length, 'card', 'cards') + ' saved here · ' + plural(due.length, 'due now', 'due now')
+        : 'Flashcards for this ' + levelName(scope) + '.' }),
+    cards.length ? h('button', {
       class: 'btn small', type: 'button', text: due.length ? 'Study ' + due.length + ' due' : 'Review all cards',
       onclick: () => openFlashcardReview(due.length ? due : cards)
-    }));
+    }) : null,
+    box);
 }
 
 // Generic "delete this row" confirmation, shared by info boxes, traps, planner items and projects.
@@ -2689,7 +2701,7 @@ function infoBoxCard(scope, it) {
 function infoBoxesSection(scope, rows) {
   return section('Information boxes', '+ Add', () => openInfoBoxDialog(scope, null),
     h('p', { class: 'hint-line', text: 'Bullet-list facts for this ' + levelName(scope) + '.' }),
-    rows.length ? h('div', { class: 'list-sq' }, rows.map(it => infoBoxCard(scope, it)))
+    rows.length ? h('div', { class: 'list-rect' }, rows.map(it => infoBoxCard(scope, it)))
                 : h('p', { class: 'none', text: 'No info boxes yet.' }));
 }
 
@@ -2733,7 +2745,7 @@ function trapCard(scope, it) {
 function trapsSection(scope, rows) {
   return section('Trap tracker', '+ Add', () => openTrapDialog(scope, null),
     h('p', { class: 'hint-line', text: 'Common exam-error warnings for this ' + levelName(scope) + '.' }),
-    rows.length ? h('div', { class: 'list-sq' }, rows.map(it => trapCard(scope, it)))
+    rows.length ? h('div', { class: 'list-rect' }, rows.map(it => trapCard(scope, it)))
                 : h('p', { class: 'none', text: 'No traps logged yet.' }));
 }
 
@@ -3157,8 +3169,8 @@ function sourcesSection(scope, sources) {
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' })),
-    h('p', { class: 'hint-line', text: 'Photos are compressed automatically. PDFs up to ' + formatBytes(MAX_PDF_BYTES) + ' are stored privately in your account; for bigger files add a Google Drive or OneDrive link. Select up to ' + MAX_FILES_PER_BATCH + ' files at once.' }),
-    h('div', { class: 'vault-actions' }, addBtn, webLinkBtn, linkBtn, fileInput),
+    h('p', { class: 'hint-line', text: 'Store photos, PDFs, and links for this ' + levelName(scope) + '.' }),
+    h('div', { class: 'vault-actions-row' }, addBtn, webLinkBtn, linkBtn, fileInput),
     status, box);
 }
 
@@ -9100,7 +9112,10 @@ async function subjectPage(sid) {
                   meta: plural(counts[ch.id] || 0, 'topic', 'topics') })
               })
             : h('p', { class: 'none', text: 'No chapters yet.' })) },
-      { key: 'items', label: 'All items in this subject', node: itemsSection(scope, items, 'All items in this subject', 'Includes everything from its chapters and topics.', { coverPath: subject.cover_path, color: subject.color }) },
+      { key: 'notes', label: 'Notes', node: typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }) },
+      { key: 'definitions', label: 'Definitions', node: typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }) },
+      { key: 'formulas', label: 'Formulas', node: typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }) },
+      { key: 'mnemonics', label: 'Mnemonics', node: typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }) },
       { key: 'flashcards', label: 'Flashcards', node: flashcardsSection(scope, items) },
       { key: 'infoboxes', label: 'Information boxes', node: infoBoxesSection(scope, infoBoxes) },
       { key: 'traps', label: 'Trap tracker', node: trapsSection(scope, traps) },
@@ -9139,7 +9154,10 @@ async function chapterPage(sid, cid) {
               href: '#subjects/' + sid + '/' + cid + '/' + tp.id, title: tp.title, meta: 'Topic' })
           })
         : h('p', { class: 'none', text: 'No topics yet.' })),
-    itemsSection(scope, items, 'All items in this chapter', 'Includes everything from its topics.', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }),
     flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
@@ -9173,7 +9191,10 @@ async function topicPage(sid, cid, tid) {
       { text: chapter.title, href: '#subjects/' + sid + '/' + cid }
     ]),
     editButton('Edit topic', () => entityDialog('topic', topic, { subjectId: sid, chapterId: cid })),
-    itemsSection(scope, items, 'Topic items', 'Also shown in its chapter and subject.', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }),
+    typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }),
     flashcardsSection(scope, items),
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
@@ -9408,12 +9429,14 @@ function confirmDeleteEntity(kind, existing, ctx) {
   });
 }
 
-function openItemDialog(scope, existing) {
-  let type = existing ? existing.type : 'note';
+function openItemDialog(scope, existing, forcedType) {
+  let type = existing ? existing.type : (forcedType || 'note');
   const row = existing ? existing.row : {};
 
   showDialog({
-    title: existing ? 'Edit ' + ITEM_TYPES[type].label.toLowerCase() : 'Add to this ' + levelName(scope),
+    title: existing ? 'Edit ' + ITEM_TYPES[type].label.toLowerCase()
+         : forcedType ? 'Add ' + ITEM_TYPES[forcedType].label.toLowerCase()
+         : 'Add to this ' + levelName(scope),
     submitLabel: 'Save',
     render(form) {
       const fTitle = makeField('', { value: row.title || '', maxlength: 120 });
@@ -9431,7 +9454,10 @@ function openItemDialog(scope, existing) {
         if (seg) seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.type === type)));
       };
 
-      if (!existing) {
+      // the type picker only makes sense for the old "Add to this subject"
+      // entry point; a dedicated section (Notes, Flashcards, ...) already
+      // says what it's adding, so its dialog opens straight into that type
+      if (!existing && !forcedType) {
         seg = h('div', { class: 'seg types', role: 'group', 'aria-label': 'Item type' },
           Object.keys(ITEM_TYPES).map(k => h('button', { type: 'button', 'data-type': k, text: ITEM_TYPES[k].label,
                                                           onclick: () => { type = k; apply(); } })));
