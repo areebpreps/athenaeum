@@ -1425,6 +1425,13 @@ const CONFIG = {
   PORTAL_CHORCHA_URL: 'https://chorcha.net/question-bank'
 };
 
+// Loading-state header title per bottom-nav section, shown for #workspace/*
+// pages the instant navigation starts (before the async page resolves its
+// own title). Only the sections on the bottom nav get a placeholder here —
+// anything else under #workspace (profile, settings sub-pages, etc.) shows
+// no title until its real one loads, instead of incorrectly reusing 'Community'.
+const SECTION_LOADING_TITLES = { community: 'Community', explore: 'Explore', scholarships: 'Scholarships', planner: 'Planner' };
+
 const TABS = {
   workspace: { title: 'Community' },
   subjects:  { title: 'Subjects' },
@@ -1878,7 +1885,8 @@ async function route() {
              : tab === 'ai' && ids.length ? aiParentHash(ids)
              : tab === 'settings' ? (ids.length ? '#settings' : '#workspace')
              : null;
-  setHeader(TABS[tab].title, back);
+  const loadingTitle = tab === 'workspace' ? (SECTION_LOADING_TITLES[activeSection] || '') : TABS[tab].title;
+  setHeader(loadingTitle, back);
   if (!same) view.replaceChildren(h('p', { class: 'loading', text: 'Loading…' }));
 
   let res;
@@ -4125,10 +4133,10 @@ function hexToRgba(hex, alpha) {
 function stackHeader({ avatarName, avatarSrc, title, meta, href }) {
   const av = h('div', { class: 'avatar', 'aria-hidden': 'true' });
   avatarFill(av, avatarName, avatarSrc);
-  return h('a', { class: 'stack-header', href },
+  return h(href ? 'a' : 'div', { class: 'stack-header', href },
     av,
     h('div', { class: 'stack-header-body' }, h('strong', { text: title }), meta ? h('small', { text: meta }) : null),
-    h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' }));
+    href ? h('span', { class: 'chev', 'aria-hidden': 'true', text: '\u203a' }) : null);
 }
 function stackTile({ href, color, badge, title, meta }) {
   return h('a', {
@@ -8949,15 +8957,16 @@ async function subjectsRoot() {
   if (!myProfile) await loadMyProfile();
   const totalItems = subjects.reduce((sum, sub) => sum + (counts[sub.id] || 0), 0);
 
-  // §5.1's header is "editable/addable" — Subjects has no cover photo of its own
-  // to edit, so this reuses the account's existing avatar/profile editor (already
-  // built) as that affordance, the same photo shown throughout the app.
+  // §5.1's header is "editable/addable" elsewhere, but Subjects has nowhere
+  // of its own for that avatar tap to go (no cover photo, and it must not
+  // jump to Public profile out of nowhere), so this header is just a
+  // display here — no href.
   const header = stackHeader({
     avatarName: (myProfile && myProfile.display_name) || usernameFrom(currentUser),
     avatarSrc: myProfile && avatarUrl(myProfile.avatar_path),
     title: 'Your subjects',
     meta: plural(subjects.length, 'subject', 'subjects') + ' \u00b7 ' + plural(totalItems, 'item', 'items'),
-    href: '#workspace/profile'
+    href: null
   });
   const addBtn = h('button', {
     class: 'stack-add', type: 'button', text: '+ New subject',
