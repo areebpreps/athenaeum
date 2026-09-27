@@ -568,6 +568,9 @@
   .sec:first-child { margin-top: 0; }
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
   .sec-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; }
+  .sec-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .icon-btn { padding: 0 14px; font-size: 18px; line-height: 1; }
+  .btn.quiet.small[aria-pressed="true"] { border-color: var(--marker); color: var(--marker); }
   .hint-line { color: var(--dim); font-size: 14px; margin: -4px 0 12px; }
   /* D7: adaptive pacing hint + quick-add + chronotype */
   .adaptive-hint { padding: 0 16px 10px; margin: -6px 0 0; }
@@ -1978,6 +1981,18 @@ function section(title, addLabel, onAdd, ...children) {
     children);
 }
 
+// Same header row as section() above, but with room for one extra node
+// (e.g. a "Select to share"/Arrange button bar, or a lone Arrange icon
+// button) sitting just to the left of the "+ Add" button, instead of on
+// its own row below the header. extraNode/addLabel can each be null.
+function sectionHeader(title, extraNode, addLabel, onAdd) {
+  return h('div', { class: 'sec-head' },
+    h('h3', { text: title }),
+    h('div', { class: 'sec-head-actions' },
+      extraNode,
+      addLabel ? h('button', { class: 'btn small', type: 'button', text: addLabel, onclick: onAdd }) : null));
+}
+
 function emptyBlock(head, body) {
   return h('div', { class: 'empty' }, h('h3', { text: head }), h('p', { text: body }));
 }
@@ -2044,15 +2059,20 @@ function arrangeSection(entries, opts) {
   }
 
   // The Arrange toggle button normally lives right above its own list, but
-  // callers with a shared button bar above several lists (e.g. a type
-  // section's "Select to share" bar) can pass opts.bar so this button lands
-  // there instead, sitting on the same line as the bar's other buttons.
+  // callers with a shared button bar (e.g. a type section's header actions)
+  // can pass opts.bar so this button lands there instead \u2014 an icon-only
+  // up/down-arrow toggle rather than a text button, so it reads fine sitting
+  // beside "Select to share"/"+ Add" in a header row. aria-pressed carries
+  // the arranging/not-arranging state for screen readers since the label
+  // itself never changes.
   const arrangeBtn = list.length > 1 ? h('button', {
-    class: 'btn quiet small', type: 'button', text: 'Arrange',
+    class: 'btn quiet small icon-btn', type: 'button', text: '\u21c5',
+    'aria-label': 'Arrange', title: 'Arrange', 'aria-pressed': 'false',
     onclick: async () => {
       if (!arranging) await ensureNormalized();
       arranging = !arranging;
-      arrangeBtn.textContent = arranging ? 'Done arranging' : 'Arrange';
+      arrangeBtn.setAttribute('aria-pressed', String(arranging));
+      arrangeBtn.title = arranging ? 'Done arranging' : 'Arrange';
       paintContent();
     }
   }) : null;
@@ -2485,7 +2505,7 @@ const TYPE_HINT = {
 function typeSection(scope, items, type, subjectCtx) {
   const rows = items.filter(it => it.type === type);
   const shareable = !!SHAREABLE[type];
-  const bar = h('div', { class: 'group-bar' });
+  const bar = h('div', { class: 'group-bar', style: 'margin:0' });
   const box = h('div');
 
   const paint = (refocus) => {
@@ -2515,9 +2535,10 @@ function typeSection(scope, items, type, subjectCtx) {
   };
   paint(false);
 
-  return section(TYPE_PLURAL[type], '+ Add', () => openItemDialog(scope, null, type),
+  return h('section', { class: 'sec' },
+    sectionHeader(TYPE_PLURAL[type], bar, '+ Add', () => openItemDialog(scope, null, type)),
     h('p', { class: 'hint-line', text: TYPE_HINT[type] + ' for this ' + levelName(scope) + '.' }),
-    bar, box);
+    box);
 }
 
 // where a rolled-up item was saved, shown on its card ("Kinematics › Projectile motion")
@@ -2649,7 +2670,7 @@ function openFlashcardReview(queue) {
 function flashcardsSection(scope, items) {
   const cards = items.filter(it => it.type === 'flashcard');
   const due = dueFlashcards(items);
-  const bar = h('div', { class: 'group-bar' });
+  const bar = h('div', { class: 'group-bar', style: 'margin:0' });
   const box = h('div');
 
   if (cards.length) {
@@ -2669,11 +2690,12 @@ function flashcardsSection(scope, items) {
       })
     : h('p', { class: 'none', text: 'No flashcards yet.' }));
 
-  return section('Flashcards', '+ Add', () => openItemDialog(scope, null, 'flashcard'),
+  return h('section', { class: 'sec' },
+    sectionHeader('Flashcards', bar, '+ Add', () => openItemDialog(scope, null, 'flashcard')),
     h('p', { class: 'hint-line', text: cards.length
         ? plural(cards.length, 'card', 'cards') + ' saved here · ' + plural(due.length, 'due now', 'due now')
         : 'Flashcards for this ' + levelName(scope) + '.' }),
-    bar, box);
+    box);
 }
 
 // Generic "delete this row" confirmation, shared by info boxes, traps, planner items and projects.
@@ -3130,6 +3152,7 @@ function openWebLinkDialog(scope) {
 
 function sourcesSection(scope, sources) {
   const box = h('div');
+  const headerBar = h('div', { class: 'group-bar', style: 'margin:0' });
   const status = h('p', { class: 'msg err', hidden: true });
   // Listing both application/pdf and the .pdf extension in accept is redundant,
   // and on a lot of Android devices that redundancy is enough to make Chrome's
@@ -3142,12 +3165,14 @@ function sourcesSection(scope, sources) {
 
   const paint = () => {
     box.replaceChildren();
+    headerBar.replaceChildren();
     box.append(sources.length
       ? arrangeSection(sources, {
           label: s => s.row.title || sourceLabel(s.row),
           table: () => 'sources',
           render: s => sourceRow(scope, s),
-          squareScroll: true
+          squareScroll: true,
+          bar: headerBar
         })
       : h('p', { class: 'none', text: 'Nothing saved here yet.' }));
   };
@@ -3180,8 +3205,11 @@ function sourcesSection(scope, sources) {
     route();
   });
 
+  // No single "+ Add" here (there are three separate action buttons below
+  // instead), so the header's action slot \u2014 where "+ Add" sits on every
+  // other section \u2014 is used for the Arrange icon button alone.
   return h('section', { class: 'sec' },
-    h('div', { class: 'sec-head' }, h('h3', { text: 'Reference vault' })),
+    sectionHeader('Reference vault', headerBar, null, null),
     h('p', { class: 'hint-line', text: 'Store photos, PDFs, and links for this ' + levelName(scope) + '.' }),
     h('div', { class: 'vault-actions-row' }, addBtn, webLinkBtn, linkBtn, fileInput),
     status, box);
@@ -5536,7 +5564,7 @@ function saveSubjectSectionOrder(list) { store.set(SUBJ_SEC_ORDER_KEY, JSON.stri
 
 function subjectSectionsBlock(blocks) {
   const list = orderedSubjectSections(blocks);
-  return h('div', {}, list.map(b => h('div', { class: 'subj-subsec' }, b.node)));
+  return h('div', {}, list.map(b => h('div', { class: 'subj-subsec', 'data-subsec-key': b.key }, b.node)));
 }
 
 /* =====================================================================
@@ -9057,18 +9085,26 @@ async function subjectsRoot() {
    already uses (\u00a73.3), instead of a row of links that navigates to a
    separate page. Tapping a chip loads that entry's content inline below the
    row (fetched on demand, since it isn't loaded yet, and cached after that);
-   tapping the same chip again collapses it back to just the row. "Arrange"
-   still works exactly as before (up/down reorder), just toggled from a
-   small button above the row instead of arrangeSection's own copy of it.
+   tapping the same chip again collapses it back to just the row. Arrange
+   still works exactly as before (up/down reorder), just an icon-only
+   up/down-arrow button in the header (beside "+ Add") instead of a text
+   button on its own row.
    Used for Chapters inside subjectPage below, and again one level deeper
    for Topics inside chapterBlock, so opening a topic nests inside its
-   chapter's own block rather than replacing the whole page. */
+   chapter's own block rather than replacing the whole page.
+   opts.onToggle(selectedId), if given, fires on every selection change so
+   the caller can hide whatever sits *below* this drillSection (e.g. the
+   subject's own Notes/Definitions/etc.) while a chip is expanded \u2014
+   otherwise both levels of content would show at once. */
 function drillSection(title, addLabel, onAdd, entries, opts) {
   let arranging = false;
   let selectedId = null;
   const list = entries.slice();
   const cache = new Map();
-  const arrangeBtn = list.length > 1 ? h('button', { class: 'btn quiet small', type: 'button', text: 'Arrange' }) : null;
+  const arrangeBtn = list.length > 1 ? h('button', {
+    class: 'btn quiet small icon-btn', type: 'button', text: '\u21c5',
+    'aria-label': 'Arrange', title: 'Arrange', 'aria-pressed': 'false'
+  }) : null;
   const rowWrap = h('div');
   const blockWrap = h('div');
 
@@ -9097,6 +9133,7 @@ function drillSection(title, addLabel, onAdd, entries, opts) {
   async function selectEntry(e) {
     selectedId = (selectedId === e.id) ? null : e.id;
     paintRow();
+    if (opts.onToggle) opts.onToggle(selectedId);
     if (!selectedId) { blockWrap.replaceChildren(); return; }
     if (!cache.has(e.id)) {
       blockWrap.replaceChildren(h('p', { class: 'none', text: 'Loading\u2026' }));
@@ -9106,7 +9143,10 @@ function drillSection(title, addLabel, onAdd, entries, opts) {
     if (selectedId === e.id) blockWrap.replaceChildren(cache.get(e.id));
   }
   function paintRow() {
-    if (arrangeBtn) arrangeBtn.textContent = arranging ? 'Done arranging' : 'Arrange';
+    if (arrangeBtn) {
+      arrangeBtn.setAttribute('aria-pressed', String(arranging));
+      arrangeBtn.title = arranging ? 'Done arranging' : 'Arrange';
+    }
     if (arranging) {
       rowWrap.replaceChildren(h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
         h('span', { class: 'grow', text: opts.label(e) }),
@@ -9124,8 +9164,8 @@ function drillSection(title, addLabel, onAdd, entries, opts) {
   };
   if (list.length) paintRow();
 
-  return section(title, addLabel, onAdd,
-    arrangeBtn ? h('div', { style: 'display:flex;justify-content:flex-end' }, arrangeBtn) : null,
+  return h('section', { class: 'sec' },
+    sectionHeader(title, arrangeBtn, addLabel, onAdd),
     list.length ? rowWrap : h('p', { class: 'none', text: opts.empty }),
     blockWrap);
 }
@@ -9152,13 +9192,11 @@ async function chapterBlock(sid, cid, subject) {
     loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
   ]);
 
-  return h('div', {},
-    editButton('Edit chapter', () => entityDialog('chapter', chapter, { subjectId: sid })),
-    drillSection('Topics', '+ Add topic', () => entityDialog('topic', null, { chapterId: cid, position: topics.length }),
-      topics, {
-        label: tp => tp.title, table: 'topics', empty: 'No topics yet.',
-        loadBlock: tp => topicBlock(sid, cid, tp.id, subject)
-      }),
+  // Own Notes/Definitions/.../Reference vault, all held in one wrapper so
+  // the nested Topics drillSection can hide the whole thing in one shot
+  // while a topic chip is expanded (opts.onToggle below) \u2014 otherwise the
+  // chapter's own sections and the selected topic's would show at once.
+  const ownWrap = h('div', {},
     typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }),
     typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }),
     typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }),
@@ -9167,6 +9205,16 @@ async function chapterBlock(sid, cid, subject) {
     infoBoxesSection(scope, infoBoxes),
     trapsSection(scope, traps),
     sourcesSection(scope, sources));
+
+  return h('div', {},
+    editButton('Edit chapter', () => entityDialog('chapter', chapter, { subjectId: sid })),
+    drillSection('Topics', '+ Add topic', () => entityDialog('topic', null, { chapterId: cid, position: topics.length }),
+      topics, {
+        label: tp => tp.title, table: 'topics', empty: 'No topics yet.',
+        loadBlock: tp => topicBlock(sid, cid, tp.id, subject),
+        onToggle: sel => { ownWrap.style.display = sel ? 'none' : ''; }
+      }),
+    ownWrap);
 }
 
 // Inline version of topicPage's content, used as the block a selected chip
@@ -9214,37 +9262,38 @@ async function subjectPage(sid) {
     loadItems(scope, names), loadSources(scope, names), loadInfoBoxes(scope, names), loadTraps(scope, names)
   ]);
 
+  // sectionsBlock is assigned just below, after this function exists \u2014
+  // referenced only once a chip is actually tapped, by which point it's set.
+  let sectionsBlock;
+  function setOtherSectionsVisible(visible) {
+    if (!sectionsBlock) return;
+    sectionsBlock.querySelectorAll('[data-subsec-key]').forEach(el => {
+      if (el.dataset.subsecKey === 'chapters') return;
+      el.style.display = visible ? '' : 'none';
+    });
+  }
+  sectionsBlock = subjectSectionsBlock([
+    { key: 'chapters', label: 'Chapters', node: drillSection('Chapters', '+ Add chapter',
+        () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
+        chapters, {
+          label: ch => ch.title, table: 'chapters', empty: 'No chapters yet.',
+          loadBlock: ch => chapterBlock(sid, ch.id, subject),
+          onToggle: sel => setOtherSectionsVisible(!sel)
+        }) },
+    { key: 'notes', label: 'Notes', node: typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }) },
+    { key: 'definitions', label: 'Definitions', node: typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }) },
+    { key: 'formulas', label: 'Formulas', node: typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }) },
+    { key: 'mnemonics', label: 'Mnemonics', node: typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }) },
+    { key: 'flashcards', label: 'Flashcards', node: flashcardsSection(scope, items) },
+    { key: 'infoboxes', label: 'Information boxes', node: infoBoxesSection(scope, infoBoxes) },
+    { key: 'traps', label: 'Trap tracker', node: trapsSection(scope, traps) },
+    { key: 'sources', label: 'Sources', node: sourcesSection(scope, sources) }
+  ]);
+
   return { title: subject.name, nodes: [
     crumbs([{ text: 'Subjects', href: '#subjects' }]),
-    h('div', { class: 'stack-header', style: 'align-items:flex-start' },
-      h('button', {
-          class: 'subj-cover', type: 'button', 'aria-label': (subject.cover_path ? 'Change' : 'Add') + ' cover photo',
-          style: subject.cover_path ? '' : 'background: linear-gradient(135deg, ' + hexToRgba(colorOf(subject.color), .6) + ', var(--paper))',
-          onclick: () => entityDialog('subject', subject, {})
-        },
-        subject.cover_path ? h('img', { src: subjectCoverUrl(subject.cover_path), alt: '' }) : null,
-        h('span', { class: 'subj-cover-edit', text: subject.cover_path ? 'Change' : 'Add' })),
-      h('div', { class: 'stack-header-body' },
-        h('strong', { text: subject.name }),
-        h('small', { text: plural(chapters.length, 'chapter', 'chapters') + ' \u00b7 ' +
-            plural(items.length + infoBoxes.length + traps.length + sources.length, 'item', 'items') + ' \u00b7 Added ' + fmtDate(new Date(subject.created_at)) }))),
     editButton('Edit subject', () => entityDialog('subject', subject, {})),
-    subjectSectionsBlock([
-      { key: 'chapters', label: 'Chapters', node: drillSection('Chapters', '+ Add chapter',
-          () => entityDialog('chapter', null, { subjectId: sid, position: chapters.length }),
-          chapters, {
-            label: ch => ch.title, table: 'chapters', empty: 'No chapters yet.',
-            loadBlock: ch => chapterBlock(sid, ch.id, subject)
-          }) },
-      { key: 'notes', label: 'Notes', node: typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }) },
-      { key: 'definitions', label: 'Definitions', node: typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }) },
-      { key: 'formulas', label: 'Formulas', node: typeSection(scope, items, 'formula', { coverPath: subject.cover_path, color: subject.color }) },
-      { key: 'mnemonics', label: 'Mnemonics', node: typeSection(scope, items, 'mnemonic', { coverPath: subject.cover_path, color: subject.color }) },
-      { key: 'flashcards', label: 'Flashcards', node: flashcardsSection(scope, items) },
-      { key: 'infoboxes', label: 'Information boxes', node: infoBoxesSection(scope, infoBoxes) },
-      { key: 'traps', label: 'Trap tracker', node: trapsSection(scope, traps) },
-      { key: 'sources', label: 'Sources', node: sourcesSection(scope, sources) }
-    ])
+    sectionsBlock
   ] };
 }
 
