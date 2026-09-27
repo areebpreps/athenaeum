@@ -680,6 +680,8 @@
     display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
   }
   .item.expanded .body { -webkit-line-clamp: unset; overflow: visible; }
+  /* E30: long-press-to-speak feedback (no standing Listen icon anymore) */
+  .item.speaking { border-color: var(--marker); box-shadow: inset 0 0 0 1px var(--marker); }
   .item .expr { display: block; padding: 8px 10px; background: var(--paper-hi); border-radius: 8px; overflow-x: auto; white-space: pre; font-size: 15px; }
   /* flashcards in a browse list stay flipped face-down (front only) until tapped */
   .item.flashcard .body { display: none; }
@@ -2184,6 +2186,64 @@ function listenButton(getText, opts = {}) {
   return btn;
 }
 
+// E30: item cards' Listen control lives behind a long press of the card
+// instead of a standing icon. makeCardSpeaker holds the same speak/stop
+// logic as listenButton but returns a plain toggle function with no button
+// UI of its own; the caller (itemCard) supplies the press gesture and a
+// `.speaking` class on the card is the only visual feedback while it plays.
+function makeCardSpeaker(getText) {
+  if (!window.speechSynthesis) return null;
+  let speaking = false, activeCard = null;
+  const stop = () => {
+    window.speechSynthesis.cancel();
+    speaking = false;
+    if (activeCard) activeCard.classList.remove('speaking');
+    activeCard = null;
+  };
+  return function toggle(card) {
+    if (speaking) { stop(); return; }
+    const text = (getText() || '').trim();
+    if (!text) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    const lang = BANGLA_RE.test(text) ? 'bn' : 'en';
+    const voice = pickVoice(lang);
+    if (voice) utter.voice = voice;
+    utter.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
+    ttsApply(utter);
+    utter.onend = stop;
+    utter.onerror = stop;
+    speaking = true; activeCard = card; card.classList.add('speaking');
+    window.speechSynthesis.speak(utter);
+  };
+}
+
+// Generic long-press gesture (pointer events cover touch and mouse alike):
+// fires onFire after `ms` of holding without moving past `tol` px. A normal
+// short tap/click on el is untouched — onFire is only invoked on a genuine
+// hold, and the caller is responsible for ignoring the click that follows.
+function attachLongPress(el, onFire, ms = 550, tol = 10) {
+  let timer = null, startX = 0, startY = 0, active = false;
+  const clear = () => { active = false; if (timer) { clearTimeout(timer); timer = null; } };
+  el.addEventListener('pointerdown', e => {
+    if (e.button != null && e.button !== 0) return;
+    if (e.target.closest && e.target.closest('button')) return; // let buttons handle their own taps
+    active = true; startX = e.clientX; startY = e.clientY;
+    timer = setTimeout(() => {
+      if (!active) return;
+      active = false;
+      if (navigator.vibrate) navigator.vibrate(12);
+      onFire(e);
+    }, ms);
+  });
+  el.addEventListener('pointermove', e => {
+    if (active && (Math.abs(e.clientX - startX) > tol || Math.abs(e.clientY - startY) > tol)) clear();
+  });
+  el.addEventListener('pointerup', clear);
+  el.addEventListener('pointercancel', clear);
+  el.addEventListener('pointerleave', clear);
+}
+
 /* ---------- multi-share ----------
    "Select to share" on a subject/chapter/topic page turns the item cards into
    tick-able cards; a bar above the tabs then shares everything ticked as posts
@@ -2312,24 +2372,17 @@ function itemCard(scope, it, subjectCtx) {
     class: 'item-edit', type: 'button', 'aria-label': 'Edit',
     onclick: e => { e.stopPropagation(); openItemDialog(scope, it); }
   }, pencilIcon());
-  const listenBtn = listenButton(
-    () => [row.title, type === 'formula' ? row.expression : null, detail].filter(Boolean).join('. '),
-    { iconOnly: true, stopPropagation: true });
+  // E30: no cover thumbnail and no standing Listen icon on the card face —
+  // items now read as plain text-first cards like info-box/trap cards.
+  // Listen still works, just moved behind a long press of the card itself
+  // (see attachLongPress below) instead of a tap on a visible icon.
+  const speak = makeCardSpeaker(
+    () => [row.title, type === 'formula' ? row.expression : null, detail].filter(Boolean).join('. '));
   // E26: notes, definitions and mnemonics can be shared as a post
   const shareBtn = (type === 'note' || type === 'definition' || type === 'mnemonic') ? h('button', {
     class: 'item-listen', type: 'button', 'aria-label': 'Share as a post',
     onclick: e => { e.stopPropagation(); openShareDialog(postSrc(type, row)); }
   }, shareIcon()) : null;
-  // Post-build audit phase 2: item's own picked cover, else its subject's
-  // cover photo (subjectCtx is only passed by the subject/chapter/topic
-  // pages, where every item shares one known subject); a subject-tinted
-  // gradient when there's no image at all, so cross-subject item lists
-  // that don't pass subjectCtx still render sensibly.
-  const coverPath = row.image_path || (subjectCtx && subjectCtx.coverPath) || null;
-  const cover = coverPath
-    ? h('img', { class: 'item-cover', src: subjectCoverUrl(coverPath), alt: '' })
-    : h('span', { class: 'item-cover', 'aria-hidden': 'true',
-        style: 'background: linear-gradient(135deg, ' + hexToRgba((subjectCtx && subjectCtx.color) || null, .5) + ', var(--paper-hi))' });
 
   // Flashcards behave like an actual flashcard even when just browsing: the
   // back stays hidden until tapped, same tap that expands other item types.
@@ -2340,18 +2393,22 @@ function itemCard(scope, it, subjectCtx) {
   const pickBox = selecting && shareable ? h('span', { class: 'pick-box', 'aria-hidden': 'true', text: isPicked() ? '\u2713' : '' }) : null;
   const card = h('div', { class: 'item' + (isFlashcard ? ' flashcard' : '') + (selecting && !shareable ? ' dim' : '') + (pickBox && isPicked() ? ' picked' : ''), tabindex: '0', role: 'button', 'aria-expanded': 'false' },
     h('span', { class: 'item-head' },
-      pickBox, cover,
+      pickBox,
       h('span', { class: 'chip', text: ITEM_TYPES[type].label }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null,
-      listenBtn, shareBtn, editBtn),
+      shareBtn, editBtn),
     row.title ? h('strong', { text: row.title }) : null,
     type === 'formula' ? h('code', { class: 'expr', text: row.expression }) : null,
     detail ? h('span', { class: 'body', text: detail }) : null,
     isFlashcard ? h('span', { class: 'fc-hint', text: 'Tap to flip' }) : null);
 
   // Flashcards flip between question and answer on every tap; other items
-  // expand/collapse their clamped body text.
+  // expand/collapse their clamped body text. A long press instead speaks the
+  // card (see attachLongPress below); toggle() bails out on the click that
+  // immediately follows a fired long press so the two don't both fire.
+  let longPressFired = false;
   const toggle = () => {
+    if (longPressFired) { longPressFired = false; return; }
     if (pickBox) {
       const k = pickKey(it);
       if (multiShare.picked.has(k)) multiShare.picked.delete(k); else multiShare.picked.set(k, it);
@@ -2375,6 +2432,7 @@ function itemCard(scope, it, subjectCtx) {
     if (e.target.closest && e.target.closest('button')) return;
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
   });
+  if (speak) attachLongPress(card, () => { longPressFired = true; speak(card); });
   return card;
 }
 
@@ -9353,10 +9411,6 @@ function confirmDeleteEntity(kind, existing, ctx) {
 function openItemDialog(scope, existing) {
   let type = existing ? existing.type : 'note';
   const row = existing ? existing.row : {};
-  // Post-build audit phase 2: item cover photo (image_path) — schema-update-J1-item-cover.sql.
-  // Reuses the subject-covers bucket/pipeline (avatarBlob, subjectCoverUrl) under an
-  // 'items/' path, so it needs no new bucket or storage policy of its own.
-  let coverBlob = null, coverRemove = false, coverPreviewUrl = '';
 
   showDialog({
     title: existing ? 'Edit ' + ITEM_TYPES[type].label.toLowerCase() : 'Add to this ' + levelName(scope),
@@ -9386,44 +9440,6 @@ function openItemDialog(scope, existing) {
       form.append(fTitle.wrap, fBody.wrap, fExpr.wrap, fDesc.wrap);
       apply();
 
-      // Cover photo — optional; falls back to the subject's own cover when left unset.
-      const shownCoverUrl = () => coverPreviewUrl || (!coverRemove && row.image_path ? subjectCoverUrl(row.image_path) : '');
-      const hasCover = () => !!shownCoverUrl();
-      const preview = h('div', { class: 'subj-cover', style: 'height:56px;width:56px;border-radius:12px', 'aria-hidden': 'true' });
-      const fileIn = h('input', { type: 'file', accept: 'image/*', hidden: true, 'aria-label': 'Choose a cover photo' });
-      const pickBtn = h('button', { class: 'btn quiet small', type: 'button' });
-      const removeBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Remove photo' });
-      const coverMsg = h('p', { class: 'msg err', role: 'alert', hidden: true });
-      function paintCoverPreview() {
-        const url = shownCoverUrl();
-        preview.replaceChildren();
-        preview.style.background = url ? '' : 'var(--paper-hi)';
-        if (url) preview.append(h('img', { src: url, alt: '' }));
-        pickBtn.textContent = hasCover() ? 'Change photo' : 'Add photo';
-        removeBtn.hidden = !hasCover();
-      }
-      pickBtn.addEventListener('click', () => fileIn.click());
-      removeBtn.addEventListener('click', () => {
-        if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
-        coverBlob = null; coverPreviewUrl = ''; coverRemove = true; fileIn.value = ''; paintCoverPreview();
-      });
-      fileIn.addEventListener('change', async () => {
-        const file = fileIn.files && fileIn.files[0]; if (!file) return;
-        coverMsg.hidden = true;
-        if (!/^image\//.test(file.type || '')) { coverMsg.textContent = 'Choose a photo (JPG, PNG or WebP).'; coverMsg.hidden = false; return; }
-        try {
-          const blob = await avatarBlob(file, 192);
-          if (coverPreviewUrl) URL.revokeObjectURL(coverPreviewUrl);
-          coverBlob = blob; coverPreviewUrl = URL.createObjectURL(blob); coverRemove = false; paintCoverPreview();
-        } catch (e) { coverMsg.textContent = (e && e.message) || 'Could not read that photo.'; coverMsg.hidden = false; }
-      });
-      paintCoverPreview();
-      form.append(h('div', { class: 'field' },
-        h('label', { text: 'Cover photo (optional \u2014 uses the subject\u2019s cover photo if you skip this)' }),
-        preview, fileIn,
-        h('div', { class: 'edit-row', style: 'display:flex;gap:8px;margin-top:8px' }, pickBtn, removeBtn),
-        coverMsg));
-
       return () => {
         const T = ITEM_TYPES[type];
         const v = { title: fTitle.input.value.trim(), body: fBody.input.value.trim(),
@@ -9448,27 +9464,10 @@ function openItemDialog(scope, existing) {
         Object.assign(payload, { source: 'manual', due_at: new Date().toISOString(), interval_days: 0, ease: 2.5, reps: 0, lapses: 0 });
       }
 
-      let oldCoverPath = null, newCoverPath = null;
-      if (coverBlob) {
-        newCoverPath = currentUser.id + '/items/' + crypto.randomUUID() + '.jpg';
-        const up = await sb.storage.from(SUBJECT_COVER_BUCKET).upload(newCoverPath, coverBlob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
-        if (up.error) { newCoverPath = null; throw up.error; }
-        oldCoverPath = row.image_path;
-        payload.image_path = newCoverPath;
-      } else if (coverRemove && row.image_path) {
-        oldCoverPath = row.image_path;
-        payload.image_path = null;
-      }
-
       const res = existing
         ? await sb.from(T.table).update(payload).eq('id', row.id)
         : await sb.from(T.table).insert({ ...scopeCols(scope), ...payload });
-      if (res.error) {
-        if (newCoverPath) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([newCoverPath]); } catch (e) {} }
-        if ('image_path' in payload) throw new Error(res.error.message + ' (run schema-update-J1-item-cover.sql in Supabase, then try again)');
-        throw res.error;
-      }
-      if (oldCoverPath && oldCoverPath !== newCoverPath) { try { await sb.storage.from(SUBJECT_COVER_BUCKET).remove([oldCoverPath]); } catch (e) {} }
+      if (res.error) throw res.error;
       route();
     },
     extras: existing ? [
