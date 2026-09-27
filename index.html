@@ -1772,7 +1772,7 @@ function parentHash(ids) { return ids.length <= 1 ? '#subjects' : '#subjects/' +
 // Hubs (Phase 3.1) are one or two segments deep under #workspace, e.g.
 // #workspace/planner or #workspace/wiki/<article>. Back always goes up one segment.
 function workspaceParentHash(ids) {
-  if (ids[0] === 'people') return '#workspace/community';
+  if (ids[0] === 'people') return '#workspace/communityhub';
   if (ids[0] === 'live' || ids[0] === 'livesettings') return '#workspace/communityhub';
   if (ids.length <= 1 && COMMUNITY_HUB_KEYS.includes(ids[0])) return '#workspace/communityhub';
   return ids.length <= 1 ? '#workspace' : '#workspace/' + ids[0];
@@ -3988,7 +3988,6 @@ function buildWorkspace(ids = []) {
   if (ids[0] === 'consult')  return consultPage();
   if (ids[0] === 'groups')   return groupsPage(ids[1]);
   if (ids[0] === 'posts')    return postsPage();
-  if (ids[0] === 'community') return communityPage();
   if (ids[0] === 'people')   return peoplePage(ids[1]);
   if (ids[0] === 'peers')    return schPeersPage();
   if (ids[0] === 'classes')  return schClassesPage();
@@ -4544,7 +4543,7 @@ async function loadCommunityCarousel() {
     kind: POST_KIND_LABEL[p.kind] || 'Post',
     title: p.title || (p.body || '').slice(0, 60) || 'Untitled',
     meta: (p.body || '').slice(0, 90),
-    href: '#workspace/community'
+    href: '#workspace/communityhub'
   }));
 
   let subjectNames = [];
@@ -4576,7 +4575,7 @@ async function loadCommunityCarousel() {
 
 const COMMUNITY_CHIPS = [
   { key: 'classes', label: 'Live classes',    href: '#workspace/classes' },
-  { key: 'posts',   label: 'Posts',           href: '#workspace/community' },
+  { key: 'posts',   label: 'Posts',           href: '#workspace/communityhub' },
   { key: 'groups',  label: 'Groups',          href: '#workspace/groups' },
   { key: 'qa',      label: 'Q&A',             href: '#workspace/qa' },
   { key: 'consult', label: 'Consult a teacher', href: '#workspace/consult' },
@@ -15271,17 +15270,9 @@ const communitySetupCard = e => h('div', { class: 'status bad' }, h('strong', { 
   'Run the update SQL in Supabase (schema-update-E26-posts.sql, then schema-update-E27-community.sql), then reload. (' + ((e && e.message) || e) + ') ',
   h('button', { class: 'btn quiet small', type: 'button', text: 'Try again', onclick: () => route() }));
 
-async function communityPage() {
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
-  try {
-    const feed = await communityFeed({ emptyTitle: 'No public posts yet', emptyBody: 'When other people share notes, mnemonics or links publicly, they show up here. You can share your own from any note, mnemonic or saved link.' });
-    return { title: 'Community', nodes: [crumb, h('p', { class: 'hint-line', text: 'Public posts from other students. Tap a name to see their profile, and Save to copy a post into your own workspace.' }), feed] };
-  } catch (e) { return { title: 'Community', nodes: [crumb, communitySetupCard(e)] }; }
-}
-
 async function peoplePage(uid) {
-  if (!UUID.test(uid || '')) return go('#workspace/community');
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community', href: '#workspace/community' }]);
+  if (!UUID.test(uid || '')) return go('#workspace/communityhub');
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community', href: '#workspace/communityhub' }]);
   const mine = uid === currentUser.id;
   try {
     const pr = await sb.from('user_profiles').select('*').eq('user_id', uid).maybeSingle();
@@ -16458,7 +16449,7 @@ async function globalSearchRun(term) {
   ];
 
   const postRows = (postR.data || []).map(p => linkRow({
-    href: p.user_id === me ? '#workspace/posts' : '#workspace/community',
+    href: p.user_id === me ? '#workspace/posts' : '#workspace/communityhub',
     title: p.title || (p.body || '').slice(0, 60) || 'Untitled',
     meta: (POST_KIND_LABEL[p.kind] || p.kind) + (p.visibility === 'public' ? ' \u00b7 Public' : ' \u00b7 Private')
   }));
