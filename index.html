@@ -585,6 +585,32 @@
   }
   .list-hscroll::-webkit-scrollbar { display: none; }
   .list-hscroll > * { flex: 0 0 82%; max-width: 340px; scroll-snap-align: start; }
+  /* Square-tile horizontal-scroll variant of .list: keeps the existing item /
+     info-box / trap / source cards intact (icons, edit/listen/share buttons)
+     but arranges them as a horizontally-scrolling row of squarish tiles
+     instead of a stacked vertical list. Used for "All items", Information
+     boxes, Trap tracker and Reference vault at every level (Subject, Chapter,
+     Topic); Chapters/Topics lists and the separate Flashcards section keep
+     their existing vertical layout. */
+  .list-sq {
+    display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; margin-top: 4px;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  }
+  .list-sq::-webkit-scrollbar { display: none; }
+  .list-sq > * {
+    flex: 0 0 44%; max-width: 210px; min-width: 148px; width: auto;
+    aspect-ratio: 1; scroll-snap-align: start; overflow-y: auto; overflow-x: hidden;
+  }
+  .list-sq > .item .body { -webkit-line-clamp: 4; }
+  /* Reference vault's file/link rows are a horizontal .row layout normally;
+     inside the square scroller they restack like a tile (icon on top, title
+     and meta below, chevron hidden). */
+  .list-sq > .row {
+    flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; min-height: 0;
+  }
+  .list-sq > .row .grow { flex: none; width: 100%; }
+  .list-sq > .row .chev { display: none; }
+  .list-sq > .row .folder-ico { width: 30px; height: 30px; }
   .row {
     display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 12px 16px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
@@ -2006,11 +2032,13 @@ function arrangeSection(entries, opts) {
       }));
     }
     wrap.append(arranging
+      // arrange mode always stays a plain vertical list — the up/down
+      // reorder buttons need full-width rows, not squares.
       ? h('div', { class: 'list' }, list.map((e, i) => h('div', { class: 'row arrange-row' },
           h('span', { class: 'grow', text: opts.label(e) }),
           h('button', { class: 'btn quiet small', type: 'button', text: '↑', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
           h('button', { class: 'btn quiet small', type: 'button', text: '↓', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }))))
-      : h('div', { class: 'list' }, list.map(opts.render)));
+      : h('div', { class: opts.squareScroll ? 'list-sq' : 'list' }, list.map(opts.render)));
   }
   paint();
   return wrap;
@@ -2392,7 +2420,8 @@ function itemsSection(scope, items, heading, hint, subjectCtx) {
     const itemArrangeOpts = {
       label: it => it.row.title || ('Untitled ' + ITEM_TYPES[it.type].label.toLowerCase()),
       table: it => ITEM_TYPES[it.type].table,
-      render: it => itemCard(scope, it, subjectCtx)
+      render: it => itemCard(scope, it, subjectCtx),
+      squareScroll: true
     };
 
     if (!grouped) {
@@ -2602,7 +2631,7 @@ function infoBoxCard(scope, it) {
 function infoBoxesSection(scope, rows) {
   return section('Information boxes', '+ Add', () => openInfoBoxDialog(scope, null),
     h('p', { class: 'hint-line', text: 'Bullet-list facts for this ' + levelName(scope) + '.' }),
-    rows.length ? h('div', { class: 'list' }, rows.map(it => infoBoxCard(scope, it)))
+    rows.length ? h('div', { class: 'list-sq' }, rows.map(it => infoBoxCard(scope, it)))
                 : h('p', { class: 'none', text: 'No info boxes yet.' }));
 }
 
@@ -2646,7 +2675,7 @@ function trapCard(scope, it) {
 function trapsSection(scope, rows) {
   return section('Trap tracker', '+ Add', () => openTrapDialog(scope, null),
     h('p', { class: 'hint-line', text: 'Common exam-error warnings for this ' + levelName(scope) + '.' }),
-    rows.length ? h('div', { class: 'list' }, rows.map(it => trapCard(scope, it)))
+    rows.length ? h('div', { class: 'list-sq' }, rows.map(it => trapCard(scope, it)))
                 : h('p', { class: 'none', text: 'No traps logged yet.' }));
 }
 
@@ -3019,7 +3048,11 @@ function openWebLinkDialog(scope) {
 function sourcesSection(scope, sources) {
   const box = h('div');
   const status = h('p', { class: 'msg err', hidden: true });
-  const fileInput = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, hidden: true });
+  // Listing both application/pdf and the .pdf extension in accept is redundant,
+  // and on a lot of Android devices that redundancy is enough to make Chrome's
+  // file/photo picker fall back to single-select even with multiple set here —
+  // one MIME entry per type keeps multi-select working reliably.
+  const fileInput = h('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, hidden: true });
   const addBtn = h('button', { class: 'btn small', type: 'button', text: '+ Add files', onclick: () => fileInput.click() });
   const webLinkBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Add link', onclick: () => openWebLinkDialog(scope) });
   const linkBtn = h('button', { class: 'btn quiet small', type: 'button', text: '+ Drive / OneDrive link', onclick: () => openLinkDialog(scope) });
@@ -3030,7 +3063,8 @@ function sourcesSection(scope, sources) {
       ? arrangeSection(sources, {
           label: s => s.row.title || sourceLabel(s.row),
           table: () => 'sources',
-          render: s => sourceRow(scope, s)
+          render: s => sourceRow(scope, s),
+          squareScroll: true
         })
       : h('p', { class: 'none', text: 'Nothing saved here yet.' }));
   };
