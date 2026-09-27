@@ -4926,12 +4926,25 @@ async function explorePage() {
     exploreWikiBlock(), explorePortalsBlock(),
     exploreSimBlock(), exploreYoutubeBlock(), exploreLibraryBlock()
   ]);
+  // Tapping a chip shows only that block below the row (everything else in
+  // the stack disappears); tapping the same chip again brings every block
+  // back. Same toggle Community's chip row already uses — the blocks
+  // themselves are all pre-built above, so this just changes which of them
+  // get appended.
+  const blocksByKey = { wiki: wikiBlock, portals: portalsBlock, threed: simBlock, youtube: youtubeBlock, library: libraryBlock };
+  let filter = null;
+  const chipsWrap = h('div');
+  const blocksWrap = h('div');
+  function paint() {
+    chipsWrap.replaceChildren(sectionChipRow(EXPLORE_CHIPS.map(c =>
+      ({ key: c.key, label: c.label, onClick: () => { filter = filter === c.key ? null : c.key; paint(); } })), filter));
+    const keys = filter ? [filter] : EXPLORE_CHIPS.map(c => c.key);
+    blocksWrap.replaceChildren(...keys.map(k => blocksByKey[k]));
+  }
+  paint();
   return { title: 'Explore', nodes: [
     sectionCarousel(carousel),
-    sectionChipRow(EXPLORE_CHIPS, null),
-    wikiBlock, portalsBlock, simBlock, youtubeBlock, libraryBlock
-    // Every chip in EXPLORE_CHIPS now has its own stacked block above \u2014 no
-    // plain link list left at the bottom, same as Community after step 5.
+    chipsWrap, blocksWrap
   ] };
 }
 /* ---------- Theme redesign step 14: Planner section, part A ----------
@@ -5039,7 +5052,7 @@ async function plannerHubPage() {
 
   const [todayResult, projectsBlock, body] = await Promise.all([plannerTodayBlock(), plannerProjectsBlock(), calBody]);
 
-  return { title: 'Planner', nodes: [crumb, todayResult.jumpLink, todayResult.block, toggle, quickRow, body, projectsBlock] };
+  return { title: 'Planner', nodes: [crumb, todayResult.block, toggle, quickRow, body, projectsBlock] };
 }
 
 // \u00a77.2: the week's own recurring slots (planner_items, kind 'slot'), one
@@ -10058,11 +10071,13 @@ async function scholarshipsHub(sub) {
   // once) since its meta reflects whether a profile exists yet.
   const tilesBox = h('div');
   function paintTiles() {
+    const profileTile = sqTile({
+      onClick: () => { if (mode === 'wizard') { mode = row ? 'summary' : 'wizard'; } else { draft = schDraftFromRow(row); step = 0; mode = 'wizard'; } paint(); },
+      title: 'My profile', meta: row ? 'Edit' : 'Set up'
+    });
+    if (mode === 'wizard') profileTile.classList.add('selected');
     tilesBox.replaceChildren(tileRow([
-      sqTile({
-        onClick: () => { draft = schDraftFromRow(row); step = 0; mode = 'wizard'; paint(); },
-        title: 'My profile', meta: row ? 'Edit' : 'Set up'
-      }),
+      profileTile,
       sqTile({ href: '#workspace/scholarships/roadmap',  title: 'My roadmap',        meta: 'Checklist' }),
       sqTile({ href: '#workspace/scholarships/whatif',   title: 'What-if simulator', meta: 'Simulator' }),
       sqTile({ href: '#workspace/scholarships/gap',      title: 'Gap analysis',      meta: 'Compare' }),
@@ -10186,7 +10201,6 @@ async function scholarshipsHub(sub) {
     }
 
     const back = step > 0 ? h('button', { class: 'btn quiet', type: 'button', text: 'Back', onclick: () => goto(step - 1) }) : null;
-    const cancel = row && step === 0 ? h('button', { class: 'btn quiet', type: 'button', text: 'Cancel', onclick: () => { mode = 'summary'; paint(); } }) : null;
     const nextBtn = h('button', { class: 'btn', type: 'button', text: step === 3 ? (row ? 'Save changes' : 'Save my profile') : 'Next' });
     nextBtn.addEventListener('click', async () => {
       if (step < 3) return tryNext();
@@ -10210,14 +10224,30 @@ async function scholarshipsHub(sub) {
 
     box.replaceChildren(section(row ? 'Edit profile' : 'Set up your profile', null, null,
       row ? null : h('p', { class: 'hint-line', text: 'A few quick questions so Scholarship Center can fit scholarships to you. You can change any answer later.' }),
-      stepper, body, err, h('div', { class: 'actions' }, nextBtn, back, cancel)));
+      stepper, body, err, h('div', { class: 'actions' }, nextBtn, back)));
   }
 
   function paint() { paintTiles(); if (mode === 'summary') paintSummary(); else paintWizard(); }
   paint();
-  return { title: 'Scholarship Center', nodes: [sectionCarousel(uniCarousel, true), sectionCarousel(carousel, true), sectionChipRow(SCHOLARSHIPS_CHIPS, null, true),
-    sectionFeedBlock('scholarships', 'Scholarship Center', null, [tilesBox, box]),
-    languageHubBlock(), olympiadHubBlock()] };
+
+  // Same toggle Explore/Community use: tapping a chip shows only that
+  // section below the row (Scholarship Center/Language Hub/Olympiad Hub —
+  // everything else disappears); tapping it again brings all three back.
+  const scholarshipsBlock = sectionFeedBlock('scholarships', 'Scholarship Center', null, [tilesBox, box]);
+  const blocksByKey = { scholarships: scholarshipsBlock, language: languageHubBlock(), olympiad: olympiadHubBlock() };
+  let chipFilter = null;
+  const chipsWrap = h('div');
+  const blocksWrap = h('div');
+  function paintChips() {
+    chipsWrap.replaceChildren(sectionChipRow(SCHOLARSHIPS_CHIPS.map(c =>
+      ({ key: c.key, label: c.label, onClick: () => { chipFilter = chipFilter === c.key ? null : c.key; paintChips(); } })), chipFilter, true));
+    const keys = chipFilter ? [chipFilter] : SCHOLARSHIPS_CHIPS.map(c => c.key);
+    blocksWrap.replaceChildren(...keys.map(k => blocksByKey[k]));
+  }
+  paintChips();
+
+  return { title: 'Scholarship Center', nodes: [sectionCarousel(uniCarousel, true), sectionCarousel(carousel, true),
+    chipsWrap, blocksWrap] };
 }
 
 /* ---------- E24: Scholarship Center -- CV / resume maker -------------------
@@ -14429,15 +14459,34 @@ async function libraryHubHome(compact) {
   paintSearch();
 
   const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by type' });
-  const sitesBox = h('div'), mineBox = h('div');
+  const sitesBox = h('div'), siteDetailBox = h('div'), mineBox = h('div');
   const show = cat => libFilter === 'all' || libFilter === cat;
+  let openSiteKey = null;
 
   const paint = () => {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === libFilter)));
     const sites = LIBRARY_SITES.filter(x => show(x.cat));
+    // Tapping a source shows its "Open <site> / + Save a link" card right
+    // below the tile row instead of navigating away; tapping the same tile
+    // again closes it. Only one source's card is ever open at a time.
     sitesBox.replaceChildren(sites.length
-      ? tileRow(sites.map(x => sqTile({ href: '#workspace/library/' + x.key, title: x.name, meta: libraryCatLabel(x.cat) })))
+      ? tileRow(sites.map(x => {
+          const tile = sqTile({
+            onClick: () => { openSiteKey = openSiteKey === x.key ? null : x.key; paint(); },
+            title: x.name, meta: libraryCatLabel(x.cat)
+          });
+          if (openSiteKey === x.key) tile.classList.add('selected');
+          return tile;
+        }))
       : h('p', { class: 'none', text: 'No sources for this type yet.' }));
+    const openSite = openSiteKey && LIBRARY_SITES.find(x => x.key === openSiteKey);
+    siteDetailBox.replaceChildren(openSite
+      ? h('div', { class: 'launch-card' },
+          h('div', { class: 'dl-actions' },
+            h('a', { class: 'btn small launch-btn', href: openSite.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open ' + openSite.name }),
+            h('button', { class: 'btn small', type: 'button', text: '+ Save a link', onclick: () => openLibraryDialog(null, null, null, openSite.cat) })),
+          h('p', { class: 'hint-line', text: 'Found a book or article you like? Copy its link, come back and save it below.' }))
+      : null);
     const mine = saved.filter(r => show(r.category));
     mineBox.replaceChildren(mine.length
       ? tileRow(mine.map(r => sqTile({ href: '#workspace/library/' + r.id, title: r.title, meta: libraryCatLabel(r.category) })))
@@ -14455,7 +14504,7 @@ async function libraryHubHome(compact) {
     chips,
     section('Main sources', null, null,
       compact ? null : h('p', { class: 'hint-line', text: 'Open a source, find a book or article, then save its link below.' }),
-      sitesBox),
+      sitesBox, siteDetailBox),
     section('My library', '+ Save a link', () => openLibraryDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
                      'Run the update SQL in Supabase (schema-update-3.3-library.sql), then reload.') : null,
