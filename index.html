@@ -567,7 +567,7 @@
   .sec { margin-top: 28px; }
   .sec:first-child { margin-top: 0; }
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .sec-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+  .sec-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; min-width: 0; overflow-wrap: anywhere; flex: 1 1 auto; }
   .sec-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; flex: 0 0 auto; }
   .icon-btn { padding: 0 14px; font-size: 18px; line-height: 1; }
   .btn.quiet.small[aria-pressed="true"] { border-color: var(--marker); color: var(--marker); }
@@ -757,6 +757,10 @@
   /* group-by-type folders */
   .group-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
   .group-bar:empty { display: none; }
+  /* Section header action bars (Share / Arrange / + Add) always stay on one line. */
+  .sec-head-actions .group-bar { flex-wrap: nowrap; margin-bottom: 0; }
+  .icon-btn.icon-only { width: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; flex: none; }
+  .icon-btn.icon-only svg { width: 18px; height: 18px; }
   button.row { width: 100%; text-align: left; }
   .folder-ico { width: 26px; height: 26px; flex: none; color: var(--marker); }
   .source-thumb {
@@ -1985,6 +1989,17 @@ function section(title, addLabel, onAdd, ...children) {
 // (e.g. a "Select to share"/Arrange button bar, or a lone Arrange icon
 // button) sitting just to the left of the "+ Add" button, instead of on
 // its own row below the header. extraNode/addLabel can each be null.
+// Icon-only Share toggle used in section header bars (Notes/Definitions/etc,
+// Flashcards, Info boxes, Traps). Shows the same share glyph as item cards;
+// once selection mode is on it switches to a plain "Cancel" text button.
+function shareToggleBtn(onToggle) {
+  return h('button', {
+    class: 'btn quiet small' + (multiShare.on ? '' : ' icon-btn icon-only'),
+    type: 'button', 'aria-label': 'Share', title: 'Select items to share',
+    onclick: onToggle
+  }, multiShare.on ? 'Cancel' : shareIcon());
+}
+
 function sectionHeader(title, extraNode, addLabel, onAdd) {
   return h('div', { class: 'sec-head' },
     h('h3', { text: title }),
@@ -2515,12 +2530,9 @@ function typeSection(scope, items, type, subjectCtx) {
 
     if (shareable) {
       const visible = () => rows.filter(it => SHAREABLE[it.type]);
-      bar.append(h('button', {
-        class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
-        onclick: () => {
-          if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(visible, () => paint(false)); }
-          paint(true);
-        }
+      bar.append(shareToggleBtn(() => {
+        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(visible, () => paint(false)); }
+        paint(true);
       }));
     }
 
@@ -2678,16 +2690,9 @@ function flashcardsSection(scope, items) {
     box.replaceChildren();
     if (!cards.length) { box.append(h('p', { class: 'none', text: 'No flashcards yet.' })); return; }
 
-    bar.append(h('button', {
-      class: 'btn small', type: 'button', text: due.length ? 'Study ' + due.length + ' due' : 'Review all cards',
-      onclick: () => openFlashcardReview(due.length ? due : cards)
-    }));
-    bar.append(h('button', {
-      class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
-      onclick: () => {
-        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => cards, () => paint(false)); }
-        paint(true);
-      }
+    bar.append(shareToggleBtn(() => {
+      if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => cards, () => paint(false)); }
+      paint(true);
     }));
 
     box.append(arrangeSection(cards, {
@@ -2757,8 +2762,7 @@ function infoBoxCard(scope, it) {
       h('span', { class: 'chip', text: 'Info box' }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
     h('strong', { text: it.row.title }),
-    bullets.length ? h('ul', { class: 'bullets' }, bullets.slice(0, 5).map(b => h('li', { text: b }))) : null,
-    bullets.length > 5 ? h('span', { class: 'origin', text: '+' + (bullets.length - 5) + ' more' }) : null);
+    bullets.length ? h('ul', { class: 'bullets' }, bullets.map(b => h('li', { text: b }))) : null);
   return card;
 }
 
@@ -2771,12 +2775,9 @@ function infoBoxesSection(scope, rows) {
     box.replaceChildren();
     if (!rows.length) { box.append(h('p', { class: 'none', text: 'No info boxes yet.' })); return; }
 
-    bar.append(h('button', {
-      class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
-      onclick: () => {
-        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => rows, () => paint(false)); }
-        paint(true);
-      }
+    bar.append(shareToggleBtn(() => {
+      if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => rows, () => paint(false)); }
+      paint(true);
     }));
 
     box.append(arrangeSection(rows, {
@@ -2861,12 +2862,9 @@ function trapsSection(scope, rows) {
     box.replaceChildren();
     if (!rows.length) { box.append(h('p', { class: 'none', text: 'No traps logged yet.' })); return; }
 
-    bar.append(h('button', {
-      class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
-      onclick: () => {
-        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => rows, () => paint(false)); }
-        paint(true);
-      }
+    bar.append(shareToggleBtn(() => {
+      if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => rows, () => paint(false)); }
+      paint(true);
     }));
 
     box.append(arrangeSection(rows, {
