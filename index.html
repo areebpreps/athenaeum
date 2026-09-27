@@ -15272,7 +15272,7 @@ const communitySetupCard = e => h('div', { class: 'status bad' }, h('strong', { 
 
 async function peoplePage(uid) {
   if (!UUID.test(uid || '')) return go('#workspace/communityhub');
-  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }, { text: 'Community', href: '#workspace/communityhub' }]);
+  const crumb = crumbs([{ text: 'Workspace', href: '#workspace' }]);
   const mine = uid === currentUser.id;
   try {
     const pr = await sb.from('user_profiles').select('*').eq('user_id', uid).maybeSingle();
