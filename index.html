@@ -5419,8 +5419,6 @@ function saveSubjectSectionOrder(list) { store.set(SUBJ_SEC_ORDER_KEY, JSON.stri
 
 function subjectSectionsBlock(blocks) {
   const list = orderedSubjectSections(blocks);
-  const collapsed = loadKeySet(SUBJ_SEC_COLLAPSED_KEY);
-  const unnumbered = loadKeySet(SUBJ_SEC_UNNUMBERED_KEY);
   let arranging = false;
   const toolbar = h('div', { style: 'display:flex;justify-content:flex-end;margin-top:18px' });
   const body = h('div');
@@ -5446,32 +5444,7 @@ function subjectSectionsBlock(blocks) {
           h('button', { class: 'btn quiet small', type: 'button', text: '\u2191', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }),
           h('button', { class: 'btn quiet small', type: 'button', text: '\u2193', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: () => move(i, 1) }));
       }
-      const isCollapsed = collapsed.has(b.key);
-      const isNumbered = !unnumbered.has(b.key);
-      const numEl = h('span', { class: 'subsec-num', text: isNumbered ? String(i + 1) + '.' : '' });
-      const contentWrap = h('div', { hidden: isCollapsed }, b.node);
-      const numBtn = h('button', {
-        class: 'subsec-btn', type: 'button', 'aria-pressed': String(isNumbered), 'aria-label': 'Toggle numbering for ' + b.label, text: '#',
-        onclick: () => {
-          if (unnumbered.has(b.key)) unnumbered.delete(b.key); else unnumbered.add(b.key);
-          saveKeySet(SUBJ_SEC_UNNUMBERED_KEY, unnumbered);
-          numEl.textContent = unnumbered.has(b.key) ? '' : String(i + 1) + '.';
-          numBtn.setAttribute('aria-pressed', String(!unnumbered.has(b.key)));
-        }
-      });
-      const collapseBtn = h('button', {
-        class: 'subsec-btn', type: 'button', 'aria-expanded': String(!isCollapsed), 'aria-label': (isCollapsed ? 'Expand ' : 'Collapse ') + b.label, text: isCollapsed ? '\u203a' : '\u2304',
-        onclick: () => {
-          if (collapsed.has(b.key)) collapsed.delete(b.key); else collapsed.add(b.key);
-          saveKeySet(SUBJ_SEC_COLLAPSED_KEY, collapsed);
-          contentWrap.hidden = collapsed.has(b.key);
-          collapseBtn.textContent = collapsed.has(b.key) ? '\u203a' : '\u2304';
-          collapseBtn.setAttribute('aria-expanded', String(!collapsed.has(b.key)));
-        }
-      });
-      return h('div', { class: 'subj-subsec' },
-        h('div', { class: 'subsec-bar' }, numEl, h('div', { class: 'subsec-controls' }, numBtn, collapseBtn)),
-        contentWrap);
+      return h('div', { class: 'subj-subsec' }, b.node);
     }));
   }
   paintToolbar(); paintBody();
