@@ -9284,10 +9284,14 @@ function drillSection(title, addLabel, onAdd, entries, opts) {
   // Re-open the chip that was drilled into before this rebuild (see
   // drillOpenState above) — same loading path as selectEntry, but without
   // toggling selectedId (it's already set), so a save doesn't collapse it.
+  // Deferred a tick: this runs while the caller (e.g. subjectPage) is still
+  // synchronously building its own variables (like sectionsBlock), so calling
+  // onToggle immediately would fire before those exist and silently no-op —
+  // queueMicrotask lets that setup finish first.
   if (selectedId != null) {
     const restored = list.find(e => e.id === selectedId);
     if (restored) {
-      if (opts.onToggle) opts.onToggle(selectedId);
+      queueMicrotask(() => { if (opts.onToggle) opts.onToggle(selectedId); });
       blockWrap.replaceChildren(h('p', { class: 'none', text: 'Loading\u2026' }));
       (async () => {
         try { cache.set(restored.id, await opts.loadBlock(restored)); }
