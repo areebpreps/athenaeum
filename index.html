@@ -567,8 +567,8 @@
   .sec { margin-top: 28px; }
   .sec:first-child { margin-top: 0; }
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .sec-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; }
-  .sec-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sec-head h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+  .sec-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; flex: 0 0 auto; }
   .icon-btn { padding: 0 14px; font-size: 18px; line-height: 1; }
   .btn.quiet.small[aria-pressed="true"] { border-color: var(--marker); color: var(--marker); }
   .hint-line { color: var(--dim); font-size: 14px; margin: -4px 0 12px; }
@@ -2293,11 +2293,11 @@ function attachLongPress(el, onFire, ms = 550, tol = 10) {
 }
 
 /* ---------- multi-share ----------
-   "Select to share" on a subject/chapter/topic page turns the item cards into
+   "Share" on a subject/chapter/topic page turns the item cards into
    tick-able cards; a bar above the tabs then shares everything ticked as posts
    (same as the single share icon) or straight into one of your study groups. */
 const multiShare = { on: false, picked: new Map(), bar: null, sync: null };
-const SHAREABLE = { note: 1, definition: 1, mnemonic: 1 };
+const SHAREABLE = { note: 1, definition: 1, mnemonic: 1, formula: 1, flashcard: 1, info_box: 1, trap: 1 };
 const pickKey = it => it.type + ':' + it.row.id;
 function multiShareReset() {
   multiShare.on = false; multiShare.picked.clear(); multiShare.sync = null;
@@ -2426,8 +2426,8 @@ function itemCard(scope, it, subjectCtx) {
   // (see attachLongPress below) instead of a tap on a visible icon.
   const speak = makeCardSpeaker(
     () => [row.title, type === 'formula' ? row.expression : null, detail].filter(Boolean).join('. '));
-  // E26: notes, definitions and mnemonics can be shared as a post
-  const shareBtn = (type === 'note' || type === 'definition' || type === 'mnemonic') ? h('button', {
+  // E26: notes, definitions, mnemonics, formulas and flashcards can be shared as a post
+  const shareBtn = SHAREABLE[type] ? h('button', {
     class: 'item-listen', type: 'button', 'aria-label': 'Share as a post',
     onclick: e => { e.stopPropagation(); openShareDialog(postSrc(type, row)); }
   }, shareIcon()) : null;
@@ -2516,7 +2516,7 @@ function typeSection(scope, items, type, subjectCtx) {
     if (shareable) {
       const visible = () => rows.filter(it => SHAREABLE[it.type]);
       bar.append(h('button', {
-        class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel selecting' : 'Select to share',
+        class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
         onclick: () => {
           if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(visible, () => paint(false)); }
           paint(true);
@@ -2673,22 +2673,33 @@ function flashcardsSection(scope, items) {
   const bar = h('div', { class: 'group-bar', style: 'margin:0' });
   const box = h('div');
 
-  if (cards.length) {
+  const paint = (refocus) => {
+    bar.replaceChildren();
+    box.replaceChildren();
+    if (!cards.length) { box.append(h('p', { class: 'none', text: 'No flashcards yet.' })); return; }
+
     bar.append(h('button', {
       class: 'btn small', type: 'button', text: due.length ? 'Study ' + due.length + ' due' : 'Review all cards',
       onclick: () => openFlashcardReview(due.length ? due : cards)
     }));
-  }
+    bar.append(h('button', {
+      class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
+      onclick: () => {
+        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => cards, () => paint(false)); }
+        paint(true);
+      }
+    }));
 
-  box.append(cards.length
-    ? arrangeSection(cards, {
-        label: it => it.row.title || 'Untitled flashcard',
-        table: () => 'flashcards',
-        render: it => itemCard(scope, it, {}),
-        rectScroll: true,
-        bar
-      })
-    : h('p', { class: 'none', text: 'No flashcards yet.' }));
+    box.append(arrangeSection(cards, {
+      label: it => it.row.title || 'Untitled flashcard',
+      table: () => 'flashcards',
+      render: it => itemCard(scope, it, {}),
+      rectScroll: true,
+      bar
+    }));
+    if (refocus) { const first = bar.children[1]; if (first) first.focus({ preventScroll: true }); }
+  };
+  paint(false);
 
   return h('section', { class: 'sec' },
     sectionHeader('Flashcards', bar, '+ Add', () => openItemDialog(scope, null, 'flashcard')),
@@ -2715,29 +2726,74 @@ function confirmDeleteRow(table, row, label, opts = {}) {
 /* ---------- Information boxes & Trap tracker (scoped, roll-up like items) ---------- */
 async function loadInfoBoxes(scope, names) {
   const rows = must(await scopeFilter(sb.from('info_boxes').select('*'), scope).order('created_at', { ascending: false }));
-  return rows.map(r => ({ row: r, origin: originOf(r, scope, names) }));
+  return rows.map(r => ({ type: 'info_box', row: r, origin: originOf(r, scope, names) }));
 }
 async function loadTraps(scope, names) {
   const rows = must(await scopeFilter(sb.from('traps').select('*'), scope).order('created_at', { ascending: false }));
-  return rows.map(r => ({ row: r, origin: originOf(r, scope, names) }));
+  return rows.map(r => ({ type: 'trap', row: r, origin: originOf(r, scope, names) }));
 }
 
+// Selection (multi-share) support mirrors itemCard: while multiShare.on, tapping
+// the card ticks it instead of opening the edit dialog.
 function infoBoxCard(scope, it) {
   const bullets = Array.isArray(it.row.bullets) ? it.row.bullets : [];
-  return h('button', { class: 'item', type: 'button', onclick: () => openInfoBoxDialog(scope, it) },
+  const selecting = multiShare.on, shareable = !!SHAREABLE[it.type];
+  const isPicked = () => multiShare.picked.has(pickKey(it));
+  const pickBox = selecting && shareable ? h('span', { class: 'pick-box', 'aria-hidden': 'true', text: isPicked() ? '\u2713' : '' }) : null;
+  const card = h('button', { class: 'item' + (selecting && !shareable ? ' dim' : '') + (pickBox && isPicked() ? ' picked' : ''), type: 'button',
+    onclick: () => {
+      if (pickBox) {
+        const k = pickKey(it);
+        if (multiShare.picked.has(k)) multiShare.picked.delete(k); else multiShare.picked.set(k, it);
+        card.classList.toggle('picked', isPicked());
+        pickBox.textContent = isPicked() ? '\u2713' : '';
+        if (multiShare.sync) multiShare.sync();
+        return;
+      }
+      openInfoBoxDialog(scope, it);
+    } },
     h('span', { class: 'item-head' },
+      pickBox,
       h('span', { class: 'chip', text: 'Info box' }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
     h('strong', { text: it.row.title }),
     bullets.length ? h('ul', { class: 'bullets' }, bullets.slice(0, 5).map(b => h('li', { text: b }))) : null,
     bullets.length > 5 ? h('span', { class: 'origin', text: '+' + (bullets.length - 5) + ' more' }) : null);
+  return card;
 }
 
 function infoBoxesSection(scope, rows) {
-  return section('Information boxes', '+ Add', () => openInfoBoxDialog(scope, null),
+  const bar = h('div', { class: 'group-bar', style: 'margin:0' });
+  const box = h('div');
+
+  const paint = (refocus) => {
+    bar.replaceChildren();
+    box.replaceChildren();
+    if (!rows.length) { box.append(h('p', { class: 'none', text: 'No info boxes yet.' })); return; }
+
+    bar.append(h('button', {
+      class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
+      onclick: () => {
+        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => rows, () => paint(false)); }
+        paint(true);
+      }
+    }));
+
+    box.append(arrangeSection(rows, {
+      label: it => it.row.title || 'Untitled info box',
+      table: () => 'info_boxes',
+      render: it => infoBoxCard(scope, it),
+      rectScroll: true,
+      bar
+    }));
+    if (refocus) { const first = bar.querySelector('button'); if (first) first.focus({ preventScroll: true }); }
+  };
+  paint(false);
+
+  return h('section', { class: 'sec' },
+    sectionHeader('Information boxes', bar, '+ Add', () => openInfoBoxDialog(scope, null)),
     h('p', { class: 'hint-line', text: 'Bullet-list facts for this ' + levelName(scope) + '.' }),
-    rows.length ? h('div', { class: 'list-rect' }, rows.map(it => infoBoxCard(scope, it)))
-                : h('p', { class: 'none', text: 'No info boxes yet.' }));
+    box);
 }
 
 function openInfoBoxDialog(scope, existing) {
@@ -2765,23 +2821,69 @@ function openInfoBoxDialog(scope, existing) {
       if (res.error) throw res.error;
       route();
     },
-    extra: existing ? { label: 'Delete info box', onClick: () => confirmDeleteRow('info_boxes', row, 'info box') } : null
+    extras: existing ? [
+      { label: 'Share as a post', danger: false, onClick: () => openShareDialog(postSrc('info_box', row)) },
+      { label: 'Delete info box', onClick: () => confirmDeleteRow('info_boxes', row, 'info box') }
+    ] : null
   });
 }
 
 function trapCard(scope, it) {
-  return h('button', { class: 'item', type: 'button', onclick: () => openTrapDialog(scope, it) },
+  const selecting = multiShare.on, shareable = !!SHAREABLE[it.type];
+  const isPicked = () => multiShare.picked.has(pickKey(it));
+  const pickBox = selecting && shareable ? h('span', { class: 'pick-box', 'aria-hidden': 'true', text: isPicked() ? '\u2713' : '' }) : null;
+  const card = h('button', { class: 'item' + (selecting && !shareable ? ' dim' : '') + (pickBox && isPicked() ? ' picked' : ''), type: 'button',
+    onclick: () => {
+      if (pickBox) {
+        const k = pickKey(it);
+        if (multiShare.picked.has(k)) multiShare.picked.delete(k); else multiShare.picked.set(k, it);
+        card.classList.toggle('picked', isPicked());
+        pickBox.textContent = isPicked() ? '\u2713' : '';
+        if (multiShare.sync) multiShare.sync();
+        return;
+      }
+      openTrapDialog(scope, it);
+    } },
     h('span', { class: 'item-head' },
+      pickBox,
       h('span', { class: 'chip', text: 'Trap' }),
       it.origin ? h('span', { class: 'origin', text: it.origin }) : null),
     h('span', { class: 'body', text: it.row.warning }));
+  return card;
 }
 
 function trapsSection(scope, rows) {
-  return section('Trap tracker', '+ Add', () => openTrapDialog(scope, null),
+  const bar = h('div', { class: 'group-bar', style: 'margin:0' });
+  const box = h('div');
+
+  const paint = (refocus) => {
+    bar.replaceChildren();
+    box.replaceChildren();
+    if (!rows.length) { box.append(h('p', { class: 'none', text: 'No traps logged yet.' })); return; }
+
+    bar.append(h('button', {
+      class: 'btn quiet small', type: 'button', text: multiShare.on ? 'Cancel' : 'Share',
+      onclick: () => {
+        if (multiShare.on) multiShareReset(); else { multiShare.on = true; openMultiBar(() => rows, () => paint(false)); }
+        paint(true);
+      }
+    }));
+
+    box.append(arrangeSection(rows, {
+      label: it => it.row.warning || 'Untitled trap',
+      table: () => 'traps',
+      render: it => trapCard(scope, it),
+      rectScroll: true,
+      bar
+    }));
+    if (refocus) { const first = bar.querySelector('button'); if (first) first.focus({ preventScroll: true }); }
+  };
+  paint(false);
+
+  return h('section', { class: 'sec' },
+    sectionHeader('Trap tracker', bar, '+ Add', () => openTrapDialog(scope, null)),
     h('p', { class: 'hint-line', text: 'Common exam-error warnings for this ' + levelName(scope) + '.' }),
-    rows.length ? h('div', { class: 'list-rect' }, rows.map(it => trapCard(scope, it)))
-                : h('p', { class: 'none', text: 'No traps logged yet.' }));
+    box);
 }
 
 function openTrapDialog(scope, existing) {
@@ -2805,7 +2907,10 @@ function openTrapDialog(scope, existing) {
       if (res.error) throw res.error;
       route();
     },
-    extra: existing ? { label: 'Delete trap', onClick: () => confirmDeleteRow('traps', row, 'trap') } : null
+    extras: existing ? [
+      { label: 'Share as a post', danger: false, onClick: () => openShareDialog(postSrc('trap', row)) },
+      { label: 'Delete trap', onClick: () => confirmDeleteRow('traps', row, 'trap') }
+    ] : null
   });
 }
 
@@ -9096,10 +9201,21 @@ async function subjectsRoot() {
    the caller can hide whatever sits *below* this drillSection (e.g. the
    subject's own Notes/Definitions/etc.) while a chip is expanded \u2014
    otherwise both levels of content would show at once. */
+// Persists which chip is drilled into (Chapters -> a chapter, Topics -> a
+// topic) across a route() rebuild. route() always rebuilds subjectPage from
+// scratch — including after a plain save inside a nested topic — so without
+// this, saving anything while drilled into Chapter > Topic would snap back
+// up to the bare subject view every time. Keyed by a stable id (subject id
+// for the Chapters drill, chapter id for a Topics drill) so it survives the
+// rebuild; opts.stateKey below wires each drillSection to its own slot.
+const drillOpenState = new Map();
+
 function drillSection(title, addLabel, onAdd, entries, opts) {
   let arranging = false;
-  let selectedId = null;
   const list = entries.slice();
+  const stateKey = opts.stateKey;
+  let selectedId = stateKey ? (drillOpenState.get(stateKey) || null) : null;
+  if (selectedId != null && !list.some(e => e.id === selectedId)) selectedId = null; // the saved chip no longer exists
   const cache = new Map();
   const arrangeBtn = list.length > 1 ? h('button', {
     class: 'btn quiet small icon-btn', type: 'button', text: '\u21c5',
@@ -9132,6 +9248,7 @@ function drillSection(title, addLabel, onAdd, entries, opts) {
   }
   async function selectEntry(e) {
     selectedId = (selectedId === e.id) ? null : e.id;
+    if (stateKey) { if (selectedId) drillOpenState.set(stateKey, selectedId); else drillOpenState.delete(stateKey); }
     paintRow();
     if (opts.onToggle) opts.onToggle(selectedId);
     if (!selectedId) { blockWrap.replaceChildren(); return; }
@@ -9163,6 +9280,22 @@ function drillSection(title, addLabel, onAdd, entries, opts) {
     paintRow();
   };
   if (list.length) paintRow();
+
+  // Re-open the chip that was drilled into before this rebuild (see
+  // drillOpenState above) — same loading path as selectEntry, but without
+  // toggling selectedId (it's already set), so a save doesn't collapse it.
+  if (selectedId != null) {
+    const restored = list.find(e => e.id === selectedId);
+    if (restored) {
+      if (opts.onToggle) opts.onToggle(selectedId);
+      blockWrap.replaceChildren(h('p', { class: 'none', text: 'Loading\u2026' }));
+      (async () => {
+        try { cache.set(restored.id, await opts.loadBlock(restored)); }
+        catch (err) { cache.set(restored.id, errorCard(err)); }
+        if (selectedId === restored.id) blockWrap.replaceChildren(cache.get(restored.id));
+      })();
+    }
+  }
 
   return h('section', { class: 'sec' },
     sectionHeader(title, arrangeBtn, addLabel, onAdd),
@@ -9212,7 +9345,8 @@ async function chapterBlock(sid, cid, subject) {
       topics, {
         label: tp => tp.title, table: 'topics', empty: 'No topics yet.',
         loadBlock: tp => topicBlock(sid, cid, tp.id, subject),
-        onToggle: sel => { ownWrap.style.display = sel ? 'none' : ''; }
+        onToggle: sel => { ownWrap.style.display = sel ? 'none' : ''; },
+        stateKey: 'topics:' + cid
       }),
     ownWrap);
 }
@@ -9278,7 +9412,8 @@ async function subjectPage(sid) {
         chapters, {
           label: ch => ch.title, table: 'chapters', empty: 'No chapters yet.',
           loadBlock: ch => chapterBlock(sid, ch.id, subject),
-          onToggle: sel => setOtherSectionsVisible(!sel)
+          onToggle: sel => setOtherSectionsVisible(!sel),
+          stateKey: 'chapters:' + sid
         }) },
     { key: 'notes', label: 'Notes', node: typeSection(scope, items, 'note', { coverPath: subject.cover_path, color: subject.color }) },
     { key: 'definitions', label: 'Definitions', node: typeSection(scope, items, 'definition', { coverPath: subject.cover_path, color: subject.color }) },
@@ -9670,7 +9805,7 @@ function openItemDialog(scope, existing, forcedType) {
       route();
     },
     extras: existing ? [
-      ...(['note', 'definition', 'mnemonic'].includes(existing.type) ? [{ label: 'Share as a post', danger: false, onClick: () => openShareDialog(postSrc(existing.type, row)) }] : []),
+      ...(['note', 'definition', 'mnemonic', 'formula', 'flashcard'].includes(existing.type) ? [{ label: 'Share as a post', danger: false, onClick: () => openShareDialog(postSrc(existing.type, row)) }] : []),
       { label: 'Delete item', onClick: () => confirmDeleteItem(existing) }] : null
   });
 }
@@ -15184,7 +15319,7 @@ async function profileDetailsSection(uid, mine) {
    Public / Private choice; public posts can be read by any signed-in user (E27 shows
    them). Sharing the same item again updates its post rather than adding a second one.
    #workspace/posts (My posts) lists them, flips public/private and deletes. */
-const POST_KIND_LABEL = { note: 'Note', definition: 'Definition', mnemonic: 'Mnemonic', simulation: 'Simulation', video: 'Video', library: 'Library' };
+const POST_KIND_LABEL = { note: 'Note', definition: 'Definition', mnemonic: 'Mnemonic', formula: 'Formula', flashcard: 'Flashcard', info_box: 'Info box', trap: 'Trap', simulation: 'Simulation', video: 'Video', library: 'Library' };
 function postCatLabel(kind, cat) { return kind === 'simulation' ? simCatLabel(cat) : kind === 'library' ? libraryCatLabel(cat) : ''; }
 function shareIcon() {
   const t = document.createElement('template');
@@ -15195,6 +15330,9 @@ function postSrc(kind, row) {
   if (kind === 'simulation') return { kind, table: 'saved_simulations', id: row.id, title: row.title || '', body: '', url: row.url || null, category: row.category || null };
   if (kind === 'video')      return { kind, table: 'saved_videos', id: row.id, title: row.title || '', body: '', url: row.url || null, category: null };
   if (kind === 'library')    return { kind, table: 'saved_library', id: row.id, title: row.title || '', body: '', url: row.url || null, category: row.category || null };
+  if (kind === 'info_box')   return { kind, table: 'info_boxes', id: row.id, title: row.title || '', body: (Array.isArray(row.bullets) ? row.bullets.join('\n') : ''), url: null, category: null };
+  if (kind === 'trap')       return { kind, table: 'traps', id: row.id, title: 'Trap', body: row.warning || '', url: null, category: null };
+  if (kind === 'formula')    return { kind, table: ITEM_TYPES.formula.table, id: row.id, title: row.title || '', body: row.description || row.expression || '', url: null, category: null };
   return { kind, table: ITEM_TYPES[kind].table, id: row.id, title: row.title || '', body: row.body || '', url: null, category: null };
 }
 const safeHref = u => (/^https?:\/\//i.test(u || '') ? u : null);
