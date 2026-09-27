@@ -617,8 +617,10 @@
   .yt-card {
     display: grid; gap: 0; text-align: left; background: var(--paper); border: 1px solid var(--line);
     border-radius: 14px; overflow: hidden; color: var(--chalk); text-decoration: none;
+    width: 100%; padding: 0; font: inherit; cursor: pointer;
   }
   .yt-card:active { background: var(--paper-hi); }
+  .yt-card.selected { border-color: var(--marker); box-shadow: inset 0 0 0 1.5px var(--marker); }
   .yt-card img, .yt-card-noimg { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: var(--paper-hi); }
   .yt-card-body { padding: 8px 10px 10px; display: grid; gap: 3px; }
   .yt-card strong {
@@ -626,6 +628,9 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .yt-card small { color: var(--dim); font-size: 12px; }
+  /* Inline video detail shown right beneath a tapped card/tile — same
+     collapse-in-place pattern as the rest of the app, just with a player. */
+  .yt-inline-player { display: grid; gap: 10px; margin-bottom: 20px; padding: 14px; background: var(--paper); border: 1px solid var(--line); border-radius: 14px; }
 
   /* Library hub (C3): Internet Archive BookReader embed for in-app reading */
   .ia-embed { position: relative; width: 100%; height: 70vh; max-height: 640px; border-radius: 14px; overflow: hidden; margin: 10px 0; background: #000; }
@@ -5880,14 +5885,27 @@ async function buildAIRoot() {
     aiAskBlock(), aiSolverBlock(), aiFactcheckBlock(), aiOcrBlock(), aiYoutubeBlock(), aiSummarizerBlock(),
     aiQuizBlock(), aiFlashgenBlock(), aiVaultBlock(), aiTranslateBlock(), aiCheckwritingBlock(), aiStudyBlock(), aiNotebookBlock(), aiExportBlock()
   ]);
-  return { title: 'AI tools', nodes: [
-    sectionChipRow(AI_CHIPS, null, true),
-    askBlock, solverBlock, factcheckBlock, ocrBlock, youtubeBlock, summarizerBlock,
-    quizBlock, flashgenBlock, vaultBlock, translateBlock, checkwritingBlock, studyBlock, notebookBlock, exportBlock
-    // Every chip in AI_CHIPS now has its own stacked block above \u2014 no chip
-    // left pointing only at a standalone page, same end state Community and
-    // Explore/Hubs reached after their own final part.
-  ] };
+  // Same toggle as Explore/Community/Scholarship Center: tapping a chip shows
+  // only that tool's block below the row (every other block disappears);
+  // tapping the same chip again brings every block back. The blocks
+  // themselves are all pre-built above, so this only changes which of them
+  // get appended.
+  const blocksByKey = {
+    ask: askBlock, solver: solverBlock, factcheck: factcheckBlock, ocr: ocrBlock, youtube: youtubeBlock, summarizer: summarizerBlock,
+    quiz: quizBlock, flashgen: flashgenBlock, vault: vaultBlock, translate: translateBlock, checkwriting: checkwritingBlock,
+    study: studyBlock, notebook: notebookBlock, export: exportBlock
+  };
+  let filter = null;
+  const chipsWrap = h('div');
+  const blocksWrap = h('div');
+  function paint() {
+    chipsWrap.replaceChildren(sectionChipRow(AI_CHIPS.map(c =>
+      ({ key: c.key, label: c.label, onClick: () => { filter = filter === c.key ? null : c.key; paint(); } })), filter, true));
+    const keys = filter ? [filter] : AI_CHIPS.map(c => c.key);
+    blocksWrap.replaceChildren(...keys.map(k => blocksByKey[k]));
+  }
+  paint();
+  return { title: 'AI tools', nodes: [chipsWrap, blocksWrap] };
 }
 
 // AI tools tab's own search — a client-side filter over the static tools list
@@ -10059,40 +10077,55 @@ async function scholarshipsHub(sub) {
   }
 
   let row = res.data || null;
-  let mode = row ? 'summary' : 'wizard';
+  // openTile tracks which tile's content is expanded below the row — 'profile'
+  // for the edit wizard, or one of OTHER_TILES' keys, or null (collapsed).
+  // Tapping the open tile again collapses it; tapping another tile switches
+  // to it. No profile yet means the setup wizard starts open by default.
+  let openTile = row ? null : 'profile';
   let step = 0;
   let draft = schDraftFromRow(row);
   const box = h('div');
+  let renderToken = 0;
+  const builtCache = {}; // key -> built node, so reopening a tile doesn't refetch
+
+  // Every other Scholarship Center tile used to navigate to its own full
+  // page; now tapping it lazily builds that same page (minus its crumb) and
+  // shows it right below the tile row instead, same as "My profile".
+  const OTHER_TILES = [
+    { key: 'roadmap',   title: 'My roadmap',          meta: 'Checklist', build: schRoadmapPage },
+    { key: 'whatif',    title: 'What-if simulator',   meta: 'Simulator', build: schWhatIfPage },
+    { key: 'gap',       title: 'Gap analysis',        meta: 'Compare',   build: schGapPage },
+    { key: 'timeline',  title: 'Application timeline', meta: 'Deadlines', build: schTimelinePage },
+    { key: 'search',    title: 'Find scholarships',   meta: 'Search',    build: schSearchPage },
+    { key: 'cv',        title: 'CV / resume maker',   meta: 'Build',     build: schCvPage },
+    { key: 'shortlist', title: 'Shortlist',           meta: 'Saved',     build: schShortlistPage },
+    { key: 'peers',     title: 'Peers',               meta: 'Community', build: schPeersPage }
+  ];
 
   // Phase 8: "My profile" used to be its own large standalone block above the
   // nav row (facts grid + hint line). It's now just one more sqTile in the
-  // same horizontal row as roadmap/what-if/etc \u2014 tapping it opens the same
+  // same horizontal row as roadmap/what-if/etc — tapping it opens the same
   // edit wizard the old "Edit" button did. Rebuilt on every paint() (not just
   // once) since its meta reflects whether a profile exists yet.
   const tilesBox = h('div');
   function paintTiles() {
     const profileTile = sqTile({
-      onClick: () => { if (mode === 'wizard') { mode = row ? 'summary' : 'wizard'; } else { draft = schDraftFromRow(row); step = 0; mode = 'wizard'; } paint(); },
+      onClick: () => {
+        if (openTile === 'profile') { openTile = null; } else { draft = schDraftFromRow(row); step = 0; openTile = 'profile'; }
+        paint();
+      },
       title: 'My profile', meta: row ? 'Edit' : 'Set up'
     });
-    if (mode === 'wizard') profileTile.classList.add('selected');
-    tilesBox.replaceChildren(tileRow([
-      profileTile,
-      sqTile({ href: '#workspace/scholarships/roadmap',  title: 'My roadmap',        meta: 'Checklist' }),
-      sqTile({ href: '#workspace/scholarships/whatif',   title: 'What-if simulator', meta: 'Simulator' }),
-      sqTile({ href: '#workspace/scholarships/gap',      title: 'Gap analysis',      meta: 'Compare' }),
-      sqTile({ href: '#workspace/scholarships/timeline', title: 'Application timeline', meta: 'Deadlines' }),
-      sqTile({ href: '#workspace/scholarships/search',   title: 'Find scholarships', meta: 'Search' }),
-      sqTile({ href: '#workspace/scholarships/cv',       title: 'CV / resume maker', meta: 'Build' }),
-      sqTile({ href: '#workspace/scholarships/shortlist', title: 'Shortlist',        meta: 'Saved' }),
-      sqTile({ href: '#workspace/scholarships/peers',    title: 'Peers',             meta: 'Community' })
-    ]));
-  }
-
-  function paintSummary() {
-    // The facts grid this used to show now only appears inside the edit
-    // wizard's own review step (schSummaryFacts is still used there).
-    box.replaceChildren();
+    if (openTile === 'profile') profileTile.classList.add('selected');
+    const otherTiles = OTHER_TILES.map(def => {
+      const tile = sqTile({
+        onClick: () => { openTile = openTile === def.key ? null : def.key; paint(); },
+        title: def.title, meta: def.meta
+      });
+      if (openTile === def.key) tile.classList.add('selected');
+      return tile;
+    });
+    tilesBox.replaceChildren(tileRow([profileTile, ...otherTiles]));
   }
 
   function paintWizard() {
@@ -10218,7 +10251,7 @@ async function scholarshipsHub(sub) {
         : await sb.from('scholarship_profiles').insert({ ...payload, completed_at: new Date().toISOString() }).select().single();
       nextBtn.disabled = false;
       if (out.error) return fail('Could not save: ' + out.error.message);
-      row = out.data; mode = 'summary'; paint();
+      row = out.data; openTile = null; paint();
       schRoadmapSync(row).catch(() => {}); // E18: keep the roadmap in step with the profile
     });
 
@@ -10227,7 +10260,24 @@ async function scholarshipsHub(sub) {
       stepper, body, err, h('div', { class: 'actions' }, nextBtn, back)));
   }
 
-  function paint() { paintTiles(); if (mode === 'summary') paintSummary(); else paintWizard(); }
+  function renderBox() {
+    if (openTile === 'profile') { paintWizard(); return; }
+    if (!openTile) { box.replaceChildren(); return; }
+    const def = OTHER_TILES.find(d => d.key === openTile);
+    if (!def) { box.replaceChildren(); return; }
+    if (builtCache[def.key]) { box.replaceChildren(builtCache[def.key]); return; }
+    box.replaceChildren(h('p', { class: 'none', text: 'Loading…' }));
+    const token = ++renderToken;
+    Promise.resolve(def.build()).then(page => {
+      const node = h('div', {}, page.nodes.slice(1));
+      builtCache[def.key] = node;
+      if (token === renderToken && openTile === def.key) box.replaceChildren(node);
+    }).catch(e => {
+      if (token === renderToken && openTile === def.key) box.replaceChildren(errorCard(e));
+    });
+  }
+
+  function paint() { paintTiles(); renderBox(); }
   paint();
 
   // Same toggle Explore/Community use: tapping a chip shows only that
@@ -13956,17 +14006,31 @@ function portalsPage(itemKey) {
   }
 
   const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by country' });
-  const box = h('div');
+  const box = h('div'), detailBox = h('div');
   const show = c => portalFilter === 'all' || portalFilter === c;
+  let openKey = null;
 
   const paint = () => {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.c === portalFilter)));
     const list = PORTALS.filter(i => i.url && show(i.country));
     box.replaceChildren(list.length
-      ? tileRow(list.map(it => sqTile({
-          href: '#workspace/portals/' + it.key, title: it.name,
-          meta: [portalCountryLabel(it.country), it.subject].filter(Boolean).join(' \u00b7 ') })))
+      ? tileRow(list.map(it => {
+          const tile = sqTile({
+            onClick: () => { openKey = openKey === it.key ? null : it.key; paint(); },
+            title: it.name,
+            meta: [portalCountryLabel(it.country), it.subject].filter(Boolean).join(' \u00b7 ')
+          });
+          if (openKey === it.key) tile.classList.add('selected');
+          return tile;
+        }))
       : h('p', { class: 'none', text: 'No portals for this filter yet.' }));
+    const openItem = openKey && PORTALS.find(i => i.key === openKey);
+    detailBox.replaceChildren(openItem
+      ? h('div', { class: 'launch-card' },
+          h('div', { class: 'dl-actions' },
+            h('a', { class: 'btn small launch-btn', href: openItem.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open ' + openItem.name })),
+          openItem.note ? h('p', { class: 'hint-line', text: openItem.note }) : null)
+      : null);
   };
   [{ key: 'all', label: 'All' }, ...PORTAL_COUNTRIES].forEach(c => chips.append(h('button', {
     type: 'button', class: 'chip-btn', 'data-c': c.key, text: c.label, onclick: () => { portalFilter = c.key; paint(); }
@@ -13976,7 +14040,7 @@ function portalsPage(itemKey) {
   return { title: 'Portals', nodes: [
     crumbs(crumbList),
     chips,
-    box
+    box, detailBox
   ] };
 }
 
@@ -14024,15 +14088,31 @@ async function simHub(itemKey, compact) {
   catch (e) { savedError = e; }
 
   const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by subject' });
-  const sitesBox = h('div'), mineBox = h('div');
+  const sitesBox = h('div'), siteDetailBox = h('div'), mineBox = h('div');
   const show = cat => simFilter === 'all' || simFilter === cat;
+  let openSiteKey = null;
 
   const paint = () => {
     chips.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === simFilter)));
     const sites = SIM_SITES.filter(x => show(x.cat));
     sitesBox.replaceChildren(sites.length
-      ? tileRow(sites.map(x => sqTile({ href: '#workspace/threed/' + x.key, title: x.name, meta: simCatLabel(x.cat) })))
+      ? tileRow(sites.map(x => {
+          const tile = sqTile({
+            onClick: () => { openSiteKey = openSiteKey === x.key ? null : x.key; paint(); },
+            title: x.name, meta: simCatLabel(x.cat)
+          });
+          if (openSiteKey === x.key) tile.classList.add('selected');
+          return tile;
+        }))
       : h('p', { class: 'none', text: 'No sites for this subject yet.' }));
+    const openSite = openSiteKey && SIM_SITES.find(x => x.key === openSiteKey);
+    siteDetailBox.replaceChildren(openSite
+      ? h('div', { class: 'launch-card' },
+          h('div', { class: 'dl-actions' },
+            h('a', { class: 'btn small launch-btn', href: openSite.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open ' + openSite.name }),
+            h('button', { class: 'btn small', type: 'button', text: '+ Save a simulation', onclick: () => openSimDialog(null, openSite.cat) })),
+          h('p', { class: 'hint-line', text: 'Found one you like? Copy its link, come back and save it below.' }))
+      : null);
     const mine = saved.filter(r => show(r.category));
     mineBox.replaceChildren(mine.length
       ? tileRow(mine.map(r => sqTile({ href: '#workspace/threed/' + r.id, title: r.title, meta: simCatLabel(r.category) })))
@@ -14048,7 +14128,7 @@ async function simHub(itemKey, compact) {
     chips,
     section('Main sites', null, null,
       compact ? null : h('p', { class: 'hint-line', text: 'Open a site, find a simulation, then save its link below.' }),
-      sitesBox),
+      sitesBox, siteDetailBox),
     section('My simulations', '+ Save simulation', () => openSimDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
                      'Run the update SQL in Supabase (schema-update-3.1.sql), then reload.') : null,
@@ -14153,8 +14233,11 @@ async function youtubeApiVideoDetails(id) {
   } catch (e) { return null; }
 }
 
-function ytCard(href, title, meta, thumb) {
-  return h('a', { class: 'yt-card', href },
+function ytCard(opts) {
+  const { href, onClick, title, meta, thumb } = opts;
+  const attrs = { class: 'yt-card' };
+  if (onClick) { attrs.type = 'button'; attrs.onclick = onClick; } else { attrs.href = href; }
+  return h(onClick ? 'button' : 'a', attrs,
     thumb ? h('img', { src: thumb, alt: '', loading: 'lazy' }) : h('div', { class: 'yt-card-noimg' }),
     h('div', { class: 'yt-card-body' }, h('strong', { text: title }), meta ? h('small', { text: meta }) : null));
 }
@@ -14208,6 +14291,22 @@ async function youtubeHubHome(compact) {
   const btn = h('button', { class: 'btn small', type: 'button', text: 'Search' });
   const status = h('p', { class: 'none' });
   const grid = h('div', { class: 'yt-grid' });
+  const searchDetailBox = h('div');
+  let openSearchId = null;
+
+  // Tapping a video (from search results or from "My videos") now plays it
+  // right there instead of navigating to its own page; tapping the same
+  // card/tile again closes the player. Each section keeps its own state so
+  // opening one doesn't disturb the other.
+  function videoDetailNode(url, title, channel, extraActions) {
+    const sum = summarizeControl(url, title);
+    return h('div', { class: 'yt-inline-player' },
+      h('strong', { text: title }),
+      channel ? h('p', { class: 'hint-line', text: channel }) : null,
+      youtubePlayer(url),
+      h('div', { class: 'dl-actions' }, ...extraActions, sum.btn),
+      sum.out);
+  }
 
   function paintResults() {
     grid.replaceChildren();
@@ -14215,7 +14314,14 @@ async function youtubeHubHome(compact) {
       status.hidden = false; status.textContent = ytSearchState.error;
     } else if (ytSearchState.results.length) {
       status.hidden = true;
-      ytSearchState.results.forEach(r => grid.append(ytCard('#workspace/youtube/w-' + r.id, r.title, r.channel, r.thumb)));
+      ytSearchState.results.forEach(r => {
+        const card = ytCard({
+          onClick: () => { openSearchId = openSearchId === r.id ? null : r.id; paintResults(); },
+          title: r.title, meta: r.channel, thumb: r.thumb
+        });
+        if (openSearchId === r.id) card.classList.add('selected');
+        grid.append(card);
+      });
     } else if (ytSearchState.query) {
       status.hidden = false; status.textContent = 'No results.';
     } else if (compact) {
@@ -14224,12 +14330,18 @@ async function youtubeHubHome(compact) {
       status.hidden = false;
       status.textContent = 'Search to browse videos in-app — tap one to watch, save, or summarize it.';
     }
+    const openR = openSearchId && ytSearchState.results.find(r => r.id === openSearchId);
+    searchDetailBox.replaceChildren(openR
+      ? videoDetailNode('https://www.youtube.com/watch?v=' + openR.id, openR.title, openR.channel,
+          [h('button', { class: 'btn small', type: 'button', text: 'Save to My videos',
+              onclick: () => openSaveVideoDialog(null, 'https://www.youtube.com/watch?v=' + openR.id, openR.title) })])
+      : null);
   }
 
   async function doSearch() {
     const q = input.value.trim();
     ytSearchState.query = q; ytSearchState.error = null;
-    if (!q) { ytSearchState.results = []; paintResults(); return; }
+    if (!q) { ytSearchState.results = []; openSearchId = null; paintResults(); return; }
     if (!aiSettings().searchKey) {
       ytSearchState.results = [];
       ytSearchState.error = 'Add a Search API key in AI Settings to search YouTube in-app (same key as Fact Checker — just enable YouTube Data API v3 on it too).';
@@ -14238,6 +14350,7 @@ async function youtubeHubHome(compact) {
     btn.disabled = true; status.hidden = false; status.textContent = 'Searching…';
     try {
       ytSearchState.results = await youtubeApiSearch(q);
+      openSearchId = null;
       paintResults();
     } catch (e) {
       ytSearchState.results = [];
@@ -14252,18 +14365,38 @@ async function youtubeHubHome(compact) {
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
   paintResults();
 
-  const mineBox = saved.length
-    ? tileRow(saved.map(r => sqTile({ href: '#workspace/youtube/' + r.id, title: r.title, meta: 'Saved video' })))
-    : h('p', { class: 'none', text: 'Nothing saved yet.' });
+  const mineBox = h('div');
+  const mineDetailBox = h('div');
+  let openMineId = null;
+  function paintMine() {
+    mineBox.replaceChildren(saved.length
+      ? tileRow(saved.map(r => {
+          const tile = sqTile({
+            onClick: () => { openMineId = openMineId === r.id ? null : r.id; paintMine(); },
+            title: r.title, meta: 'Saved video'
+          });
+          if (openMineId === r.id) tile.classList.add('selected');
+          return tile;
+        }))
+      : h('p', { class: 'none', text: 'Nothing saved yet.' }));
+    const openRow = openMineId && saved.find(r => r.id === openMineId);
+    mineDetailBox.replaceChildren(openRow
+      ? videoDetailNode(openRow.url, openRow.title, null, [
+          h('button', { class: 'btn quiet small', type: 'button', text: 'Edit', onclick: () => openSaveVideoDialog(openRow) }),
+          h('button', { class: 'btn quiet small', type: 'button', text: 'Share', onclick: () => openShareDialog(postSrc('video', openRow)) })
+        ])
+      : null);
+  }
+  paintMine();
 
   return { title: 'YouTube hub', nodes: [
     crumbs([{ text: 'Workspace', href: '#workspace' }]),
     h('div', { class: 'search-row' }, input, btn),
-    status, grid,
+    status, grid, searchDetailBox,
     section('My videos', '+ Save a link', () => openSaveVideoDialog(null),
       savedError ? h('div', { class: 'status bad' }, h('strong', { text: 'Saving is not set up yet' }),
                      'Run the update SQL in Supabase (schema-update-3.2-youtube.sql), then reload.') : null,
-      mineBox)
+      mineBox, mineDetailBox)
   ] };
 }
 
