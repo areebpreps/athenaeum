@@ -6256,34 +6256,64 @@ async function solverList() {
   ] };
 }
 
-// The "take/choose a photo -> answer -> Explain" panel on the list page.
+const SOLVER_MAX_IMAGES = 10;
+
+// The "take/choose photos -> answer -> Explain" panel on the list page.
+// Up to SOLVER_MAX_IMAGES photos can be attached at once (e.g. a question
+// that spans more than one page) and are solved together as one question.
 function solverPanel() {
   const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
-  const galleryInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
   const snapTile = sqTile({ onClick: () => cameraInput.click(), title: 'Take a photo', meta: 'Camera' });
   const galleryTile = sqTile({ onClick: () => galleryInput.click(), title: 'Choose from gallery', meta: 'Gallery' });
+  const pages = h('div', { class: 'ocr-pages' });
+  const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Solve', disabled: true });
   const status = h('p', { class: 'hint-line', hidden: true });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
-  async function handleFile(file) {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) { err.textContent = 'Choose a photo.'; err.hidden = false; return; }
+  let pendingPhotos = []; // [{ blob, b64, mime, url }, …] up to SOLVER_MAX_IMAGES
 
-    err.hidden = true; result.replaceChildren();
-    snapTile.disabled = true; galleryTile.disabled = true;
-    status.hidden = false; status.textContent = 'Reading photo…';
-    try {
+  function syncUI() {
+    pages.replaceChildren(...pendingPhotos.map((p, i) => h('div', { class: 'ocr-page-thumb' },
+      h('img', { src: p.url, alt: 'Photo ' + (i + 1) }),
+      h('button', { type: 'button', 'aria-label': 'Remove photo ' + (i + 1), text: '×', onclick: () => { URL.revokeObjectURL(p.url); pendingPhotos.splice(i, 1); syncUI(); } }))));
+    goBtn.disabled = !pendingPhotos.length;
+  }
+
+  async function addPhotos(files) {
+    if (!files || !files.length) return;
+    err.hidden = true;
+    const room = SOLVER_MAX_IMAGES - pendingPhotos.length;
+    if (room <= 0) { err.textContent = 'You already have ' + SOLVER_MAX_IMAGES + ' photos — remove one first.'; err.hidden = false; return; }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > picked.length) { err.textContent = 'Only the first ' + picked.length + ' fit — the cap is ' + SOLVER_MAX_IMAGES + ' photos.'; err.hidden = false; }
+    for (const file of picked) {
+      if (!file.type || !file.type.startsWith('image/')) continue;
       const blob = await compressImage(file);
-      const mime = blob.type || 'image/jpeg';
-      const b64 = await blobToBase64(blob);
+      pendingPhotos.push({ blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg', url: URL.createObjectURL(blob) });
+    }
+    syncUI();
+  }
+  cameraInput.addEventListener('change', () => { const f = cameraInput.files; addPhotos(f); cameraInput.value = ''; });
+  galleryInput.addEventListener('change', () => { const f = galleryInput.files; addPhotos(f); galleryInput.value = ''; });
 
-      status.textContent = 'Solving…';
-      const answer = await callAIVision(SOLVER_ANSWER_SYSTEM, 'Give the direct answer to the question in this photo.', b64, mime);
-      result.replaceChildren(solverResultBlock(answer, null, null, null));
+  goBtn.addEventListener('click', async () => {
+    if (!pendingPhotos.length) return;
+    err.hidden = true; result.replaceChildren();
+    goBtn.disabled = true; status.hidden = false; status.textContent = 'Solving…';
+    try {
+      const prompt = pendingPhotos.length > 1
+        ? 'Give the direct answer to the question shown across these ' + pendingPhotos.length + ' photos (treat them as one question).'
+        : 'Give the direct answer to the question in this photo.';
+      const answer = await callAIVisionMulti(SOLVER_ANSWER_SYSTEM, prompt, pendingPhotos);
+      result.replaceChildren(solverResultBlock(answer, null, null));
 
+      // Only the first photo is persisted to storage (same convention as OCR
+      // and the Summarizer) — good enough for the history thumbnail, and
+      // Explain on a fresh solve still has every photo via pendingSolveImages.
       let imagePath = null;
-      try { imagePath = await uploadSolverImage(blob); } catch (e) { /* non-fatal: keep the answer, Explain falls back to this-session-only */ }
+      try { imagePath = await uploadSolverImage(pendingPhotos[0].blob); } catch (e) { /* non-fatal */ }
 
       const chatIns = await sb.from('ai_chats').insert({ tool: 'solver', title: answer.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
@@ -6292,40 +6322,45 @@ function solverPanel() {
         [{ chat_id: chatId, role: 'user', content: '[Photo question]', image_path: imagePath },
          { chat_id: chatId, role: 'assistant', content: answer }]);
       if (msgIns.error) throw msgIns.error;
-      pendingSolveImages[chatId] = { b64, mime };
-      result.replaceChildren(solverResultBlock(answer, chatId, b64, mime));
+      const images = pendingPhotos.map(p => ({ b64: p.b64, mime: p.mime }));
+      pendingSolveImages[chatId] = images;
+      result.replaceChildren(solverResultBlock(answer, chatId, images));
+      pendingPhotos.forEach(p => URL.revokeObjectURL(p.url));
+      pendingPhotos = []; syncUI();
     } catch (e) {
-      err.textContent = (e && e.message) ? e.message : 'Could not solve that photo. Try again.';
+      err.textContent = (e && e.message) ? e.message : 'Could not solve that. Try again.';
       err.hidden = false;
     } finally {
-      snapTile.disabled = false; galleryTile.disabled = false; status.hidden = true;
+      goBtn.disabled = !pendingPhotos.length; status.hidden = true;
     }
-  }
-
-  cameraInput.addEventListener('change', () => { const f = cameraInput.files && cameraInput.files[0]; cameraInput.value = ''; handleFile(f); });
-  galleryInput.addEventListener('change', () => { const f = galleryInput.files && galleryInput.files[0]; galleryInput.value = ''; handleFile(f); });
+  });
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New question' })),
-    h('p', { class: 'hint-line', text: 'Snap a photo of a question for a direct answer first, then tap Explain for the steps.' }),
+    h('p', { class: 'hint-line', text: 'Snap or upload up to ' + SOLVER_MAX_IMAGES + ' photos of a question for a direct answer first, then tap Explain for the steps.' }),
     tileRow([snapTile, galleryTile]), cameraInput, galleryInput,
-    status, err, result);
+    pages, goBtn, status, err, result);
 }
 
 // Builds the Explain control: appends the explanation bubble into `log`
-// (owned by the caller) and saves it once fetched. getImage() is called
-// lazily on click and must resolve to { b64, mime } — this lets the same
-// control work for a photo already in hand (live solve) and for one that
-// needs re-fetching from storage first (reopening a past question).
-function solverExplainControl(chatId, getImage, log) {
+// (owned by the caller) and saves it once fetched. getImages() is called
+// lazily on click and must resolve to an array of { b64, mime } (one or
+// several photos, all part of the same question) — this lets the same
+// control work for photos already in hand (live solve) and for ones that
+// need re-fetching from storage first (reopening a past question, where
+// only the first photo was persisted).
+function solverExplainControl(chatId, getImages, log) {
   const err = h('p', { class: 'msg err', hidden: true });
   const explainBtn = h('button', { class: 'btn quiet small', type: 'button', text: 'Explain', disabled: !chatId });
 
   explainBtn.addEventListener('click', async () => {
     explainBtn.disabled = true; explainBtn.textContent = 'Working…'; err.hidden = true;
     try {
-      const { b64, mime } = await getImage();
-      const explanation = await callAIVision(SOLVER_EXPLAIN_SYSTEM, 'Explain step by step how to reach the answer to the question in this photo.', b64, mime);
+      const images = await getImages();
+      const prompt = images.length > 1
+        ? 'Explain step by step how to reach the answer to the question shown across these ' + images.length + ' photos (treat them as one question).'
+        : 'Explain step by step how to reach the answer to the question in this photo.';
+      const explanation = await callAIVisionMulti(SOLVER_EXPLAIN_SYSTEM, prompt, images);
       log.append(h('div', { class: 'bubble assistant', text: explanation }));
       explainBtn.remove();
       const ins = await sb.from('ai_messages').insert({ chat_id: chatId, role: 'assistant', content: explanation });
@@ -6340,11 +6375,12 @@ function solverExplainControl(chatId, getImage, log) {
   return h('div', {}, err, explainBtn);
 }
 
-// The answer bubble plus its Explain state. If chatId is null the save is
+// The answer bubble plus its Explain state. images is an array of { b64, mime }
+// (one per photo the question was solved from). If chatId is null the save is
 // still in flight, so Explain stays disabled until it lands.
-function solverResultBlock(answer, chatId, b64, mime) {
+function solverResultBlock(answer, chatId, images) {
   const log = h('div', { class: 'chat-log' }, h('div', { class: 'bubble assistant', text: answer }));
-  return h('div', {}, log, solverExplainControl(chatId, async () => ({ b64, mime }), log));
+  return h('div', {}, log, solverExplainControl(chatId, async () => images, log));
 }
 
 async function solverPast(chatId) {
@@ -6372,7 +6408,9 @@ async function solverPast(chatId) {
     if (cached) {
       explainNode = solverExplainControl(chatId, async () => cached, log);
     } else if (photoRow && photoRow.image_path) {
-      explainNode = solverExplainControl(chatId, () => base64FromStoragePath(photoRow.image_path), log);
+      // Only the first of several photos is persisted to storage, so a
+      // reopened multi-photo question can only be re-explained from that one.
+      explainNode = solverExplainControl(chatId, () => base64FromStoragePath(photoRow.image_path).then(img => [img]), log);
     } else {
       explainNode = h('p', { class: 'hint-line', text: 'The photo for this question was not saved, so steps aren\'t available.' });
     }
@@ -6414,9 +6452,13 @@ const FACTCHECK_SYSTEM_SEARCHED =
   'line must be exactly one of these three words: True, False, or Partially true. Then, on the next lines, a short explanation ' +
   '(2-4 sentences) of why.';
 
-async function callAIFactCheck(claimText, imageB64, mime) {
+// images is an array of { b64, mime } — zero, one, or several (up to
+// FACTCHECK_MAX_IMAGES) photos of evidence for the same claim.
+async function callAIFactCheck(claimText, images) {
   const s = aiSettings();
   if (!s.geminiKey || !s.geminiModel) throw new Error('Add your Gemini key and model name in AI Settings.');
+  images = images || [];
+  const imageParts = images.map(img => ({ inline_data: { mime_type: img.mime || 'image/jpeg', data: img.b64 } }));
   const parts = [];
 
   // Preferred path: an independently-quota'd live search (Google Programmable
@@ -6427,7 +6469,7 @@ async function callAIFactCheck(claimText, imageB64, mime) {
     if (results.length) {
       const context = results.map((r, i) => (i + 1) + '. ' + r.title + ' — ' + r.snippet + ' (' + r.link + ')').join('\n');
       parts.push({ text: 'Claim: ' + claimText + '\n\nSearch results:\n' + context });
-      if (imageB64) parts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
+      parts.push(...imageParts);
       const answer = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_SEARCHED, [{ role: 'user', parts }]);
       return { answer, grounded: true };
     }
@@ -6436,7 +6478,7 @@ async function callAIFactCheck(claimText, imageB64, mime) {
 
   const plainParts = [];
   if (claimText) plainParts.push({ text: claimText });
-  if (imageB64) plainParts.push({ inline_data: { mime_type: mime || 'image/jpeg', data: imageB64 } });
+  plainParts.push(...imageParts);
 
   try {
     const answer = await callGeminiRaw(s.geminiModel, s.geminiKey, FACTCHECK_SYSTEM_GROUNDED, [{ role: 'user', parts: plainParts }], [{ google_search: {} }]);
@@ -6470,41 +6512,58 @@ function factcheckHub(chatId) {
   return chatId ? factcheckPast(chatId) : factcheckList();
 }
 
+const FACTCHECK_MAX_IMAGES = 10;
+
 function factcheckPanel() {
   const ta = h('textarea', { class: 'control area', rows: 3, placeholder: 'Paste a claim to check…' });
   const taField = h('div', { class: 'field', hidden: true }, ta);
-  const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
-  let pickedFile = null;
+  const fileInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
   const textTile = sqTile({ onClick: () => { taField.hidden = false; ta.focus(); }, title: 'Text writing', meta: 'Type it out' });
   const photoTile = sqTile({ onClick: () => fileInput.click(), title: 'Add a photo', meta: 'Instead of typing' });
-  const photoLabel = h('p', { class: 'hint-line', hidden: true });
+  const pages = h('div', { class: 'ocr-pages' });
   const goBtn = h('button', { class: 'btn small', type: 'button', text: 'Check' });
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
-  fileInput.addEventListener('change', () => {
-    pickedFile = (fileInput.files && fileInput.files[0]) || null;
-    photoLabel.hidden = !pickedFile;
-    photoLabel.textContent = pickedFile ? ('Photo added: ' + pickedFile.name) : '';
-  });
+  let pendingPhotos = []; // [{ blob, b64, mime, url }, …] up to FACTCHECK_MAX_IMAGES
+
+  function syncUI() {
+    pages.replaceChildren(...pendingPhotos.map((p, i) => h('div', { class: 'ocr-page-thumb' },
+      h('img', { src: p.url, alt: 'Photo ' + (i + 1) }),
+      h('button', { type: 'button', 'aria-label': 'Remove photo ' + (i + 1), text: '×', onclick: () => { URL.revokeObjectURL(p.url); pendingPhotos.splice(i, 1); syncUI(); } }))));
+  }
+
+  async function addPhotos(files) {
+    if (!files || !files.length) return;
+    err.hidden = true;
+    const room = FACTCHECK_MAX_IMAGES - pendingPhotos.length;
+    if (room <= 0) { err.textContent = 'You already have ' + FACTCHECK_MAX_IMAGES + ' photos — remove one first.'; err.hidden = false; return; }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > picked.length) { err.textContent = 'Only the first ' + picked.length + ' fit — the cap is ' + FACTCHECK_MAX_IMAGES + ' photos.'; err.hidden = false; }
+    for (const file of picked) {
+      if (!file.type || !file.type.startsWith('image/')) continue;
+      const blob = await compressImage(file);
+      pendingPhotos.push({ blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg', url: URL.createObjectURL(blob) });
+    }
+    syncUI();
+  }
+  fileInput.addEventListener('change', () => { const f = fileInput.files; addPhotos(f); fileInput.value = ''; });
 
   goBtn.addEventListener('click', async () => {
     const claim = ta.value.trim();
-    if (!claim && !pickedFile) { err.textContent = 'Type a claim or add a photo.'; err.hidden = false; return; }
+    if (!claim && !pendingPhotos.length) { err.textContent = 'Type a claim or add a photo.'; err.hidden = false; return; }
     err.hidden = true; result.replaceChildren();
     goBtn.disabled = true; goBtn.textContent = 'Checking…';
     try {
-      let blob = null, b64 = null, mime = null, imagePath = null;
-      if (pickedFile) {
-        blob = await compressImage(pickedFile);
-        mime = blob.type || 'image/jpeg';
-        b64 = await blobToBase64(blob);
-      }
-      const { answer, grounded } = await callAIFactCheck(claim, b64, mime);
+      const images = pendingPhotos.map(p => ({ b64: p.b64, mime: p.mime }));
+      const { answer, grounded } = await callAIFactCheck(claim, images);
       const stored = (grounded ? '' : '[UNGROUNDED]\n') + answer;
       result.replaceChildren(verdictBadge(stored));
 
-      if (blob) { try { imagePath = await uploadToolImage('factcheck', blob); } catch (e) { /* non-fatal */ } }
+      // Only the first photo is persisted to storage (same convention used
+      // elsewhere in the app) — good enough for the history thumbnail.
+      let imagePath = null;
+      if (pendingPhotos.length) { try { imagePath = await uploadToolImage('factcheck', pendingPhotos[0].blob); } catch (e) { /* non-fatal */ } }
 
       const chatIns = await sb.from('ai_chats').insert({ tool: 'factcheck', title: (claim || 'Photo claim').slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
@@ -6513,7 +6572,7 @@ function factcheckPanel() {
          { chat_id: chatIns.data.id, role: 'assistant', content: stored }]);
       if (msgIns.error) throw msgIns.error;
 
-      ta.value = ''; pickedFile = null; fileInput.value = ''; photoLabel.hidden = true;
+      ta.value = ''; pendingPhotos.forEach(p => URL.revokeObjectURL(p.url)); pendingPhotos = []; syncUI();
     } catch (e) {
       err.textContent = (e && e.message) ? e.message : 'Could not check that claim. Try again.';
       err.hidden = false;
@@ -6524,10 +6583,10 @@ function factcheckPanel() {
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New claim' })),
-    h('p', { class: 'hint-line', text: 'Paste a claim, or add a photo of one, and get a verdict.' }),
+    h('p', { class: 'hint-line', text: 'Paste a claim, or add up to ' + FACTCHECK_MAX_IMAGES + ' photos of one, and get a verdict.' }),
     tileRow([textTile, photoTile]), fileInput,
     taField,
-    photoLabel, goBtn, err, result);
+    pages, goBtn, err, result);
 }
 
 async function factcheckList() {
@@ -7169,8 +7228,44 @@ function quizHub(chatId) {
   return chatId ? quizPast(chatId) : quizList();
 }
 
+const QUIZ_MAX_IMAGES = 10;
+const QUIZ_MAX_PDFS = 5;
+const QUIZ_MATERIAL_MAX_CHARS = 20000;
+
+// Combines everything the quiz should be based on into one text block:
+// the chosen subject/chapter/topic name (so a bare topic pick still gives
+// the model something to write questions about), whatever notes, formulas
+// and mnemonics are already saved at that scope, and any typed notes or
+// PDF text the student added. Photos are NOT included here — they're sent
+// as separate image parts alongside this text in a vision call.
+async function gatherQuizMaterialText(scope, scopeNames, typedText, pdfTexts) {
+  const parts = [];
+  if (scope && scope.subjectId) {
+    const scopeLabel = [scopeNames.subject, scopeNames.chapter, scopeNames.topic].filter(Boolean).join(' › ');
+    parts.push('TOPIC: ' + scopeLabel);
+    try {
+      const gathered = await gatherNotebookMaterial(scope);
+      if (gathered.text) parts.push('SAVED NOTES, FORMULAS & MNEMONICS FOR THIS TOPIC:\n' + gathered.text);
+    } catch (e) { /* non-fatal — the topic name alone is still usable material */ }
+  }
+  if (typedText) parts.push(typedText);
+  (pdfTexts || []).forEach(p => { if (p.text) parts.push('FROM PDF "' + p.name + '":\n' + p.text); });
+  return parts.join('\n\n').slice(0, QUIZ_MATERIAL_MAX_CHARS);
+}
+
 function quizPanel(tree) {
   const fMaterial = makeField('Notes or topic', { multiline: true, rows: 4, placeholder: 'Paste notes, or type a topic' });
+  const taField = fMaterial.wrap;
+  taField.hidden = true;
+  const cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
+  const galleryInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const pdfInput = h('input', { type: 'file', accept: 'application/pdf', multiple: true, hidden: true });
+  const textTile = sqTile({ onClick: () => { taField.hidden = false; fMaterial.input.focus(); }, title: 'Text writing', meta: 'Type it out' });
+  const snapTile = sqTile({ onClick: () => cameraInput.click(), title: 'Take a photo', meta: 'Camera' });
+  const photoTile = sqTile({ onClick: () => galleryInput.click(), title: 'Choose from gallery', meta: 'Gallery' });
+  const pdfTile = sqTile({ onClick: () => pdfInput.click(), title: 'Add a PDF', meta: 'Instead of typing' });
+  const pages = h('div', { class: 'ocr-pages' });
+  const pdfList = h('div', { class: 'list' });
   const picker = scopePickerFields(tree);
   let kind = 'mcq';
   const seg = h('div', { class: 'seg seg-3', role: 'group', 'aria-label': 'Quiz type' },
@@ -7183,24 +7278,92 @@ function quizPanel(tree) {
   const err = h('p', { class: 'msg err', hidden: true });
   const result = h('div');
 
+  let pendingPhotos = []; // [{ blob, b64, mime, url }, …] up to QUIZ_MAX_IMAGES
+  let pendingPdfs = [];   // [{ name, text }, …] up to QUIZ_MAX_PDFS
+
+  function syncPhotosUI() {
+    pages.replaceChildren(...pendingPhotos.map((p, i) => h('div', { class: 'ocr-page-thumb' },
+      h('img', { src: p.url, alt: 'Photo ' + (i + 1) }),
+      h('button', { type: 'button', 'aria-label': 'Remove photo ' + (i + 1), text: '×', onclick: () => { URL.revokeObjectURL(p.url); pendingPhotos.splice(i, 1); syncPhotosUI(); } }))));
+  }
+  function syncPdfUI() {
+    pdfList.replaceChildren(...pendingPdfs.map((p, i) =>
+      h('div', { class: 'row' },
+        h('span', { class: 'grow' }, h('strong', { text: p.name }), p.text ? null : h('small', { text: 'Reading…' })),
+        h('button', { class: 'btn quiet small', type: 'button', text: 'Remove', onclick: () => { pendingPdfs.splice(i, 1); syncPdfUI(); } }))));
+  }
+
+  async function addPhotos(files) {
+    if (!files || !files.length) return;
+    err.hidden = true;
+    const room = QUIZ_MAX_IMAGES - pendingPhotos.length;
+    if (room <= 0) { err.textContent = 'You already have ' + QUIZ_MAX_IMAGES + ' photos — remove one first.'; err.hidden = false; return; }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > picked.length) { err.textContent = 'Only the first ' + picked.length + ' fit — the cap is ' + QUIZ_MAX_IMAGES + ' photos.'; err.hidden = false; }
+    for (const file of picked) {
+      if (!file.type || !file.type.startsWith('image/')) continue;
+      const blob = await compressImage(file);
+      pendingPhotos.push({ blob, b64: await blobToBase64(blob), mime: blob.type || 'image/jpeg', url: URL.createObjectURL(blob) });
+    }
+    syncPhotosUI();
+  }
+  cameraInput.addEventListener('change', () => { const f = cameraInput.files; addPhotos(f); cameraInput.value = ''; });
+  galleryInput.addEventListener('change', () => { const f = galleryInput.files; addPhotos(f); galleryInput.value = ''; });
+
+  async function addPdfs(files) {
+    if (!files || !files.length) return;
+    err.hidden = true;
+    const room = QUIZ_MAX_PDFS - pendingPdfs.length;
+    if (room <= 0) { err.textContent = 'You already have ' + QUIZ_MAX_PDFS + ' PDFs — remove one first.'; err.hidden = false; return; }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > picked.length) { err.textContent = 'Only the first ' + picked.length + ' fit — the cap is ' + QUIZ_MAX_PDFS + ' PDFs.'; err.hidden = false; }
+    for (const file of picked) {
+      const entry = { name: file.name || 'PDF', text: null };
+      pendingPdfs.push(entry); syncPdfUI();
+      try {
+        const text = await extractPdfTextFromFile(file);
+        entry.text = text || '(no selectable text found — it may be a scanned image)';
+      } catch (e) {
+        entry.text = '(could not read this PDF)';
+      }
+      syncPdfUI();
+    }
+  }
+  pdfInput.addEventListener('change', () => { const f = pdfInput.files; addPdfs(f); pdfInput.value = ''; });
+
   goBtn.addEventListener('click', async () => {
-    const material = fMaterial.input.value.trim();
+    const typedText = fMaterial.input.value.trim();
     const count = Math.max(1, Math.min(20, parseInt(fCount.input.value, 10) || 5));
-    if (!material) { err.textContent = 'Paste some notes or a topic.'; err.hidden = false; return; }
+    const scope = picker.getScope();
+    const scopeNames = picker.getScopeNames();
     err.hidden = true; result.replaceChildren();
+    if (!typedText && !pendingPhotos.length && !scope.subjectId && !pendingPdfs.some(p => p.text)) {
+      err.textContent = 'Paste notes or a topic, add photos or a PDF, or choose a subject below.'; err.hidden = false; return;
+    }
     goBtn.disabled = true; goBtn.textContent = 'Generating…';
     try {
-      const raw = await callAI(QUIZ_SYSTEM, [{ role: 'user', content: quizPrompt(kind, count, material) }]);
+      const material = await gatherQuizMaterialText(scope, scopeNames, typedText, pendingPdfs);
+      if (!material && !pendingPhotos.length) throw new Error('There\u2019s nothing to make a quiz from yet.');
+
+      const prompt = quizPrompt(kind, count, material || 'the material shown in these photos');
+      const raw = pendingPhotos.length
+        ? await callAIVisionMulti(QUIZ_SYSTEM, prompt, pendingPhotos)
+        : await callAI(QUIZ_SYSTEM, [{ role: 'user', content: prompt }]);
       const quiz = parseQuizJSON(raw);
-      const scope = picker.getScope();
-      if (scope.subjectId) { quiz.scope = scope; quiz.scopeNames = picker.getScopeNames(); }
-      const chatIns = await sb.from('ai_chats').insert({ tool: 'quiz', title: material.slice(0, 60) }).select('id').single();
+      if (scope.subjectId) { quiz.scope = scope; quiz.scopeNames = scopeNames; }
+
+      const scopeLabel = [scopeNames.subject, scopeNames.chapter, scopeNames.topic].filter(Boolean).join(' › ');
+      const titleSrc = typedText || scopeLabel || (pendingPhotos.length ? 'Quiz from photos' : pendingPdfs.length ? 'Quiz from PDF' : 'Quiz');
+      const chatIns = await sb.from('ai_chats').insert({ tool: 'quiz', title: titleSrc.slice(0, 60) }).select('id').single();
       if (chatIns.error) throw chatIns.error;
       result.replaceChildren(h('span', { class: 'chip', text: QUIZ_KINDS[kind].label }), quizPlayer(quiz, chatIns.data.id));
       const msgIns = await sb.from('ai_messages').insert(
-        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + QUIZ_KINDS[kind].label + ' · ' + count + ' questions] ' + material.slice(0, 300) },
+        [{ chat_id: chatIns.data.id, role: 'user', content: '[' + QUIZ_KINDS[kind].label + ' · ' + count + ' questions] ' + (material || titleSrc).slice(0, 300) },
          { chat_id: chatIns.data.id, role: 'assistant', content: JSON.stringify(quiz) }]);
       if (msgIns.error) throw msgIns.error;
+
+      pendingPhotos.forEach(p => URL.revokeObjectURL(p.url));
+      pendingPhotos = []; pendingPdfs = []; syncPhotosUI(); syncPdfUI();
     } catch (e) {
       err.textContent = (e && e.message) ? e.message : 'Could not generate that quiz. Try again.';
       err.hidden = false;
@@ -7211,10 +7374,12 @@ function quizPanel(tree) {
 
   return h('section', { class: 'sec' },
     h('div', { class: 'sec-head' }, h('h3', { text: 'New quiz' })),
-    fMaterial.wrap,
+    h('p', { class: 'hint-line', text: 'Type notes or a topic, add up to ' + QUIZ_MAX_IMAGES + ' photos or ' + QUIZ_MAX_PDFS + ' PDFs, or just pick a subject/chapter/topic below.' }),
+    tileRow([textTile, snapTile, photoTile, pdfTile]), cameraInput, galleryInput, pdfInput,
+    taField, pages, pdfList,
     h('div', { class: 'field' }, h('label', { text: 'Type' }), seg),
     fCount.wrap,
-    h('p', { class: 'hint-line', text: 'Optional — tag this quiz to a subject so wrong answers land in the right place in your Mistake Vault.' }),
+    h('p', { class: 'hint-line', text: 'Pick a subject, chapter or topic to base the quiz on your saved notes and mnemonics there (or just the topic name if nothing\u2019s saved yet), and to tag wrong answers to your Mistake Vault.' }),
     picker.wrap,
     goBtn, err, result);
 }
@@ -8150,23 +8315,34 @@ async function loadPdfSourcesForScope(scope) {
 // Downloads a vault PDF via its signed URL and pulls out its selectable text with pdf.js.
 // Scanned PDFs with no text layer return an empty string, which the caller reports as an error.
 let pdfjsReady = false;
-async function extractPdfText(storagePath) {
+function ensurePdfJs() {
   if (!window.pdfjsLib) throw new Error('The PDF reading library did not load. Check your connection and try again.');
   if (!pdfjsReady) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     pdfjsReady = true;
   }
-  const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(storagePath, 120);
-  if (signed.error) throw signed.error;
-  const resp = await fetch(signed.data.signedUrl);
-  if (!resp.ok) throw new Error('Could not download the PDF.');
-  const doc = await pdfjsLib.getDocument({ data: await resp.arrayBuffer() }).promise;
+}
+async function extractPdfTextFromArrayBuffer(buf) {
+  ensurePdfJs();
+  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
   let text = '';
   for (let i = 1; i <= doc.numPages; i++) {
     const content = await (await doc.getPage(i)).getTextContent();
     text += content.items.map(it => it.str).join(' ') + '\n\n';
   }
   return text.trim();
+}
+async function extractPdfText(storagePath) {
+  const signed = await sb.storage.from(REF_BUCKET).createSignedUrl(storagePath, 120);
+  if (signed.error) throw signed.error;
+  const resp = await fetch(signed.data.signedUrl);
+  if (!resp.ok) throw new Error('Could not download the PDF.');
+  return extractPdfTextFromArrayBuffer(await resp.arrayBuffer());
+}
+// Reads a PDF the student just picked from their device (not yet, or never,
+// saved to the vault) directly from the File object — no upload needed.
+async function extractPdfTextFromFile(file) {
+  return extractPdfTextFromArrayBuffer(await file.arrayBuffer());
 }
 
 function openPdfExtractDialog(getScope) {
